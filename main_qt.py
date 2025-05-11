@@ -1,4 +1,20 @@
 import sys
+if sys.platform == "darwin":
+    try:
+        from AppKit import NSApplication, NSImage
+        import os
+        icon_path = os.path.abspath("assets/icon.icns")
+        if os.path.exists(icon_path):
+            nsimage = NSImage.alloc().initByReferencingFile_(icon_path)
+            if nsimage and nsimage.isValid():
+                NSApplication.sharedApplication().setApplicationIconImage_(nsimage)
+            else:
+                print("Icon image is not valid for Dock.")
+        else:
+            print("Icon file not found:", icon_path)
+    except Exception as e:
+        print("Could not set macOS dock icon:", e)
+
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable
 

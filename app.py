@@ -15,8 +15,14 @@ import threading # Added for threading.Thread
 # from ui_styles import APP_STYLESHEET
 
 # Engine components
-from engine.file_store import init_db as init_file_store_db
-from engine.file_store import save_benchmark_run, load_benchmark_details
+from engine.file_store import (
+    init_db as init_file_store_db,
+    save_benchmark,
+    save_benchmark_run,
+    save_benchmark_prompt,
+    load_benchmark_details,
+    find_benchmark_by_files
+)
 # engine.runner is imported within BenchmarkWorker to allow monkeypatching
 
 # Import the UI bridge protocol
@@ -85,9 +91,12 @@ class AppLogic:
     def __init__(self, ui_bridge: AppUIBridge):
         self.ui_bridge = ui_bridge
         self.worker: Optional[BenchmarkWorker] = None
-        self.active_benchmarks = {} # {run_id: {'pdf_name': str, 'current_prompt': int, 'total_prompts': int, 'start_time': datetime}}
-        self._next_run_id = 0 # Simple way to generate unique IDs for active runs
-
+        # Abstract job tracking: jobs can be any type of benchmark or batch job
+        # Each job is tracked by a unique job_id, with status, progress, and metadata
+        self.jobs = {}  # {job_id: {'status': 'unfinished'|'finished', 'progress': float, ...}}
+        self._next_job_id = 0
+        self._current_benchmark_id = None
+        self._current_benchmark_file_paths = []
         # Initial setup
         self._initialize_database()
         self._ensure_directories_exist()
@@ -141,127 +150,134 @@ class AppLogic:
 
 
     # @Slot(list, Path) # Slot decorator removed
-    def launch_benchmark_run(self, prompts: list, pdf_to_run: Path, model_names: list): # Changed model_name to model_names list
+    def launch_benchmark_run(self, prompts: list, pdf_to_run: Path, model_names: list):
         if not prompts:
             self.ui_bridge.show_message("warning", "No prompts", "Please enter at least one prompt.")
             return
         if not pdf_to_run:
             self.ui_bridge.show_message("warning", "No PDF", "Please select a PDF file for the benchmark.")
             return
-        if not model_names: # Basic check for model_names list
+        if not model_names:
             self.ui_bridge.show_message("warning", "No Model(s) Selected", "Please select at least one model for the benchmark.")
             return
 
-        # For now, backend processes one model. Take the first one.
+        label = f"Benchmark {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        description = f"Benchmark run for file(s): {pdf_to_run.name}"
+        file_paths = [str(pdf_to_run.resolve())]
+        benchmark_id = find_benchmark_by_files(file_paths)
+        if benchmark_id is None:
+            benchmark_id = save_benchmark(label, description, file_paths)
+            if benchmark_id is None:
+                # Handle error: benchmark was not saved
+                print("Failed to save benchmark!")
+                return
+        self._current_benchmark_id = benchmark_id
+        self._current_benchmark_file_paths = file_paths
+
         model_to_run = model_names[0]
-
-        run_label = datetime.now().strftime("%H:%M:%S")
-        current_run_id = self._next_run_id
-        self._next_run_id += 1
-
-        self.active_benchmarks[current_run_id] = {
-            'pdf_name': pdf_to_run.name,
-            'current_prompt': 0,
-            'total_prompts': len(prompts),
+        job_id = self._next_job_id
+        self._next_job_id += 1
+        # Track job as 'unfinished' with initial metadata
+        self.jobs[job_id] = {
+            'status': 'unfinished',
+            'progress': 0.0,
+            'label': label,
+            'file_paths': file_paths,
+            'model': model_to_run,
             'start_time': datetime.now(),
+            'total_prompts': len(prompts),
+            'current_prompt': 0,
             'status_message': 'Initializing...'
         }
-        # Notify UI about the new active benchmark and any other changes
         if hasattr(self.ui_bridge, 'notify_active_benchmarks_updated'):
-             self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
+            self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
 
         self.ui_bridge.clear_console_log()
-        self.ui_bridge.update_console_log(f"[{current_run_id}] Running benchmark with {pdf_to_run.name} at {run_label}...\n")
+        self.ui_bridge.update_console_log(f"[{job_id}] Running benchmark with {pdf_to_run.name}...\n")
         self.ui_bridge.show_console_page()
-        self.ui_bridge.update_status_bar(f"Benchmark [{current_run_id}] {run_label} starting with {pdf_to_run.name}")
+        self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] starting with {pdf_to_run.name}")
 
         self.worker = BenchmarkWorker(
             prompts,
             pdf_to_run,
-            model_to_run, # Pass the first selected model to the worker
-            # Pass current_run_id to callbacks so they know which benchmark to update
-            on_progress=lambda progress_data: self.handle_benchmark_progress(current_run_id, progress_data),
-            on_finished=lambda result_data: self.handle_run_finished(current_run_id, result_data)
+            model_to_run,
+            on_progress=lambda progress_data: self.handle_benchmark_progress(job_id, progress_data),
+            on_finished=lambda result_data: self.handle_run_finished(job_id, result_data)
         )
         self.worker.start()
 
-    def handle_benchmark_progress(self, run_id: int, progress_data: dict):
-        # Assuming progress_data is now like {'current': int, 'total': int, 'message': str}
-        if run_id in self.active_benchmarks:
-            self.active_benchmarks[run_id]['current_prompt'] = progress_data.get('current', 0)
-            self.active_benchmarks[run_id]['status_message'] = progress_data.get('message', '')
-            # Notify UI about the updated active benchmark
+    def handle_benchmark_progress(self, job_id: int, progress_data: dict):
+        # Update job progress generically
+        if job_id in self.jobs:
+            self.jobs[job_id]['current_prompt'] = progress_data.get('current', 0)
+            self.jobs[job_id]['status_message'] = progress_data.get('message', '')
+            total = self.jobs[job_id].get('total_prompts', 1)
+            current = progress_data.get('current', 0)
+            self.jobs[job_id]['progress'] = float(current) / float(total) if total else 0.0
             if hasattr(self.ui_bridge, 'notify_active_benchmarks_updated'):
                 self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
-        
-        # Still send raw message to console log if desired
-        self.ui_bridge.update_console_log(f"[{run_id}] {progress_data.get('message', 'Progress update...')}\n")
+        self.ui_bridge.update_console_log(f"[{job_id}] {progress_data.get('message', 'Progress update...')}\n")
 
-    def handle_run_finished(self, run_id: int, result: dict):
-        print(f"[AppLogic.handle_run_finished RUN_ID: {run_id}] Received result: {result}") # Log the received result
-
-        if not self.worker: # This check might need to be per-run if multiple workers are supported
+    def handle_run_finished(self, job_id: int, result: dict):
+        print(f"[AppLogic.handle_run_finished JOB_ID: {job_id}] Received result: {result}")
+        if not self.worker:
             self.ui_bridge.show_message("critical", "Worker Error", "Benchmark worker not found during finish.")
-            if run_id in self.active_benchmarks:
-                del self.active_benchmarks[run_id]
+            if job_id in self.jobs:
+                self.jobs[job_id]['status'] = 'finished'
                 if hasattr(self.ui_bridge, 'notify_active_benchmarks_updated'):
                     self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
             return
-        
-        pdf_path_from_result = result.get('pdf_path')
-        pdf_path_to_use = None
-        if pdf_path_from_result:
-            pdf_path_to_use = Path(pdf_path_from_result)
-        elif self.worker:
-            pdf_path_to_use = self.worker.pdf_path
-        
-        print(f"[AppLogic.handle_run_finished RUN_ID: {run_id}] PDF path to use for saving: {pdf_path_to_use}")
-
         if result.get("error"):
-            error_message = f"Benchmark [{run_id}] failed for {pdf_path_to_use.name if pdf_path_to_use else 'Unknown PDF'}: {result['error']}"
+            error_message = f"Benchmark [{job_id}] failed: {result['error']}"
             self.ui_bridge.show_message("critical", "Benchmark Error", error_message)
             self.ui_bridge.update_status_bar(error_message, 5000)
             summary_for_console = {
-                'error': result['error'], 
+                'error': result['error'],
                 'message': error_message
             }
-            self.ui_bridge.display_benchmark_summary_in_console(summary_for_console, f"Failed Run {run_id}")
+            self.ui_bridge.display_benchmark_summary_in_console(summary_for_console, f"Failed Run {job_id}")
         else:
-            saved_db_id = None
-            if pdf_path_to_use:
-                try:
-                    print(f"[AppLogic.handle_run_finished RUN_ID: {run_id}] Attempting to save benchmark with pdf_path: {pdf_path_to_use} and result: {result}")
-                    saved_db_id = save_benchmark_run(pdf_path_to_use, result)
-                    print(f"[AppLogic.handle_run_finished RUN_ID: {run_id}] save_benchmark_run returned ID: {saved_db_id}")
-                    if saved_db_id:
-                        self.ui_bridge.update_status_bar(f"Benchmark [{run_id}] run saved with DB ID: {saved_db_id}", 5000)
-                    else:
-                        self.ui_bridge.update_status_bar(f"Benchmark [{run_id}] failed to save to database.", 5000)
-                        self.ui_bridge.show_message("warning", "DB Error", f"Could not save benchmark [{run_id}] results to the database.")
-                except Exception as e:
-                    print(f"[AppLogic.handle_run_finished RUN_ID: {run_id}] Exception during save_benchmark_run: {e}") # Log exception
-                    self.ui_bridge.update_status_bar(f"Error saving benchmark [{run_id}]: {e}", 5000)
-                    self.ui_bridge.show_message("critical", "Save Error", f"Error saving benchmark [{run_id}] to database: {e}")
+            benchmark_id = self._current_benchmark_id
+            model_name = result.get('model_name', 'unknown')
+            report = f"Mean score: {result.get('mean_score', 'N/A')}, Items: {result.get('items', 'N/A')}, Time: {result.get('elapsed_s', 'N/A')}s"
+            latency = result.get('elapsed_s', 0.0)
+
+            total_input_tokens = result.get('total_input_tokens', 0)
+            total_output_tokens = result.get('total_output_tokens', 0)
+            total_tokens_overall = result.get('total_tokens', 0) # This is total_input + total_output from runner
+
+            run_id = save_benchmark_run(benchmark_id, model_name, report, latency, total_input_tokens, total_output_tokens, total_tokens_overall)
+
+            if run_id:
+                prompts_data = result.get('prompts_data', [])
+                for p in prompts_data:
+                    prompt = p.get('prompt_text', '')
+                    answer = p.get('expected_answer', '')
+                    response = p.get('actual_answer', '')
+                    score = str(p.get('score', ''))
+                    latency_val = p.get('latency_ms', 0.0)
+
+                    input_tokens_prompt = p.get('input_tokens', 0)
+                    output_tokens_prompt = p.get('output_tokens', 0)
+
+                    save_benchmark_prompt(run_id, prompt, answer, response, score, latency_val, input_tokens_prompt, output_tokens_prompt)
+
+                self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] run saved with DB ID: {run_id}", 5000)
             else:
-                print(f"[AppLogic.handle_run_finished RUN_ID: {run_id}] PDF path was None. Cannot save.") # Log if PDF path is None
-                self.ui_bridge.update_status_bar(f"Error: PDF path not found for benchmark [{run_id}], cannot save.", 5000)
-                self.ui_bridge.show_message("critical", "Save Error", f"Critical error: PDF path not found for benchmark [{run_id}], not saved.")
-
+                self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] failed to save to database.", 5000)
+                self.ui_bridge.show_message("warning", "DB Error", f"Could not save benchmark [{job_id}] results to the database.")
             summary_result_for_console = result.copy()
-            self.ui_bridge.display_benchmark_summary_in_console(summary_result_for_console, f"Run {run_id} (DB ID: {saved_db_id})")
-            self.ui_bridge.update_status_bar(f"Benchmark [{run_id}] completed.", 5000)
-
-        # Clean up from active_benchmarks
-        if run_id in self.active_benchmarks:
-            del self.active_benchmarks[run_id]
+            self.ui_bridge.display_benchmark_summary_in_console(summary_result_for_console, f"Run {job_id} (DB ID: {run_id})")
+            self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] completed.", 5000)
+        # Mark job as finished
+        if job_id in self.jobs:
+            self.jobs[job_id]['status'] = 'finished'
             if hasattr(self.ui_bridge, 'notify_active_benchmarks_updated'):
                 self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
-        
-        # Potentially switch back to home page or refresh home page view
-        # self.ui_bridge.show_home_page() 
 
     def get_active_benchmarks_info(self) -> dict:
-        return self.active_benchmarks.copy() # Return a copy
+        # Return only unfinished jobs for UI display
+        return {jid: data for jid, data in self.jobs.items() if data['status'] == 'unfinished'}
 
     # @Slot(object) # Slot decorator removed
     def request_display_benchmark_details(self, benchmark_id): # Renamed, AppLogic requests

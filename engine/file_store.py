@@ -2,11 +2,15 @@ import sqlite3
 import hashlib
 from pathlib import Path
 import datetime
+import json
 
 DB_NAME = "eotm_file_store.sqlite"
 TABLE_NAME = "openai_file_map"
 BENCHMARKS_TABLE_NAME = "benchmarks"
+BENCHMARK_RUNS_TABLE_NAME = "benchmark_runs"
 BENCHMARK_PROMPTS_TABLE_NAME = "benchmark_prompts"
+SCORING_CONFIGS_TABLE_NAME = "scoring_configs"
+BENCHMARK_REPORTS_TABLE_NAME = "benchmark_reports"
 
 def init_db(db_path: Path = Path.cwd()):
     """Initializes the SQLite database and creates tables if they don't exist."""
@@ -30,15 +34,33 @@ def init_db(db_path: Path = Path.cwd()):
         CREATE TABLE IF NOT EXISTS {BENCHMARKS_TABLE_NAME} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
-            pdf_path TEXT NOT NULL,
-            pdf_hash TEXT,
-            model_name TEXT,
-            mean_score REAL,
-            total_items INTEGER,
-            elapsed_seconds REAL,
-            total_prompt_tokens INTEGER,
-            total_completion_tokens INTEGER,
-            total_tokens INTEGER
+            label TEXT,
+            description TEXT
+        )
+    ''')
+
+    cursor.execute(f'''
+        CREATE TABLE IF NOT EXISTS benchmark_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            benchmark_id INTEGER NOT NULL,
+            file_path TEXT NOT NULL,
+            FOREIGN KEY (benchmark_id) REFERENCES {BENCHMARKS_TABLE_NAME}(id)
+        )
+    ''')
+
+    # Benchmark Runs Table
+    cursor.execute(f'''
+        CREATE TABLE IF NOT EXISTS {BENCHMARK_RUNS_TABLE_NAME} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            benchmark_id INTEGER NOT NULL,
+            model_name TEXT NOT NULL,
+            report TEXT,
+            latency REAL,
+            created_at TEXT NOT NULL,
+            total_input_tokens INTEGER DEFAULT 0,
+            total_output_tokens INTEGER DEFAULT 0,
+            total_tokens INTEGER DEFAULT 0,
+            FOREIGN KEY (benchmark_id) REFERENCES {BENCHMARKS_TABLE_NAME}(id)
         )
     ''')
 
@@ -46,15 +68,37 @@ def init_db(db_path: Path = Path.cwd()):
     cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS {BENCHMARK_PROMPTS_TABLE_NAME} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            benchmark_run_id INTEGER NOT NULL,
+            prompt TEXT,
+            answer TEXT,
+            response TEXT,
+            score TEXT,
+            latency REAL,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            scoring_config_id INTEGER,
+            FOREIGN KEY (benchmark_run_id) REFERENCES {BENCHMARK_RUNS_TABLE_NAME}(id),
+            FOREIGN KEY (scoring_config_id) REFERENCES {SCORING_CONFIGS_TABLE_NAME}(id)
+        )
+    ''')
+
+    # Scoring Configs Table
+    cursor.execute(f'''
+        CREATE TABLE IF NOT EXISTS {SCORING_CONFIGS_TABLE_NAME} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            config TEXT -- JSON or code (VBA, Python, etc.)
+        )
+    ''')
+
+    # Benchmark Reports Table (for cross-model analysis)
+    cursor.execute(f'''
+        CREATE TABLE IF NOT EXISTS {BENCHMARK_REPORTS_TABLE_NAME} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             benchmark_id INTEGER NOT NULL,
-            prompt_text TEXT,
-            expected_answer TEXT,
-            actual_answer TEXT,
-            score REAL,
-            prompt_length_chars INTEGER,
-            latency_ms INTEGER,
-            prompt_tokens INTEGER,
-            completion_tokens INTEGER,
+            compared_models TEXT, -- JSON array of model names
+            report TEXT,
+            created_at TEXT,
             FOREIGN KEY (benchmark_id) REFERENCES {BENCHMARKS_TABLE_NAME}(id)
         )
     ''')
@@ -77,6 +121,7 @@ def _calculate_pdf_hash(pdf_path: Path) -> str:
     except Exception as e:
         print(f"Error calculating hash for {pdf_path}: {e}")
         return "" # Or raise error
+    # Note: No database connection is used here, so nothing to close in finally block.
 
 def add_file_mapping(pdf_path: Path, openai_file_id: str, db_path: Path = Path.cwd()):
     """Adds or updates a mapping between a PDF's hash and its OpenAI file ID."""
@@ -135,69 +180,140 @@ def get_openai_file_id(pdf_path: Path, db_path: Path = Path.cwd()) -> str | None
     finally:
         conn.close()
 
-def save_benchmark_run(pdf_path: Path, result_dict: dict, db_path: Path = Path.cwd()) -> int | None:
-    """Saves a benchmark run and its associated prompts to the database.
-    Returns the ID of the saved benchmark run, or None if an error occurs.
-    """
-    pdf_hash = _calculate_pdf_hash(pdf_path)
-    if not pdf_hash:
-        print(f"Skipping benchmark save for {pdf_path.name} due to hashing error.")
-        # Allow saving even if hash fails for some reason, pdf_path is still useful
-        # return None 
-
+def save_benchmark(label: str, description: str, file_paths: list[str], db_path: Path = Path.cwd()) -> int | None:
+    """Saves a new benchmark and its associated files, returns the benchmark ID."""
     db_file = db_path / DB_NAME
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
-    run_timestamp = datetime.datetime.now().isoformat()
-
+    timestamp = datetime.datetime.now().isoformat()
     try:
         cursor.execute(f'''
-            INSERT INTO {BENCHMARKS_TABLE_NAME} 
-            (timestamp, pdf_path, pdf_hash, model_name, mean_score, total_items, elapsed_seconds, total_prompt_tokens, total_completion_tokens, total_tokens)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            run_timestamp,
-            str(pdf_path.resolve()),
-            pdf_hash,
-            result_dict.get('model_name', 'unknown'),
-            result_dict.get('mean_score'),
-            result_dict.get('items'),
-            result_dict.get('elapsed_s'),
-            result_dict.get('total_prompt_tokens'),
-            result_dict.get('total_completion_tokens'),
-            result_dict.get('total_tokens')
-        ))
+            INSERT INTO {BENCHMARKS_TABLE_NAME} (timestamp, label, description)
+            VALUES (?, ?, ?)
+        ''', (timestamp, label, description))
         benchmark_id = cursor.lastrowid
+        # Save files in benchmark_files table
+        for file_path in file_paths:
+            cursor.execute('''
+                INSERT INTO benchmark_files (benchmark_id, file_path)
+                VALUES (?, ?)
+            ''', (benchmark_id, file_path))
         conn.commit()
-
-        if benchmark_id and 'prompts_data' in result_dict:
-            prompts_to_save = []
-            for p_data in result_dict['prompts_data']:
-                prompts_to_save.append((
-                    benchmark_id,
-                    p_data.get('prompt_text'),
-                    p_data.get('expected_answer'),
-                    p_data.get('actual_answer'),
-                    p_data.get('score'),
-                    p_data.get('prompt_length_chars'),
-                    p_data.get('latency_ms'),
-                    p_data.get('prompt_tokens'),
-                    p_data.get('completion_tokens')
-                ))
-            
-            if prompts_to_save:
-                cursor.executemany(f'''
-                    INSERT INTO {BENCHMARK_PROMPTS_TABLE_NAME}
-                    (benchmark_id, prompt_text, expected_answer, actual_answer, score, prompt_length_chars, latency_ms, prompt_tokens, completion_tokens)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', prompts_to_save)
-                conn.commit()
-        
-        print(f"Saved benchmark run ID {benchmark_id} for PDF {pdf_path.name}")
         return benchmark_id
     except sqlite3.Error as e:
-        print(f"SQLite error when saving benchmark run for {pdf_path.name}: {e}")
-        conn.rollback() # Rollback in case of error during prompts insertion
+        print(f"SQLite error when saving benchmark: {e}")
+        return None
+    finally:
+        conn.close()
+
+def add_benchmark_file(benchmark_id: int, file_path: str, db_path: Path = Path.cwd()) -> int | None:
+    """Adds a file to a benchmark."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            INSERT INTO benchmark_files (benchmark_id, file_path)
+            VALUES (?, ?)
+        ''', (benchmark_id, file_path))
+        file_id = cursor.lastrowid
+        conn.commit()
+        return file_id
+    except sqlite3.Error as e:
+        print(f"SQLite error when adding file to benchmark: {e}")
+        return None
+    finally:
+        conn.close()
+
+def get_benchmark_files(benchmark_id: int, db_path: Path = Path.cwd()) -> list[str]:
+    """Returns a list of file paths for a given benchmark."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            SELECT file_path FROM benchmark_files WHERE benchmark_id = ?
+        ''', (benchmark_id,))
+        rows = cursor.fetchall()
+        return [row[0] for row in rows]
+    except sqlite3.Error as e:
+        print(f"SQLite error when loading files for benchmark {benchmark_id}: {e}")
+        return []
+    finally:
+        conn.close()
+
+def save_benchmark_run(benchmark_id: int, model_name: str, report: str, latency: float, total_input_tokens: int, total_output_tokens: int, total_tokens: int, db_path: Path = Path.cwd()) -> int | None:
+    """Saves a benchmark run and returns its ID."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    created_at_ts = datetime.datetime.now().isoformat()
+    try:
+        cursor.execute(f'''
+            INSERT INTO {BENCHMARK_RUNS_TABLE_NAME} (benchmark_id, model_name, report, latency, created_at, total_input_tokens, total_output_tokens, total_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (benchmark_id, model_name, report, latency, created_at_ts, total_input_tokens, total_output_tokens, total_tokens))
+        run_id = cursor.lastrowid
+        conn.commit()
+        return run_id
+    except sqlite3.Error as e:
+        print(f"SQLite error when saving benchmark run: {e}")
+        return None
+    finally:
+        conn.close()
+
+def save_benchmark_prompt(benchmark_run_id: int, prompt: str, answer: str, response: str, score: str, latency: float, input_tokens: int, output_tokens: int, scoring_config_id: int | None = None, db_path: Path = Path.cwd()) -> int | None:
+    """Saves a prompt result for a benchmark run."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(f'''
+            INSERT INTO {BENCHMARK_PROMPTS_TABLE_NAME} (benchmark_run_id, prompt, answer, response, score, latency, input_tokens, output_tokens, scoring_config_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (benchmark_run_id, prompt, answer, response, score, latency, input_tokens, output_tokens, scoring_config_id))
+        prompt_id = cursor.lastrowid
+        conn.commit()
+        return prompt_id
+    except sqlite3.Error as e:
+        print(f"SQLite error when saving benchmark prompt: {e}")
+        return None
+    finally:
+        conn.close()
+
+def save_scoring_config(name: str, config: str, db_path: Path = Path.cwd()) -> int | None:
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(f'''
+            INSERT INTO {SCORING_CONFIGS_TABLE_NAME} (name, config)
+            VALUES (?, ?)
+        ''', (name, config))
+        config_id = cursor.lastrowid
+        conn.commit()
+        return config_id
+    except sqlite3.Error as e:
+        print(f"SQLite error when saving scoring config: {e}")
+        return None
+    finally:
+        conn.close()
+
+def save_benchmark_report(benchmark_id: int, compared_models: list[str], report: str, db_path: Path = Path.cwd()) -> int | None:
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    created_at = datetime.datetime.now().isoformat()
+    try:
+        cursor.execute(f'''
+            INSERT INTO {BENCHMARK_REPORTS_TABLE_NAME} (benchmark_id, compared_models, report, created_at)
+            VALUES (?, ?, ?, ?)
+        ''', (benchmark_id, json.dumps(compared_models), report, created_at))
+        report_id = cursor.lastrowid
+        conn.commit()
+        return report_id
+    except sqlite3.Error as e:
+        print(f"SQLite error when saving benchmark report: {e}")
         return None
     finally:
         conn.close()
@@ -211,14 +327,43 @@ def load_all_benchmark_runs(db_path: Path = Path.cwd()) -> list[dict]:
     runs = []
     try:
         cursor.execute(f'''
-            SELECT id, timestamp, pdf_path, model_name, mean_score, total_items, elapsed_seconds,
-                   total_prompt_tokens, total_completion_tokens, total_tokens
-            FROM {BENCHMARKS_TABLE_NAME}
-            ORDER BY timestamp DESC
+            SELECT 
+                b.id as benchmark_id, 
+                b.timestamp as benchmark_timestamp, 
+                b.label as benchmark_label,
+                (SELECT file_path FROM benchmark_files bf WHERE bf.benchmark_id = b.id LIMIT 1) as pdf_path, 
+                br.model_name, 
+                br.report, 
+                br.latency as elapsed_seconds,
+                br.total_input_tokens, 
+                br.total_output_tokens, 
+                br.total_tokens,
+                br.id as run_id,
+                br.created_at as run_timestamp
+            FROM {BENCHMARK_RUNS_TABLE_NAME} br
+            JOIN {BENCHMARKS_TABLE_NAME} b ON br.benchmark_id = b.id
+            ORDER BY br.created_at DESC
         ''')
         rows = cursor.fetchall()
-        for row in rows:
-            runs.append(dict(row))
+        for row_data in rows:
+            run_dict = dict(row_data)
+            # Attempt to parse mean_score and total_items from report string for compatibility
+            # This is brittle; ideally, these would be separate columns in BENCHMARK_RUNS_TABLE_NAME
+            run_dict['mean_score'] = None
+            run_dict['total_items'] = None
+            if run_dict.get('report'):
+                try:
+                    report_str = run_dict['report']
+                    if "Mean score:" in report_str and "Items:" in report_str:
+                        parts = report_str.split(',')
+                        for part in parts:
+                            if "Mean score:" in part:
+                                run_dict['mean_score'] = float(part.split(':')[1].strip())
+                            if "Items:" in part:
+                                run_dict['total_items'] = int(part.split(':')[1].split(',')[0].strip())
+                except Exception:
+                    pass # Ignore parsing errors, fields will remain None
+            runs.append(run_dict)
         print(f"Loaded {len(runs)} benchmark runs from DB.")
     except sqlite3.Error as e:
         print(f"SQLite error when loading benchmark runs: {e}")
@@ -227,41 +372,178 @@ def load_all_benchmark_runs(db_path: Path = Path.cwd()) -> list[dict]:
     return runs
 
 def load_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> dict | None:
-    """Loads full details for a specific benchmark run, including all prompts."""
+    """Loads details for a specific benchmark, including its most recent run and that run's prompts."""
     db_file = db_path / DB_NAME
     conn = sqlite3.connect(db_file)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     details = None
     try:
+        # 1. Fetch benchmark definition
         cursor.execute(f'''
-            SELECT id, timestamp, pdf_path, model_name, mean_score, total_items, elapsed_seconds,
-                   total_prompt_tokens, total_completion_tokens, total_tokens
+            SELECT id, timestamp, label, description
             FROM {BENCHMARKS_TABLE_NAME}
             WHERE id = ?
+        ''', (benchmark_id,))
+        benchmark_info = cursor.fetchone()
+
+        if not benchmark_info:
+            print(f"No benchmark found with ID {benchmark_id}")
+            return None
+        
+        details = dict(benchmark_info)
+
+        # 2. Fetch associated file paths
+        cursor.execute('''
+            SELECT file_path FROM benchmark_files WHERE benchmark_id = ?
+        ''', (benchmark_id,))
+        file_rows = cursor.fetchall()
+        details['file_paths'] = [f['file_path'] for f in file_rows]
+        # For UI compatibility, provide pdf_path as the first file if available
+        details['pdf_path'] = details['file_paths'][0] if details['file_paths'] else None
+
+
+        # 3. Fetch the most recent benchmark run for this benchmark
+        cursor.execute(f'''
+            SELECT id AS run_id, model_name, report, latency, created_at AS run_timestamp
+            FROM {BENCHMARK_RUNS_TABLE_NAME}
+            WHERE benchmark_id = ?
+            ORDER BY created_at DESC 
+            LIMIT 1
         ''', (benchmark_id,))
         run_info = cursor.fetchone()
 
         if run_info:
-            details = dict(run_info)
+            details.update(dict(run_info)) # Add run details to the main details dict
+            details['elapsed_seconds'] = run_info['latency'] # For UI compatibility
+            
+            # Parse report for mean_score, total_items if possible (example)
+            # This is a placeholder - actual parsing depends on report structure
+            # For now, UI will show N/A if these are not directly in details
+            # A better approach would be to store these explicitly in benchmark_runs if needed often
+            # Or have the report be a JSON string.
+            if isinstance(run_info['report'], str):
+                try:
+                    # Example: "Mean score: 0.85, Items: 10, Time: 5.2s"
+                    if "Mean score:" in run_info['report'] and "Items:" in run_info['report']:
+                        parts = run_info['report'].split(',')
+                        for part in parts:
+                            if "Mean score:" in part:
+                                details['mean_score'] = float(part.split(':')[1].strip())
+                            if "Items:" in part:
+                                details['total_items'] = int(part.split(':')[1].split(',')[0].strip())
+                except Exception as e:
+                    print(f"Could not parse mean_score/total_items from report string: {e}")
+
+
+            # 4. Fetch prompts for this specific run
             cursor.execute(f'''
-                SELECT prompt_text, expected_answer, actual_answer, score,
-                       prompt_length_chars, latency_ms, prompt_tokens, completion_tokens
+                SELECT prompt, answer AS expected_answer, response AS actual_answer, score, latency AS prompt_latency, input_tokens, output_tokens
                 FROM {BENCHMARK_PROMPTS_TABLE_NAME}
-                WHERE benchmark_id = ?
+                WHERE benchmark_run_id = ?
                 ORDER BY id ASC
-            ''', (benchmark_id,))
+            ''', (run_info['run_id'],))
             prompts = cursor.fetchall()
-            details['prompts_data'] = [dict(p) for p in prompts]
-            print(f"Loaded details for benchmark ID {benchmark_id}")
+            # Rename 'prompt' to 'prompt_text' for UI compatibility
+            details['prompts_data'] = [{'prompt_text': p['prompt'], **{k: p[k] for k in p.keys() if k != 'prompt'}} for p in prompts]
+            
+            print(f"Loaded details for benchmark ID {benchmark_id}, including its most recent run ID {run_info['run_id']}")
         else:
-            print(f"No benchmark found with ID {benchmark_id}")
+            details['prompts_data'] = [] # No runs, so no prompts
+            print(f"Benchmark ID {benchmark_id} has no runs.")
 
     except sqlite3.Error as e:
         print(f"SQLite error when loading benchmark details for ID {benchmark_id}: {e}")
+        return None # Return None on error
     finally:
         conn.close()
     return details
+
+def load_all_benchmarks_with_models(db_path: Path = Path.cwd()) -> list[dict]:
+    """Loads all benchmarks, each with a list of associated model names and files."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    benchmarks = []
+    try:
+        cursor.execute(f'''
+            SELECT id, timestamp, label, description
+            FROM {BENCHMARKS_TABLE_NAME}
+            ORDER BY timestamp DESC
+        ''')
+        rows = cursor.fetchall()
+        for row in rows:
+            benchmark = dict(row)
+            cursor.execute(f'''
+                SELECT DISTINCT model_name FROM {BENCHMARK_RUNS_TABLE_NAME}
+                WHERE benchmark_id = ?
+            ''', (row['id'],))
+            model_rows = cursor.fetchall()
+            model_names = [m['model_name'] for m in model_rows]
+            benchmark['model_names'] = model_names
+            cursor.execute('''
+                SELECT file_path FROM benchmark_files WHERE benchmark_id = ?
+            ''', (row['id'],))
+            file_rows = cursor.fetchall()
+            benchmark['file_paths'] = [f['file_path'] for f in file_rows]
+            benchmarks.append(benchmark)
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e).lower():
+            # This can happen if the database is new and init_db hasn't run or completed yet.
+            # Silently return an empty list, init_db will create tables.
+            pass
+        else:
+            # For other operational errors, print them as they are unexpected.
+            print(f"SQLite operational error when loading benchmarks with models: {e}")
+    except sqlite3.Error as e:
+        # For other, more general SQLite errors.
+        print(f"SQLite error when loading benchmarks with models: {e}")
+    finally:
+        if conn:
+            conn.close()
+    return benchmarks
+
+def find_benchmark_by_files(file_paths: list[str], db_path: Path = Path.cwd()) -> int | None:
+    """Returns the benchmark ID for a given set of file paths, or None if not found. (Matches on first file for now)"""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            SELECT benchmark_id FROM benchmark_files WHERE file_path = ?
+        ''', (file_paths[0],))
+        row = cursor.fetchone()
+        if row:
+            return row[0]
+        return None
+    except sqlite3.Error as e:
+        print(f"SQLite error when searching for benchmark by files: {e}")
+        return None
+    finally:
+        conn.close()
+
+def delete_benchmark(benchmark_id: int, db_path: Path = Path.cwd()) -> bool:
+    """Deletes a benchmark and all associated files, runs, and prompts."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    try:
+        # Delete prompts
+        cursor.execute(f'''DELETE FROM benchmark_prompts WHERE benchmark_run_id IN (SELECT id FROM benchmark_runs WHERE benchmark_id = ?)''', (benchmark_id,))
+        # Delete runs
+        cursor.execute(f'''DELETE FROM benchmark_runs WHERE benchmark_id = ?''', (benchmark_id,))
+        # Delete files
+        cursor.execute(f'''DELETE FROM benchmark_files WHERE benchmark_id = ?''', (benchmark_id,))
+        # Delete the benchmark
+        cursor.execute(f'''DELETE FROM benchmarks WHERE id = ?''', (benchmark_id,))
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        print(f"SQLite error when deleting benchmark {benchmark_id}: {e}")
+        return False
+    finally:
+        conn.close()
 
 # Example usage (optional, for testing)
 if __name__ == '__main__':
@@ -313,12 +595,12 @@ if __name__ == '__main__':
         'mean_score': 0.85,
         'items': 2,
         'elapsed_s': 12.34,
-        'total_prompt_tokens': 100,
-        'total_completion_tokens': 200,
+        'total_input_tokens': 100,
+        'total_output_tokens': 200,
         'total_tokens': 300,
         'prompts_data': [
-            {'prompt_text': "P1", 'expected_answer': "E1", 'actual_answer': "A1", 'score': 1.0, 'prompt_length_chars': 10, 'latency_ms': 50, 'prompt_tokens': 20, 'completion_tokens': 40},
-            {'prompt_text': "P2", 'expected_answer': "E2", 'actual_answer': "A2", 'score': 0.7, 'prompt_length_chars': 8, 'latency_ms': 30, 'prompt_tokens': 15, 'completion_tokens': 25}
+            {'prompt_text': "P1", 'expected_answer': "E1", 'actual_answer': "A1", 'score': 1.0, 'prompt_length_chars': 10, 'latency_ms': 50, 'input_tokens': 20, 'output_tokens': 40},
+            {'prompt_text': "P2", 'expected_answer': "E2", 'actual_answer': "A2", 'score': 0.7, 'prompt_length_chars': 8, 'latency_ms': 30, 'input_tokens': 15, 'output_tokens': 25}
         ]
     }
     saved_run_id = save_benchmark_run(dummy_pdf_path, dummy_result, db_storage_path)

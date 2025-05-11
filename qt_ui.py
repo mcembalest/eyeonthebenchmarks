@@ -6,9 +6,10 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QStackedWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QTableWidget, QTableWidgetItem, QToolBar,
     QStatusBar, QFileDialog, QMessageBox, QTextEdit, QScrollArea,
-    QListWidget, QListWidgetItem, QProgressBar, QComboBox
+    QListWidget, QListWidgetItem, QProgressBar, QComboBox, QGridLayout,
+    QHeaderView
 )
-from PySide6.QtGui import QAction, QFont
+from PySide6.QtGui import QAction, QFont, QPixmap, QIcon
 from PySide6.QtCore import Qt, QThread, Signal
 
 # Import styles
@@ -17,7 +18,7 @@ from ui_styles import APP_STYLESHEET
 # Import database functions - these will be called by the app logic,
 # but UI elements might need to trigger them or display their results.
 # Actual database interaction logic should ideally be in app.py.
-from engine.file_store import load_all_benchmark_runs, load_benchmark_details
+from engine.file_store import load_all_benchmark_runs, load_benchmark_details, load_all_benchmarks_with_models, delete_benchmark
 from engine.models_openai import AVAILABLE_MODELS
 
 # --- Progress signal for real-time updates --------------------------------
@@ -93,83 +94,151 @@ class RunConsoleWidget(QWidget):
 
 # --- Pages ----------------------------------------------------------------
 class HomePage(QWidget):
+    benchmark_selected = Signal(object)  # New signal for selection
     def __init__(self):
         super().__init__()
         self.layout = QVBoxLayout(self)
-        
-        self._active_benchmarks_data: dict = {} # To store current active benchmark data
-        self._progress_bars: dict = {} # To store QProgressBar widgets by run_id
+        self._active_benchmarks_data: dict = {}
+        self._progress_bars: dict = {}
+        self._benchmarks_data: list = []
+        self._view_mode = 'grid'  # or 'table'
+        self._card_refs = []  # To keep references for click events
 
-        # Title for previous runs
-        self.layout.addWidget(QLabel("Previous Benchmark Runs:"))
-        self.previous_runs_list_widget = QListWidget()
-        self.previous_runs_list_widget.setStyleSheet("font-size: 17pt; padding: 10px;")
-        self.layout.addWidget(self.previous_runs_list_widget)
+        # Toggle button
+        self.toggle_btn = QPushButton("Switch to Table View")
+        self.toggle_btn.clicked.connect(self.toggle_view)
+        self.layout.addWidget(self.toggle_btn)
 
-        # Title and list for active runs
-        self.layout.addWidget(QLabel("Active Benchmarks:")) 
+        # Grid view widget
+        self.grid_widget = QWidget()
+        self.grid_layout = QGridLayout(self.grid_widget)
+        self.layout.addWidget(self.grid_widget)
+
+        # Table view widget
+        self.table_widget = QTableWidget()
+        self.table_widget.setColumnCount(5)
+        self.table_widget.setHorizontalHeaderLabels(["Label", "Date", "Models", "Files", "Delete"])
+        self.table_widget.setSortingEnabled(True)
+        self.table_widget.cellClicked.connect(self.handle_table_row_clicked)
+        self.layout.addWidget(self.table_widget)
+        self.table_widget.hide()
+
+        # Active runs section (unchanged)
+        self.layout.addWidget(QLabel("Active Benchmarks:"))
         self.active_runs_list_widget = QListWidget()
-        self.active_runs_list_widget.setStyleSheet("font-size: 17pt; padding: 10px;") # Keep similar style
+        self.active_runs_list_widget.setStyleSheet("font-size: 17pt; padding: 10px;")
         self.layout.addWidget(self.active_runs_list_widget)
-        
         self.refresh_button = QPushButton("🔄 Refresh Lists")
         self.refresh_button.clicked.connect(self.refresh_display)
         self.layout.addWidget(self.refresh_button)
-        
-        self.load_runs_from_db() # Initial load of completed runs
-        # Active runs will be populated by update_active_benchmarks_display
+
+    def toggle_view(self):
+        if self._view_mode == 'grid':
+            self._view_mode = 'table'
+            self.toggle_btn.setText("Switch to Grid View")
+            self.grid_widget.hide()
+            self.table_widget.show()
+        else:
+            self._view_mode = 'grid'
+            self.toggle_btn.setText("Switch to Table View")
+            self.table_widget.hide()
+            self.grid_widget.show()
 
     def refresh_display(self):
-        self.load_runs_from_db() # Reload completed runs
-        # Re-apply current active data to refresh their state (e.g. if UI was out of sync)
-        self.update_active_benchmarks_display(self._active_benchmarks_data) 
+        self.load_runs_from_db()
+        self.update_active_benchmarks_display(self._active_benchmarks_data)
 
     def load_runs_from_db(self):
-        self.previous_runs_list_widget.clear()
-        runs = load_all_benchmark_runs()
-        
-        if not runs:
-            no_runs_item = QListWidgetItem("🧪 No completed experiments yet.")
-            no_runs_item.setFlags(no_runs_item.flags() & ~Qt.ItemIsSelectable)
-            self.previous_runs_list_widget.addItem(no_runs_item)
-            # Do not return here, active runs might still need to be displayed or cleared
-        else:
-            for run in runs:
-                try:
-                    dt_obj = datetime.fromisoformat(run['timestamp'])
-                    formatted_time = dt_obj.strftime("%Y-%m-%d %H:%M:%S")
-                    pdf_name = Path(run['pdf_path']).name
-                    score_info = f"Score: {run['mean_score']:.2f}" if run['mean_score'] is not None else "N/A"
-                    status = f"{formatted_time}  |  PDF: {pdf_name}  |  Items: {run['total_items']}  |  {score_info}  |  Model: {run['model_name']}"
-                    
-                    item = QListWidgetItem(status)
-                    item.setData(Qt.UserRole, run['id']) # Store benchmark ID for selection
-                    self.previous_runs_list_widget.addItem(item)
-                except Exception as e:
-                    print(f"Error formatting run data for display: {e} - Run data: {run}")
-                    error_item = QListWidgetItem(f"Error displaying run: {run.get('id', 'Unknown ID')}")
-                    error_item.setData(Qt.UserRole, run.get('id'))
-                    self.previous_runs_list_widget.addItem(error_item)
-        
-        # Ensure active list is also cleared if no active data (will be repopulated by update_active_benchmarks_display)
-        if not self._active_benchmarks_data:
-            self.active_runs_list_widget.clear()
-            no_active_item = QListWidgetItem("No benchmarks currently running.")
-            no_active_item.setFlags(no_active_item.flags() & ~Qt.ItemIsSelectable)
-            self.active_runs_list_widget.addItem(no_active_item)
+        try:
+            self._benchmarks_data = load_all_benchmarks_with_models()
+        except Exception as e:
+            print(f"Error loading benchmarks: {e}")
+            self._benchmarks_data = []
+        self.populate_grid_view()
+        self.populate_table_view()
+
+    def populate_grid_view(self):
+        # Clear grid
+        for i in reversed(range(self.grid_layout.count())):
+            widget = self.grid_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+        self._card_refs = []
+        # Add cards
+        for idx, bench in enumerate(self._benchmarks_data):
+            card = QWidget()
+            vbox = QVBoxLayout(card)
+            label = QLabel(f"{bench.get('label', bench.get('description', 'No Label'))}")
+            date = QLabel(f"{bench.get('timestamp', '')[:19]}")
+            vbox.addWidget(label)
+            vbox.addWidget(date)
+            # Model icons row
+            hbox = QHBoxLayout()
+            for model in bench.get('model_names', []):
+                icon_path = f"assets/{model}.png"
+                pixmap = QPixmap(icon_path)
+                if pixmap.isNull():
+                    pixmap = QPixmap("assets/icon.png")  # fallback
+                icon_label = QLabel()
+                icon_label.setPixmap(pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                hbox.addWidget(icon_label)
+            vbox.addLayout(hbox)
+            # Delete button
+            del_btn = QPushButton("Delete")
+            del_btn.setStyleSheet("background-color: #dc3545; color: white; font-size: 12pt; padding: 4px 12px; border-radius: 6px;")
+            del_btn.clicked.connect(lambda _, bid=bench.get('id'): self.confirm_delete_benchmark(bid))
+            vbox.addWidget(del_btn)
+            card.mousePressEvent = self._make_card_click_handler(bench.get('id'))
+            self._card_refs.append(card)
+            self.grid_layout.addWidget(card, idx // 3, idx % 3)
+
+    def _make_card_click_handler(self, bench_id):
+        def handler(event):
+            self.benchmark_selected.emit(bench_id)
+        return handler
+
+    def populate_table_view(self):
+        self.table_widget.setRowCount(len(self._benchmarks_data))
+        for row, bench in enumerate(self._benchmarks_data):
+            self.table_widget.setItem(row, 0, QTableWidgetItem(bench.get('label', bench.get('description', 'No Label'))))
+            self.table_widget.setItem(row, 1, QTableWidgetItem(bench.get('timestamp', '')[:19]))
+            # Model icons in a widget
+            model_widget = QWidget()
+            hbox = QHBoxLayout(model_widget)
+            hbox.setContentsMargins(0, 0, 0, 0)
+            for model in bench.get('model_names', []):
+                icon_path = f"assets/{model}.png"
+                pixmap = QPixmap(icon_path)
+                if pixmap.isNull():
+                    pixmap = QPixmap("assets/icon.png")
+                icon_label = QLabel()
+                icon_label.setPixmap(pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                hbox.addWidget(icon_label)
+            self.table_widget.setCellWidget(row, 2, model_widget)
+            # Files
+            files_str = ', '.join([Path(f).name for f in bench.get('file_paths', [])])
+            self.table_widget.setItem(row, 3, QTableWidgetItem(files_str))
+            # Delete button
+            del_btn = QPushButton("Delete")
+            del_btn.setStyleSheet("background-color: #dc3545; color: white; font-size: 12pt; padding: 4px 12px; border-radius: 6px;")
+            del_btn.clicked.connect(lambda _, bid=bench.get('id'): self.confirm_delete_benchmark(bid))
+            self.table_widget.setCellWidget(row, 4, del_btn)
+        self.table_widget.resizeColumnsToContents()
+
+    def handle_table_row_clicked(self, row, col):
+        if 0 <= row < len(self._benchmarks_data):
+            bench_id = self._benchmarks_data[row].get('id')
+            self.benchmark_selected.emit(bench_id)
 
     def update_active_benchmarks_display(self, active_data: dict):
-        print(f"DEBUG: HomePage.update_active_benchmarks_display called with data: {active_data}") # DEBUG
-        self._active_benchmarks_data = active_data # Store the latest data
-        self.active_runs_list_widget.clear() 
-        self._progress_bars.clear() # Clear old progress bar references
-
+        self._active_benchmarks_data = active_data
+        self.active_runs_list_widget.clear()
+        self._progress_bars.clear()
         if not active_data:
             no_active_item = QListWidgetItem("No benchmarks currently running.")
             no_active_item.setFlags(no_active_item.flags() & ~Qt.ItemIsSelectable)
             self.active_runs_list_widget.addItem(no_active_item)
             return
-
         for run_id, data in active_data.items():
             pdf_name = data.get('pdf_name', 'N/A')
             current_prompt = data.get('current_prompt', 0)
@@ -177,31 +246,32 @@ class HomePage(QWidget):
             status_msg = data.get('status_message', 'Running...')
             start_time_dt = data.get('start_time')
             start_time_str = start_time_dt.strftime("%H:%M:%S") if start_time_dt else "N/A"
-
-            item_widget = QWidget() # Custom widget for each item
+            item_widget = QWidget()
             item_layout = QVBoxLayout(item_widget)
-            item_layout.setContentsMargins(5, 5, 5, 5) # Reduce margins
-
-            # Info line
+            item_layout.setContentsMargins(5, 5, 5, 5)
             info_text = f"Run ID: {run_id} | PDF: {pdf_name} | Started: {start_time_str}"
             info_label = QLabel(info_text)
             item_layout.addWidget(info_label)
-
-            # Progress bar
             progress_bar = QProgressBar()
             progress_bar.setRange(0, total_prompts)
             progress_bar.setValue(current_prompt)
             progress_bar.setTextVisible(True)
             progress_bar.setFormat(f"%v/%m ({status_msg[:30]}...)")
             item_layout.addWidget(progress_bar)
-            self._progress_bars[run_id] = progress_bar # Store for potential direct updates
-
+            self._progress_bars[run_id] = progress_bar
             list_item = QListWidgetItem(self.active_runs_list_widget)
             list_item.setSizeHint(item_widget.sizeHint())
             self.active_runs_list_widget.addItem(list_item)
             self.active_runs_list_widget.setItemWidget(list_item, item_widget)
-            # Active items are not selectable to view details while running
             list_item.setFlags(list_item.flags() & ~Qt.ItemIsSelectable)
+
+    def confirm_delete_benchmark(self, benchmark_id):
+        reply = QMessageBox.question(self, "Delete Benchmark", "Are you sure you want to delete this benchmark and all its data?", QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            if delete_benchmark(benchmark_id):
+                self.refresh_display()
+            else:
+                QMessageBox.critical(self, "Delete Failed", "Failed to delete benchmark from database.")
 
 
 class ComposerPage(QWidget):
@@ -209,10 +279,36 @@ class ComposerPage(QWidget):
         super().__init__()
         self.selected_pdf_path: Path | None = None
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Paste or type your test prompts:"))
-        
+        # Central widget for centering and max width
+        central = QWidget(self)
+        central.setObjectName("ComposerCentralWidget")
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(32)
+
+        # --- Main horizontal layout (Prompts left, Model+PDF right) ---
+        main_hbox = QHBoxLayout()
+        main_hbox.setSpacing(32)
+        main_hbox.setContentsMargins(0, 0, 0, 0)
+
+        # --- Prompts Table Card (Left, wide) ---
+        prompts_card = QWidget()
+        prompts_card.setProperty("class", "CardSection")
+        prompts_layout = QVBoxLayout(prompts_card)
+        prompts_layout.setContentsMargins(0, 0, 0, 0)
+        prompts_layout.setSpacing(12)
+        prompts_label = QLabel("Paste or type your test prompts:")
+        prompts_layout.addWidget(prompts_label)
         self.table = QTableWidget(5, 2)
+        self.table.setObjectName("PromptsTable")
+        self.table.setAlternatingRowColors(True)
+        self.table.setMinimumWidth(500)
+        self.table.setMaximumWidth(900)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Interactive)
+        self.table.setColumnWidth(0, 420)
+        self.table.setColumnWidth(1, 220)
         default_rows = [
             ("what year did this piece get written", "2025"),
             ("what is happening faster, decarbonization or electrification", "decarbonization"),
@@ -222,45 +318,78 @@ class ComposerPage(QWidget):
             self.table.setItem(r, 0, QTableWidgetItem(p))
             self.table.setItem(r, 1, QTableWidgetItem(e))
         self.table.setHorizontalHeaderLabels(["Prompt", "Expected" ])
-        layout.addWidget(self.table)
+        prompts_layout.addWidget(self.table)
+        main_hbox.addWidget(prompts_card, stretch=2)
 
-        # Model Selection ListWidget
-        model_selection_layout = QVBoxLayout() # Changed to QVBoxLayout for label and list
-        model_selection_layout.addWidget(QLabel("Select Model(s) for Benchmark:"))
+        # --- Right column: Model Selection + PDF Selection stacked ---
+        right_col = QWidget()
+        right_col_layout = QVBoxLayout(right_col)
+        right_col_layout.setContentsMargins(0, 0, 0, 0)
+        right_col_layout.setSpacing(24)
+
+        # Model Selection Card
+        model_card = QWidget()
+        model_card.setProperty("class", "CardSection")
+        model_layout = QVBoxLayout(model_card)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        model_layout.setSpacing(12)
+        model_label = QLabel("Select Model(s) for Benchmark:")
+        model_layout.addWidget(model_label)
         self.model_list_widget = QListWidget()
-        self.model_list_widget.setMinimumHeight(100) # Give it some initial height
-        self.model_list_widget.setStyleSheet("font-size: 14pt;") # Consistent font size
+        self.model_list_widget.setObjectName("ModelListWidget")
+        self.model_list_widget.setMinimumHeight(100)
         for model_name in AVAILABLE_MODELS:
             item = QListWidgetItem(model_name)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Unchecked)
             self.model_list_widget.addItem(item)
-        # Default check gpt-4o-mini if available
         if "gpt-4o-mini" in AVAILABLE_MODELS:
             for i in range(self.model_list_widget.count()):
                 item = self.model_list_widget.item(i)
                 if item.text() == "gpt-4o-mini":
                     item.setCheckState(Qt.Checked)
                     break
-        model_selection_layout.addWidget(self.model_list_widget)
-        layout.addLayout(model_selection_layout)
+        model_layout.addWidget(self.model_list_widget)
+        right_col_layout.addWidget(model_card)
 
-        pdf_selection_layout = QHBoxLayout()
+        # PDF Selection Card
+        pdf_card = QWidget()
+        pdf_card.setProperty("class", "CardSection")
+        pdf_layout = QHBoxLayout(pdf_card)
+        pdf_layout.setContentsMargins(0, 0, 0, 0)
+        pdf_layout.setSpacing(16)
         self.select_pdf_button = QPushButton("Select PDF for Benchmark")
         self.select_pdf_button.clicked.connect(self.select_pdf_file)
-        pdf_selection_layout.addWidget(self.select_pdf_button)
+        pdf_layout.addWidget(self.select_pdf_button)
         self.selected_pdf_label = QLabel("No PDF selected")
-        self.selected_pdf_label.setStyleSheet("padding-left: 10px; font-style: italic; color: #6c757d;")
-        pdf_selection_layout.addWidget(self.selected_pdf_label)
-        layout.addLayout(pdf_selection_layout)
-        
+        self.selected_pdf_label.setObjectName("SelectedPDFLabel")
+        pdf_layout.addWidget(self.selected_pdf_label)
+        pdf_layout.addStretch(1)
+        right_col_layout.addWidget(pdf_card)
+        right_col_layout.addStretch(1)
+        main_hbox.addWidget(right_col, stretch=1)
+
+        central_layout.addLayout(main_hbox)
+
+        # --- Actions Card (centered below) ---
+        actions_card = QWidget()
+        actions_card.setProperty("class", "CardSection")
+        actions_layout = QVBoxLayout(actions_card)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(16)
         self.run_btn = QPushButton("Run Benchmark ▸")
         self.run_btn.setStyleSheet("font-size: 15pt; padding: 12px 20px;")
-        layout.addWidget(self.run_btn)
-
+        actions_layout.addWidget(self.run_btn, alignment=Qt.AlignHCenter)
         self.return_home_btn = QPushButton("Return to Home")
         self.return_home_btn.setObjectName("returnButton")
-        layout.addWidget(self.return_home_btn)
+        actions_layout.addWidget(self.return_home_btn, alignment=Qt.AlignHCenter)
+        central_layout.addWidget(actions_card, alignment=Qt.AlignHCenter)
+
+        # Set the central layout
+        outer_layout = QVBoxLayout(self)
+        outer_layout.addWidget(central, alignment=Qt.AlignHCenter | Qt.AlignTop)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
 
     def select_pdf_file(self):
         start_dir = str(Path.cwd() / "files")
@@ -309,6 +438,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self.setWindowIcon(QIcon('assets/icon.png'))
         self.setWindowTitle("EOTMBench")
         self.resize(900, 600)
 
@@ -334,13 +464,8 @@ class MainWindow(QMainWindow):
         # Connect signals from composer and home page
         self.composer.run_btn.clicked.connect(self._emit_run_benchmark_request)
         self.composer.return_home_btn.clicked.connect(self.show_home_requested.emit)
-        
-        # Connect itemClicked for the list of previous (completed) runs
-        self.home.previous_runs_list_widget.itemClicked.connect(self._emit_benchmark_selected)
-        
-        # Connect the new signal for active benchmark updates to HomePage's slot
+        self.home.benchmark_selected.connect(self._emit_benchmark_selected)
         self.active_benchmarks_changed.connect(self.home.update_active_benchmarks_display)
-        
         if self.console.return_btn:
             self.console.return_btn.setObjectName("returnButton")
             self.console.return_btn.clicked.connect(self.show_home_requested.emit)
@@ -367,8 +492,7 @@ class MainWindow(QMainWindow):
             return
         self.run_benchmark_requested.emit(prompts, pdf_path, selected_models) # Emit with list of models
 
-    def _emit_benchmark_selected(self, item: QListWidgetItem):
-        benchmark_id = item.data(Qt.UserRole)
+    def _emit_benchmark_selected(self, benchmark_id: int):
         if benchmark_id is not None:
             self.benchmark_selected.emit(benchmark_id)
         else:

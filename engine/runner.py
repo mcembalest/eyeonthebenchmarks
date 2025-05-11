@@ -204,8 +204,8 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
         scores = []
         answers = []
         individual_prompt_data = [] # To store latency and token info per prompt
-        total_prompt_tokens_run = 0
-        total_completion_tokens_run = 0
+        total_input_tokens_run = 0
+        total_output_tokens_run = 0
 
         if not prompts:
             emit_progress({"message": "Warning: No prompts provided for benchmark."})
@@ -227,13 +227,13 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
                 emit_progress({"current": i + 1, "total": total_prompts, "message": progress_message})
                 
                 prompt_t0 = perf_counter()
-                ans, prompt_tokens, completion_tokens = openai_ask(openai_file_id, prompt_text, model_name)
+                ans, input_tokens_val, output_tokens_val = openai_ask(openai_file_id, prompt_text, model_name)
                 prompt_t1 = perf_counter()
                 individual_latency_ms = round((prompt_t1 - prompt_t0) * 1000)
 
                 answers.append(ans)
-                total_prompt_tokens_run += prompt_tokens
-                total_completion_tokens_run += completion_tokens
+                total_input_tokens_run += input_tokens_val
+                total_output_tokens_run += output_tokens_val
                 
                 # Score the answer
                 ok = simple_score(ans, expected_text)
@@ -242,8 +242,8 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
                     "prompt_text": prompt_text,
                     "prompt_length_chars": prompt_length_chars,
                     "latency_ms": individual_latency_ms,
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
+                    "input_tokens": input_tokens_val,
+                    "output_tokens": output_tokens_val,
                     "actual_answer": ans, # Store full answer here for prompts_data later
                     "expected_answer": expected_text,
                     "score": ok
@@ -261,8 +261,8 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
                     "prompt_text": prompt_text,
                     "prompt_length_chars": prompt_length_chars,
                     "latency_ms": 0, # Error case
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
                     "actual_answer": f"ERROR: {str(e)}",
                     "expected_answer": expected_text,
                     "score": 0
@@ -271,7 +271,7 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
         # 3. summarise
         mean_score_val = round(sum(scores) / len(scores), 3) if scores else 0.0
         elapsed = round(perf_counter() - t0, 2)
-        total_tokens_run = total_prompt_tokens_run + total_completion_tokens_run
+        total_tokens_run = total_input_tokens_run + total_output_tokens_run
         
         emit_progress({"message": f"Benchmark complete! Mean score: {mean_score_val}, Time: {elapsed}s, Total Tokens: {total_tokens_run}"})
 
@@ -283,8 +283,8 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
                 "actual_answer": ipd["actual_answer"],
                 "score": ipd["score"],
                 # Include per-prompt token and latency data if needed for detailed prompt saving (optional here, main is in `latency_details`)
-                "prompt_tokens": ipd["prompt_tokens"],
-                "completion_tokens": ipd["completion_tokens"],
+                "input_tokens": ipd["input_tokens"],
+                "output_tokens": ipd["output_tokens"],
                 "latency_ms": ipd["latency_ms"],
                 "prompt_length_chars": ipd["prompt_length_chars"]
             } for ipd in individual_prompt_data
@@ -299,8 +299,8 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
             # "answers": answers, # Redundant due to prompts_data
             "prompts_data": result_prompts_data, 
             "pdf_path": str(pdf_path),
-            "total_prompt_tokens": total_prompt_tokens_run,
-            "total_completion_tokens": total_completion_tokens_run,
+            "total_input_tokens": total_input_tokens_run,
+            "total_output_tokens": total_output_tokens_run,
             "total_tokens": total_tokens_run,
             # "latency_details": individual_prompt_data # This contains all per-prompt info, will be used for new DB table
             # The `prompts_data` now also contains this per-prompt detail, so `latency_details` might be redundant at this level.

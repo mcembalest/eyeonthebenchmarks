@@ -1,72 +1,77 @@
 APP_STYLESHEET = '''
 QWidget {
-    /* Default font for all widgets, can be overridden */
-    font-family: "Segoe UI", Frutiger, "Frutiger Linotype", "Dejavu Sans", "Helvetica Neue", Arial, sans-serif;
-    color: #333; /* Dark gray for text for better readability */
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    color: #222; /* Nearly black for primary text */
+    background-color: #f4f5f7;
 }
 
 QMainWindow {
-    background-color: #f8f9fa; /* Light, neutral background */
+    background-color: #f4f5f7;
 }
 
 QLabel {
-    font-size: 17pt; /* Slightly smaller default, can be overridden */
-    color: #454545; /* Slightly softer than pure black */
+    font-size: 15pt;
+    color: #2d3a4a; /* Deep navy for headers */
 }
 
 QPushButton {
-    font-size: 17pt;
-    padding: 10px 18px;
-    background-color: #007bff; /* A modern blue */
-    color: white;
-    border: none; /* Remove default border */
-    border-radius: 5px; /* Rounded corners */
-    font-weight: bold;
+    font-size: 15pt;
+    padding: 10px 22px;
+    background-color: #3a4657; /* Slate blue/gray */
+    color: #fff;
+    border: 1px solid #2d3a4a;
+    border-radius: 6px;
+    font-weight: 500;
+    margin: 6px 0;
 }
-
 QPushButton:hover {
-    background-color: #0056b3; /* Darker blue on hover */
+    background-color: #232b36;
+    border-color: #232b36;
 }
-
 QPushButton:pressed {
-    background-color: #004085; /* Even darker blue when pressed */
+    background-color: #181d23;
+    border-color: #181d23;
 }
 
 QTextEdit, QTableWidget {
-    font-size: 17pt;
-    border: 1px solid #dee2e6; /* Light gray border */
+    font-size: 15pt;
+    border: 1px solid #c2c6cc;
     border-radius: 4px;
-    background-color: #ffffff; /* White background for text areas */
+    background-color: #fcfcfd;
+    color: #222;
 }
 
 QTableWidget::item {
-    padding: 8px; /* More padding for table cells */
-    border-bottom: 1px solid #f1f1f1; /* Separator lines for rows */
+    padding: 7px;
+    border-bottom: 1px solid #e0e3e8;
 }
-
+QTableWidget::item:alternate {
+    background: #f0f1f3;
+}
 QTableWidget::item:selected {
-    background-color: #e9ecef; /* Subtle selection color */
-    color: #000;
+    background-color: #e0e3e8;
+    color: #2d3a4a;
 }
 
 QHeaderView::section {
-    background-color: #e9ecef; /* Light gray for headers */
-    padding: 8px;
-    border: none; /* Remove default border */
-    border-bottom: 1px solid #ced4da; /* Bottom border for header */
-    font-size: 17pt;
+    background-color: #e0e3e8;
+    color: #2d3a4a;
+    font-size: 15pt;
     font-weight: bold;
+    border: none;
+    border-bottom: 1px solid #c2c6cc;
+    padding: 8px 6px;
 }
 
 QToolBar {
-    background-color: #e9ecef; /* Consistent with header */
+    background-color: #e0e3e8;
     border: none;
     padding: 5px;
 }
 
 QStatusBar {
-    background-color: #e9ecef;
-    color: #555;
+    background-color: #e0e3e8;
+    color: #5a5a5a;
     font-size: 12pt;
 }
 
@@ -74,10 +79,11 @@ QScrollArea {
     border: none;
 }
 
-/* Style for the 'Return to Home' button if it's specifically named */
 #returnButton {
-    background-color: #6c757d; /* A secondary, muted color */
-    font-weight: normal;
+    background-color: #6c757d;
+    color: #fff;
+    font-weight: 400;
+    border: 1px solid #5a6268;
 }
 #returnButton:hover {
     background-color: #5a6268;
@@ -86,77 +92,133 @@ QScrollArea {
     background-color: #545b62;
 }
 
-/* Styling for QListWidget */
 QListWidget {
-    font-size: 14pt; /* Slightly smaller for list items */
-    border: 1px solid #dee2e6;
+    font-size: 14pt;
+    border: 1px solid #c2c6cc;
     border-radius: 4px;
-    background-color: #ffffff;
+    background-color: #fcfcfd;
+    color: #222;
 }
-
 QListWidget::item {
-    padding: 10px; /* More padding for list items */
-    border-bottom: 1px solid #f1f1f1; /* Separator lines for items */
-}
-
-QListWidget::item:selected {
-    background-color: #e9ecef; /* Subtle selection color */
-    color: #000;
-}
-
-QListWidget::item:hover {
-    background-color: #f8f9fa; /* Lighter hover for discoverability */
-}
-
-/* Styles for QComboBox */
-QComboBox {
-    font-size: 17pt;
     padding: 8px;
-    border: 1px solid #ced4da;
+    border-bottom: 1px solid #e0e3e8;
+}
+QListWidget::item:selected {
+    background-color: #e0e3e8;
+    color: #2d3a4a;
+}
+QListWidget::item:hover {
+    background-color: #f0f1f3;
+}
+
+QComboBox {
+    font-size: 15pt;
+    padding: 7px;
+    border: 1px solid #c2c6cc;
     border-radius: 4px;
-    background-color: #ffffff;
-    min-height: 30px; /* Adjust as needed based on font & padding */
+    background-color: #fcfcfd;
+    min-height: 28px;
+    color: #222;
 }
-
 QComboBox:hover {
-    border-color: #007bff; /* Highlight on hover */
+    border-color: #3a4657;
 }
-
 QComboBox::drop-down {
     subcontrol-origin: padding;
     subcontrol-position: top right;
-    width: 25px;
+    width: 22px;
     border-left-width: 1px;
-    border-left-color: #ced4da;
+    border-left-color: #c2c6cc;
     border-left-style: solid;
     border-top-right-radius: 3px;
     border-bottom-right-radius: 3px;
 }
-
-/* QComboBox::down-arrow: { image: url(path/to/your/arrow.png); } */
-/* Qt usually provides a default arrow, so explicit styling might not be needed */
-
-/* Style for the popup list of items */
 QComboBox QAbstractItemView {
     font-size: 14pt;
-    background-color: #ffffff; /* Light background for dropdown list */
-    color: #333333;           /* Dark text for readability */
-    border: 1px solid #ced4da; /* Border for the dropdown list */
-    selection-background-color: #007bff; /* Selection background */
-    selection-color: #ffffff;           /* Text color for selected item */
-    padding: 4px; /* Padding around the list itself */
+    background-color: #fcfcfd;
+    color: #222;
+    border: 1px solid #c2c6cc;
+    selection-background-color: #e0e3e8;
+    selection-color: #2d3a4a;
+    padding: 3px;
 }
-
 QComboBox QAbstractItemView::item {
-    padding: 8px; /* Padding for individual items in the list */
-    min-height: 25px; /* Ensure items are not too cramped */
+    padding: 7px;
+    min-height: 22px;
 }
 
-/* Example of styling a specific named widget if you set its objectName */
-/*
-#mySpecialButton {
-    background-color: #ff0000;
-    color: white;
+.CardSection {
+    background: #f7f8fa;
+    border: 1.5px solid #c2c6cc;
+    border-radius: 14px;
+    padding: 24px 24px 18px 24px;
+    margin-bottom: 24px;
 }
-*/
+
+#ComposerCentralWidget {
+    max-width: 720px;
+    margin-left: auto;
+    margin-right: auto;
+    margin-top: 24px;
+    margin-bottom: 24px;
+}
+
+QTableWidget#PromptsTable {
+    background: #fcfcfd;
+    border: 1.5px solid #c2c6cc;
+    border-radius: 8px;
+    gridline-color: #e0e3e8;
+    font-size: 15pt;
+}
+QTableWidget#PromptsTable::item {
+    border-bottom: 1px solid #e0e3e8;
+    padding: 8px 6px;
+}
+QTableWidget#PromptsTable::item:alternate {
+    background: #f0f1f3;
+}
+QTableWidget#PromptsTable::item:selected {
+    background: #e0e3e8;
+    color: #2d3a4a;
+}
+QHeaderView::section {
+    background: #e0e3e8;
+    color: #2d3a4a;
+    font-size: 15pt;
+    font-weight: bold;
+    border-bottom: 1px solid #c2c6cc;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    padding: 8px 6px;
+}
+
+#SelectedPDFLabel {
+    font-style: italic;
+    color: #5a5a5a;
+    padding-left: 12px;
+    font-size: 14pt;
+}
+QListWidget#ModelListWidget {
+    font-size: 14pt;
+    background: #fcfcfd;
+    border: 1.5px solid #c2c6cc;
+    border-radius: 8px;
+    margin-top: 6px;
+    margin-bottom: 6px;
+}
+QListWidget#ModelListWidget::item {
+    padding: 10px 6px;
+    border-bottom: 1px solid #e0e3e8;
+}
+QListWidget#ModelListWidget::item:selected {
+    background: #e0e3e8;
+    color: #2d3a4a;
+}
+
+.CardSection QLabel {
+    font-size: 16pt;
+    font-weight: 600;
+    color: #2d3a4a;
+    margin-bottom: 8px;
+}
 ''' 
