@@ -3,15 +3,15 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QMainWindow, QStackedWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QTableWidget, QTableWidgetItem, QToolBar,
-    QStatusBar, QFileDialog, QMessageBox, QTextEdit, QScrollArea,
-    QListWidget, QListWidgetItem, QProgressBar, QComboBox, QGridLayout,
-    QHeaderView
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QListWidget,
+    QListWidgetItem, QStackedWidget, QToolBar, QStatusBar, QMessageBox,
+    QFileDialog, QTextEdit, QScrollArea, QProgressBar, QGridLayout, QFrame,
+    QAbstractItemView
 )
-from PySide6.QtGui import QAction, QFont, QPixmap, QIcon
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QIcon, QPixmap, QColor, QBrush, QAction
 
+from PySide6.QtCore import Qt, QSize, QThread, QEvent, QObject, Signal
 # Import styles
 from ui_styles import APP_STYLESHEET
 
@@ -38,9 +38,24 @@ class RunConsoleWidget(QWidget):
         
         layout.addWidget(scroll)
         
+        # Button container for actions
+        button_layout = QHBoxLayout()
+        
+        # Add an "Export to CSV" button
+        self.export_csv_btn = QPushButton("Export to CSV")
+        self.export_csv_btn.setIcon(QIcon.fromTheme("document-save"))
+        self.export_csv_btn.setToolTip("Export benchmark results to CSV file")
+        button_layout.addWidget(self.export_csv_btn)
+        
+        # Add spacer to separate buttons
+        button_layout.addStretch(1)
+        
         # Add a "Return to Home" button
         self.return_btn = QPushButton("Return to Home") # Made it an instance variable
-        layout.addWidget(self.return_btn)
+        button_layout.addWidget(self.return_btn)
+        
+        # Add button container to main layout
+        layout.addLayout(button_layout)
 
     def update_log(self, text):
         current_text = self.log_text.toPlainText()
@@ -94,55 +109,115 @@ class RunConsoleWidget(QWidget):
 
 # --- Pages ----------------------------------------------------------------
 class HomePage(QWidget):
-    benchmark_selected = Signal(object)  # New signal for selection
+    benchmark_selected = Signal(object)
     def __init__(self):
         super().__init__()
         self.layout = QVBoxLayout(self)
         self._active_benchmarks_data: dict = {}
-        self._progress_bars: dict = {}
         self._benchmarks_data: list = []
         self._view_mode = 'grid'  # or 'table'
         self._card_refs = []  # To keep references for click events
 
-        # Toggle button
-        self.toggle_btn = QPushButton("Switch to Table View")
+        # Header section with title and toggle button
+        header_layout = QHBoxLayout()
+        title_label = QLabel("Benchmarks")
+        title_label.setStyleSheet("font-size: 24pt; font-weight: bold;")
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        
+        # Toggle button with icon
+        self.toggle_btn = QPushButton()
+        self.toggle_btn.setIcon(QIcon.fromTheme("view-list-details"))
+        self.toggle_btn.setText("Switch to Table View")
+        self.toggle_btn.setStyleSheet("font-size: 12pt; padding: 8px 16px;")
         self.toggle_btn.clicked.connect(self.toggle_view)
-        self.layout.addWidget(self.toggle_btn)
-
-        # Grid view widget
+        header_layout.addWidget(self.toggle_btn)
+        
+        self.layout.addLayout(header_layout)
+        
+        # Grid view widget with scroll area
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
         self.grid_widget = QWidget()
         self.grid_layout = QGridLayout(self.grid_widget)
-        self.layout.addWidget(self.grid_widget)
+        self.grid_layout.setSpacing(16)  # Add spacing between cards
+        scroll_area.setWidget(self.grid_widget)
+        self.layout.addWidget(scroll_area)
 
         # Table view widget
         self.table_widget = QTableWidget()
-        self.table_widget.setColumnCount(5)
-        self.table_widget.setHorizontalHeaderLabels(["Label", "Date", "Models", "Files", "Delete"])
+        self.table_widget.setColumnCount(5)  # Status, Label, Date, Models, Files
+        self.table_widget.setHorizontalHeaderLabels(["Status", "Label", "Date", "Models", "Files"])
         self.table_widget.setSortingEnabled(True)
+        self.table_widget.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        
+        # Set column widths
+        self.table_widget.setColumnWidth(0, 80)  # Status column
+        self.table_widget.setColumnWidth(2, 180)  # Date column
+        self.table_widget.setColumnWidth(3, 120)  # Models column
+        self.table_widget.setColumnWidth(4, 200)  # Files column
+        
+        # Configure headers
+        header = self.table_widget.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Fixed)  # Status column fixed width
+        header.setSectionResizeMode(1, QHeaderView.Stretch)  # Label column stretches
+        header.setSectionResizeMode(2, QHeaderView.Fixed)  # Date column fixed width
+        header.setSectionResizeMode(3, QHeaderView.Fixed)  # Models column fixed width
+        header.setSectionResizeMode(4, QHeaderView.Fixed)  # Files column fixed width
+        
+        # Other table settings
+        self.table_widget.verticalHeader().setVisible(True)  # Show row numbers
+        self.table_widget.setAlternatingRowColors(True)  # Alternate row colors
+        self.table_widget.setShowGrid(True)  # Show grid lines
+        self.table_widget.setStyleSheet("""
+            QTableWidget {
+                gridline-color: #d0d0d0;
+                background-color: white;
+                alternate-background-color: #f5f5f5;
+            }
+            QHeaderView::section {
+                background-color: #e0e0e0;
+                padding: 4px;
+                border: 1px solid #c0c0c0;
+                font-weight: bold;
+            }
+        """)
         self.table_widget.cellClicked.connect(self.handle_table_row_clicked)
-        self.layout.addWidget(self.table_widget)
-        self.table_widget.hide()
-
-        # Active runs section (unchanged)
-        self.layout.addWidget(QLabel("Active Benchmarks:"))
-        self.active_runs_list_widget = QListWidget()
-        self.active_runs_list_widget.setStyleSheet("font-size: 17pt; padding: 10px;")
-        self.layout.addWidget(self.active_runs_list_widget)
-        self.refresh_button = QPushButton("🔄 Refresh Lists")
+        
+        # Create a separate layout for the table view
+        self.table_view_widget = QWidget()
+        table_layout = QVBoxLayout(self.table_view_widget)
+        table_layout.setContentsMargins(10, 10, 10, 10)
+        table_layout.addWidget(self.table_widget)
+        
+        # Add the table view widget to the main layout
+        self.layout.addWidget(self.table_view_widget)
+        self.table_view_widget.hide()
+        
+        # Refresh button at the bottom
+        self.refresh_button = QPushButton("🔄 Refresh")
+        self.refresh_button.setStyleSheet("font-size: 12pt; padding: 8px 16px;")
         self.refresh_button.clicked.connect(self.refresh_display)
-        self.layout.addWidget(self.refresh_button)
+        refresh_layout = QHBoxLayout()
+        refresh_layout.addStretch()
+        refresh_layout.addWidget(self.refresh_button)
+        refresh_layout.addStretch()
+        self.layout.addLayout(refresh_layout)
 
     def toggle_view(self):
         if self._view_mode == 'grid':
             self._view_mode = 'table'
+            self.grid_widget.parentWidget().hide()  # Hide the grid scroll area
+            self.table_view_widget.show()  # Show the table view widget
+            self.toggle_btn.setIcon(QIcon.fromTheme("view-grid"))
             self.toggle_btn.setText("Switch to Grid View")
-            self.grid_widget.hide()
-            self.table_widget.show()
         else:
             self._view_mode = 'grid'
+            self.table_view_widget.hide()  # Hide the table view widget
+            self.grid_widget.parentWidget().show()  # Show the grid scroll area
+            self.toggle_btn.setIcon(QIcon.fromTheme("view-list-details"))
             self.toggle_btn.setText("Switch to Table View")
-            self.table_widget.hide()
-            self.grid_widget.show()
 
     def refresh_display(self):
         self.load_runs_from_db()
@@ -164,33 +239,180 @@ class HomePage(QWidget):
             if widget:
                 widget.setParent(None)
         self._card_refs = []
+        
         # Add cards
         for idx, bench in enumerate(self._benchmarks_data):
+            # Create card with border and styling
             card = QWidget()
-            vbox = QVBoxLayout(card)
-            label = QLabel(f"{bench.get('label', bench.get('description', 'No Label'))}")
+            card.setObjectName("benchmark-card")
+            card.setStyleSheet("""
+                #benchmark-card {
+                    background-color: white;
+                    border-radius: 8px;
+                    border: 1px solid #e0e0e0;
+                }
+                .card-title { font-size: 16pt; font-weight: bold; }
+                .card-date { font-size: 10pt; color: #666; }
+                .model-score { font-size: 9pt; color: #333; }
+                .model-metrics { font-size: 8pt; color: #666; }
+            """)
+            
+            # Main layout for the card
+            card_layout = QGridLayout(card)
+            card_layout.setContentsMargins(12, 12, 12, 12)
+            card_layout.setSpacing(8)
+            
+            # Content container for the card
+            content_widget = QWidget()
+            vbox = QVBoxLayout(content_widget)
+            vbox.setContentsMargins(0, 0, 0, 0)
+            vbox.setSpacing(8)
+            card_layout.addWidget(content_widget, 0, 0, 1, 2)
+            
+            # Header with title and status icon
+            header_layout = QHBoxLayout()
+            
+            # Title
+            title = bench.get('label', bench.get('description', 'No Label'))
+            label = QLabel(title)
+            label.setProperty("class", "card-title")
+            label.setWordWrap(True)
+            header_layout.addWidget(label, 1)
+            
+            # Status icon (done or loading)
+            is_active = bench.get('id') in self._active_benchmarks_data
+            status_icon = QLabel()
+            icon_path = "assets/loading.png" if is_active else "assets/done.png"
+            status_pixmap = QPixmap(icon_path)
+            if not status_pixmap.isNull():
+                status_icon.setPixmap(status_pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                status_icon.setToolTip("Running" if is_active else "Completed")
+            header_layout.addWidget(status_icon)
+            
+            vbox.addLayout(header_layout)
+            
+            # Date
             date = QLabel(f"{bench.get('timestamp', '')[:19]}")
-            vbox.addWidget(label)
+            date.setProperty("class", "card-date")
             vbox.addWidget(date)
-            # Model icons row
-            hbox = QHBoxLayout()
+            
+            # Separator line
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Sunken)
+            line.setStyleSheet("background-color: #e0e0e0;")
+            vbox.addWidget(line)
+            
+            # Model section
+            model_section = QWidget()
+            model_layout = QVBoxLayout(model_section)
+            model_layout.setContentsMargins(0, 0, 0, 0)
+            model_layout.setSpacing(4)
+            
+            # For each model, show icon, score, cost and latency
             for model in bench.get('model_names', []):
+                model_item = QHBoxLayout()
+                
+                # Model icon
                 icon_path = f"assets/{model}.png"
                 pixmap = QPixmap(icon_path)
                 if pixmap.isNull():
                     pixmap = QPixmap("assets/icon.png")  # fallback
                 icon_label = QLabel()
-                icon_label.setPixmap(pixmap.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                hbox.addWidget(icon_label)
-            vbox.addLayout(hbox)
-            # Delete button
-            del_btn = QPushButton("Delete")
-            del_btn.setStyleSheet("background-color: #dc3545; color: white; font-size: 12pt; padding: 4px 12px; border-radius: 6px;")
-            del_btn.clicked.connect(lambda _, bid=bench.get('id'): self.confirm_delete_benchmark(bid))
-            vbox.addWidget(del_btn)
+                icon_label.setPixmap(pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                model_item.addWidget(icon_label)
+                
+                # Model info
+                model_info = QVBoxLayout()
+                model_info.setSpacing(0)
+                
+                # Model name and score
+                model_results = bench.get('model_results', {})
+                model_data = model_results.get(model, {})
+                score = model_data.get('score', 'N/A')
+                cost = model_data.get('cost', 'N/A')
+                latency = model_data.get('latency', 'N/A')
+                
+                if isinstance(score, (int, float)):
+                    score_str = f"{score:.2f}%"
+                else:
+                    score_str = str(score)
+                    
+                score_label = QLabel(f"{model}: {score_str}")
+                score_label.setProperty("class", "model-score")
+                model_info.addWidget(score_label)
+                
+                # Cost and latency
+                if isinstance(cost, (int, float)):
+                    cost_str = f"${cost:.4f}"
+                else:
+                    cost_str = str(cost)
+                    
+                if isinstance(latency, (int, float)):
+                    latency_str = f"{latency:.2f}s"
+                else:
+                    latency_str = str(latency)
+                    
+                metrics_label = QLabel(f"Cost: {cost_str} | Latency: {latency_str}")
+                metrics_label.setProperty("class", "model-metrics")
+                model_info.addWidget(metrics_label)
+                
+                model_item.addLayout(model_info)
+                model_layout.addLayout(model_item)
+            
+            vbox.addWidget(model_section)
+            vbox.addStretch(1)
+            
+            # Create a QLabel for the delete icon that appears on hover
+            del_label = QLabel()
+            del_label.setToolTip("Delete benchmark")
+            del_label.setFixedSize(20, 20)
+            del_label.setCursor(Qt.PointingHandCursor)
+            
+            # Load the image directly as a pixmap
+            del_pixmap = QPixmap("assets/delete.jpg")
+            if not del_pixmap.isNull():
+                del_label.setPixmap(del_pixmap.scaled(20, 20, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            
+            # Create a mouse event handler for the label
+            def label_click_handler(event):
+                self.confirm_delete_benchmark(bench.get('id'))
+            del_label.mousePressEvent = label_click_handler
+            
+            # Initially hide the delete label
+            del_label.hide()
+            
+            # Position in top-right corner
+            card_layout.addWidget(del_label, 0, 1, 1, 1, Qt.AlignTop | Qt.AlignRight)
+            
+            # Create an event filter for the card to handle hover events
+            class HoverFilter(QObject):
+                def __init__(self, watched, label):
+                    super().__init__()
+                    self.watched = watched
+                    self.label = label
+                    
+                def eventFilter(self, obj, event):
+                    if obj is self.watched:
+                        if event.type() == QEvent.Enter:
+                            self.label.show()
+                        elif event.type() == QEvent.Leave:
+                            self.label.hide()
+                    return False
+            
+            # Install the event filter on the card
+            hover_filter = HoverFilter(card, del_label)
+            card.installEventFilter(hover_filter)
+            
+            # Store reference to filter to prevent garbage collection
+            card.hover_filter = hover_filter
+            
+            # Make the entire card clickable
             card.mousePressEvent = self._make_card_click_handler(bench.get('id'))
             self._card_refs.append(card)
-            self.grid_layout.addWidget(card, idx // 3, idx % 3)
+            
+            # Add to grid layout - 4 cards per row instead of 3
+            self.grid_layout.addWidget(card, idx // 4, idx % 4)
 
     def _make_card_click_handler(self, bench_id):
         def handler(event):
@@ -200,29 +422,78 @@ class HomePage(QWidget):
     def populate_table_view(self):
         self.table_widget.setRowCount(len(self._benchmarks_data))
         for row, bench in enumerate(self._benchmarks_data):
-            self.table_widget.setItem(row, 0, QTableWidgetItem(bench.get('label', bench.get('description', 'No Label'))))
-            self.table_widget.setItem(row, 1, QTableWidgetItem(bench.get('timestamp', '')[:19]))
+            # Status icon (done or loading)
+            is_active = bench.get('id') in self._active_benchmarks_data
+            status_widget = QWidget()
+            status_layout = QHBoxLayout(status_widget)
+            status_layout.setContentsMargins(4, 4, 4, 4)
+            status_layout.setAlignment(Qt.AlignCenter)
+            
+            status_icon = QLabel()
+            icon_path = "assets/loading.png" if is_active else "assets/done.png"
+            status_pixmap = QPixmap(icon_path)
+            if not status_pixmap.isNull():
+                status_icon.setPixmap(status_pixmap.scaled(20, 20, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                status_icon.setToolTip("Running" if is_active else "Completed")
+            status_layout.addWidget(status_icon)
+            self.table_widget.setCellWidget(row, 0, status_widget)
+            
+            # Label/Title
+            self.table_widget.setItem(row, 1, QTableWidgetItem(bench.get('label', bench.get('description', 'No Label'))))
+            
+            # Date
+            self.table_widget.setItem(row, 2, QTableWidgetItem(bench.get('timestamp', '')[:19]))
+            
             # Model icons in a widget
             model_widget = QWidget()
             hbox = QHBoxLayout(model_widget)
-            hbox.setContentsMargins(0, 0, 0, 0)
+            hbox.setContentsMargins(4, 4, 4, 4)
+            
+            # For each model, show icon with tooltip containing score/cost/latency
             for model in bench.get('model_names', []):
                 icon_path = f"assets/{model}.png"
                 pixmap = QPixmap(icon_path)
                 if pixmap.isNull():
                     pixmap = QPixmap("assets/icon.png")
+                    
                 icon_label = QLabel()
                 icon_label.setPixmap(pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                
+                # Add tooltip with metrics
+                model_results = bench.get('model_results', {})
+                model_data = model_results.get(model, {})
+                score = model_data.get('score', 'N/A')
+                cost = model_data.get('cost', 'N/A')
+                latency = model_data.get('latency', 'N/A')
+                
+                if isinstance(score, (int, float)):
+                    score_str = f"{score:.2f}%"
+                else:
+                    score_str = str(score)
+                    
+                if isinstance(cost, (int, float)):
+                    cost_str = f"${cost:.4f}"
+                else:
+                    cost_str = str(cost)
+                    
+                if isinstance(latency, (int, float)):
+                    latency_str = f"{latency:.2f}s"
+                else:
+                    latency_str = str(latency)
+                
+                tooltip_text = f"{model}\nScore: {score_str}\nCost: {cost_str}\nLatency: {latency_str}"
+                icon_label.setToolTip(tooltip_text)
+                
                 hbox.addWidget(icon_label)
-            self.table_widget.setCellWidget(row, 2, model_widget)
+                
+            self.table_widget.setCellWidget(row, 3, model_widget)
+            
             # Files
             files_str = ', '.join([Path(f).name for f in bench.get('file_paths', [])])
-            self.table_widget.setItem(row, 3, QTableWidgetItem(files_str))
-            # Delete button
-            del_btn = QPushButton("Delete")
-            del_btn.setStyleSheet("background-color: #dc3545; color: white; font-size: 12pt; padding: 4px 12px; border-radius: 6px;")
-            del_btn.clicked.connect(lambda _, bid=bench.get('id'): self.confirm_delete_benchmark(bid))
-            self.table_widget.setCellWidget(row, 4, del_btn)
+            self.table_widget.setItem(row, 4, QTableWidgetItem(files_str))
+            
+            # No delete button in table view
+            
         self.table_widget.resizeColumnsToContents()
 
     def handle_table_row_clicked(self, row, col):
@@ -231,39 +502,62 @@ class HomePage(QWidget):
             self.benchmark_selected.emit(bench_id)
 
     def update_active_benchmarks_display(self, active_data: dict):
+        # Store active benchmarks data
+        old_active_data = self._active_benchmarks_data.copy()
         self._active_benchmarks_data = active_data
-        self.active_runs_list_widget.clear()
-        self._progress_bars.clear()
-        if not active_data:
-            no_active_item = QListWidgetItem("No benchmarks currently running.")
-            no_active_item.setFlags(no_active_item.flags() & ~Qt.ItemIsSelectable)
-            self.active_runs_list_widget.addItem(no_active_item)
-            return
-        for run_id, data in active_data.items():
-            pdf_name = data.get('pdf_name', 'N/A')
-            current_prompt = data.get('current_prompt', 0)
-            total_prompts = data.get('total_prompts', 0)
-            status_msg = data.get('status_message', 'Running...')
-            start_time_dt = data.get('start_time')
-            start_time_str = start_time_dt.strftime("%H:%M:%S") if start_time_dt else "N/A"
-            item_widget = QWidget()
-            item_layout = QVBoxLayout(item_widget)
-            item_layout.setContentsMargins(5, 5, 5, 5)
-            info_text = f"Run ID: {run_id} | PDF: {pdf_name} | Started: {start_time_str}"
-            info_label = QLabel(info_text)
-            item_layout.addWidget(info_label)
-            progress_bar = QProgressBar()
-            progress_bar.setRange(0, total_prompts)
-            progress_bar.setValue(current_prompt)
-            progress_bar.setTextVisible(True)
-            progress_bar.setFormat(f"%v/%m ({status_msg[:30]}...)")
-            item_layout.addWidget(progress_bar)
-            self._progress_bars[run_id] = progress_bar
-            list_item = QListWidgetItem(self.active_runs_list_widget)
-            list_item.setSizeHint(item_widget.sizeHint())
-            self.active_runs_list_widget.addItem(list_item)
-            self.active_runs_list_widget.setItemWidget(list_item, item_widget)
-            list_item.setFlags(list_item.flags() & ~Qt.ItemIsSelectable)
+        
+        # Only update if there's a change in active benchmarks
+        if old_active_data != active_data:
+            # Update only the status icons without recreating the entire view
+            if self._view_mode == 'grid':
+                self._update_grid_status_icons()
+            else:
+                self._update_table_status_icons()
+
+    def _update_grid_status_icons(self):
+        # Update only the status icons in the grid view without recreating the entire grid
+        for idx, bench in enumerate(self._benchmarks_data):
+            # Find the card widget in the grid layout
+            if idx < len(self._card_refs):
+                card = self._card_refs[idx]
+                # Find the status icon in the card's header layout
+                header_layout = None
+                for i in range(card.layout().count()):
+                    item = card.layout().itemAt(i)
+                    if isinstance(item, QHBoxLayout):
+                        header_layout = item
+                        break
+                
+                if header_layout:
+                    # The status icon is the last widget in the header layout
+                    status_icon = header_layout.itemAt(header_layout.count() - 1).widget()
+                    if isinstance(status_icon, QLabel):
+                        # Update the icon based on active status
+                        is_active = bench.get('id') in self._active_benchmarks_data
+                        icon_path = "assets/loading.png" if is_active else "assets/done.png"
+                        status_pixmap = QPixmap(icon_path)
+                        if not status_pixmap.isNull():
+                            status_icon.setPixmap(status_pixmap.scaled(24, 24, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                            status_icon.setToolTip("Running" if is_active else "Completed")
+
+    def _update_table_status_icons(self):
+        # Update only the status icons in the table view without recreating the entire table
+        for row, bench in enumerate(self._benchmarks_data):
+            # Get the status widget in the first column
+            status_widget = self.table_widget.cellWidget(row, 0)
+            if status_widget:
+                # Find the status icon in the widget's layout
+                status_layout = status_widget.layout()
+                if status_layout and status_layout.count() > 0:
+                    status_icon = status_layout.itemAt(0).widget()
+                    if isinstance(status_icon, QLabel):
+                        # Update the icon based on active status
+                        is_active = bench.get('id') in self._active_benchmarks_data
+                        icon_path = "assets/loading.png" if is_active else "assets/done.png"
+                        status_pixmap = QPixmap(icon_path)
+                        if not status_pixmap.isNull():
+                            status_icon.setPixmap(status_pixmap.scaled(20, 20, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                            status_icon.setToolTip("Running" if is_active else "Completed")
 
     def confirm_delete_benchmark(self, benchmark_id):
         reply = QMessageBox.question(self, "Delete Benchmark", "Are you sure you want to delete this benchmark and all its data?", QMessageBox.Yes | QMessageBox.No)
@@ -435,6 +729,7 @@ class MainWindow(QMainWindow):
     show_home_requested = Signal()
     benchmark_selected = Signal(object) # benchmark_id (item.data)
     active_benchmarks_changed = Signal(dict) # New signal for active benchmark updates
+    export_benchmark_csv_requested = Signal(int)  # Signal to export current benchmark to CSV
 
     def __init__(self):
         super().__init__()
@@ -469,6 +764,10 @@ class MainWindow(QMainWindow):
         if self.console.return_btn:
             self.console.return_btn.setObjectName("returnButton")
             self.console.return_btn.clicked.connect(self.show_home_requested.emit)
+        if self.console.export_csv_btn:
+            self.console.export_csv_btn.setObjectName("exportCsvButton")
+            # We'll connect this in display_full_benchmark_details_in_console
+            # to have access to the benchmark ID
         
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Ready")
@@ -547,6 +846,28 @@ class MainWindow(QMainWindow):
                 self.console.update_log(f"Score: {score}")
     
     def display_full_benchmark_details_in_console(self, details: dict):
+        self.show_console_page()
+        
+        # Store benchmark ID to use with export button
+        benchmark_id = details.get('id')
+        
+        # Connect export button with the current benchmark ID
+        # Disconnect previous connections first to avoid multiple signals
+        try:
+            self.console.export_csv_btn.clicked.disconnect()
+        except TypeError:
+            # No connections to disconnect
+            pass
+            
+        if benchmark_id:
+            # Enable export button and connect to signal with benchmark ID
+            self.console.export_csv_btn.setEnabled(True)
+            self.console.export_csv_btn.clicked.connect(
+                lambda: self.export_benchmark_csv_requested.emit(benchmark_id))
+        else:
+            # Disable button if no valid benchmark ID
+            self.console.export_csv_btn.setEnabled(False)
+        
         self.console.display_benchmark_details(details)
 
     def populate_composer_table(self, rows: list):

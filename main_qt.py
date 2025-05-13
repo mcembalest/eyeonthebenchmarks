@@ -16,7 +16,7 @@ if sys.platform == "darwin":
         print("Could not set macOS dock icon:", e)
 
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Tuple
 
 from PySide6.QtWidgets import QApplication, QFileDialog
 from PySide6.QtCore import QTimer # For safe cross-thread UI updates if needed, or direct calls if simple
@@ -26,17 +26,65 @@ from app import AppLogic  # The refactored, Qt-agnostic AppLogic
 from qt_ui import MainWindow # Your existing MainWindow
 from ui_styles import APP_STYLESHEET # Existing styles
 
+from typing import Dict, List, Any, Optional, Callable
+from pathlib import Path
+from collections import defaultdict
+from ui_bridge import AppUIBridge, DataChangeType
+
 class QtUIBridgeImpl(AppUIBridge):
     def __init__(self, main_window: MainWindow):
         self.main_window = main_window
-        # These callbacks are not used by the bridge itself in the current design
-        # self._worker_progress_callback: Optional[Callable[[str], None]] = None 
-        # self._worker_finished_callback: Optional[Callable[[dict], None]] = None
-
+        self._refresh_timer: Optional[QTimer] = None
+        self._data_callbacks: Dict[DataChangeType, List[Callable[[Any], None]]] = defaultdict(list)
+        self._current_page = None
+        
     def show_message(self, level: str, title: str, message: str) -> None:
-        # This can be called from AppLogic.handle_run_finished (worker thread) or other places.
+        # Ensure UI updates happen on the main thread
+        QTimer.singleShot(0, lambda: self._show_message_impl(level, title, message))
+        
+    def _show_message_impl(self, level: str, title: str, message: str) -> None:
         # Ensure thread safety for all calls that might originate from a worker thread.
         QTimer.singleShot(0, lambda: self.main_window.show_message_box(level, title, message))
+
+    # Auto-refresh implementation
+    def start_auto_refresh(self, interval_ms: int = 1000) -> None:
+        if not self._refresh_timer:
+            self._refresh_timer = QTimer()
+            self._refresh_timer.timeout.connect(self._handle_auto_refresh)
+        self._refresh_timer.setInterval(interval_ms)
+        self._refresh_timer.start()
+
+    def stop_auto_refresh(self) -> None:
+        if self._refresh_timer:
+            self._refresh_timer.stop()
+
+    def _handle_auto_refresh(self) -> None:
+        # Only refresh active benchmarks data for the home page to minimize visual disruption
+        if self._current_page == 'home':
+            # Get the latest active benchmarks data without refreshing the entire page
+            from engine.file_store import get_active_benchmarks
+            active_benchmarks = get_active_benchmarks()
+            if hasattr(self.main_window, 'home'):
+                QTimer.singleShot(0, lambda: self.main_window.home.update_active_benchmarks_display(active_benchmarks))
+        elif self._current_page == 'composer':
+            # Minimal refresh for composer page
+            self.refresh_composer_page_data()
+        elif self._current_page == 'console':
+            # Console updates are event-driven, no need for polling refresh
+            pass
+
+    # Observer pattern implementation
+    def register_data_callback(self, change_type: DataChangeType, callback: Callable[[Any], None]) -> None:
+        self._data_callbacks[change_type].append(callback)
+
+    def unregister_data_callback(self, change_type: DataChangeType, callback: Callable[[Any], None]) -> None:
+        if callback in self._data_callbacks[change_type]:
+            self._data_callbacks[change_type].remove(callback)
+
+    def notify_data_change(self, change_type: DataChangeType, data: Any) -> None:
+        # Execute callbacks on the main thread
+        for callback in self._data_callbacks[change_type]:
+            QTimer.singleShot(0, lambda cb=callback: cb(data))
 
     def update_status_bar(self, message: str, timeout: int = 0) -> None:
         # This can be called from AppLogic.handle_run_finished (worker thread) or launch_benchmark_run (GUI thread).
@@ -50,21 +98,48 @@ class QtUIBridgeImpl(AppUIBridge):
 
     def update_console_log(self, text: str) -> None:
         # Called from AppLogic.handle_benchmark_progress (worker thread).
-        # Must be thread-safe.
-        QTimer.singleShot(0, lambda: self.main_window.update_console_log(text))
+        # Must be thread-safe, with forced refresh to ensure real-time updates.
+        QTimer.singleShot(0, lambda: self._update_console_with_refresh(text))
+        
+    def _update_console_with_refresh(self, text: str) -> None:
+        # Update the console text
+        self.main_window.update_console_log(text)
+        # Force the application to process events to update the UI immediately
+        QApplication.processEvents()
 
 
     def show_home_page(self) -> None:
-        # Typically called from GUI thread (e.g. button clicks, startup).
-        self.main_window.show_home_page()
-        
+        self._current_page = 'home'
+        QTimer.singleShot(0, lambda: self.main_window.stack.setCurrentWidget(self.main_window.home))
+        self.refresh_home_page_data()
+
     def show_composer_page(self) -> None:
-        # QTimer.singleShot(0, self.main_window.show_composer_page)
-        self.main_window.show_composer_page()
+        self._current_page = 'composer'
+        QTimer.singleShot(0, lambda: self.main_window.stack.setCurrentWidget(self.main_window.composer))
+        self.refresh_composer_page_data()
 
     def show_console_page(self) -> None:
-        # QTimer.singleShot(0, self.main_window.show_console_page)
-        self.main_window.show_console_page()
+        self._current_page = 'console'
+        QTimer.singleShot(0, lambda: self.main_window.stack.setCurrentWidget(self.main_window.console))
+        self.refresh_console_page_data()
+
+    def refresh_home_page_data(self) -> None:
+        # Notify observers about the refresh request
+        self.notify_data_change(DataChangeType.BENCHMARK_LIST, None)
+        # Update active benchmarks display
+        if hasattr(self.main_window, 'home'):
+            QTimer.singleShot(0, lambda: self.main_window.home.update_active_benchmarks_display(
+                self.main_window.home._active_benchmarks_data
+            ))
+
+    def refresh_composer_page_data(self) -> None:
+        self.notify_data_change(DataChangeType.COMPOSER_DATA, None)
+        # Any composer-specific refresh logic here
+
+    def refresh_console_page_data(self) -> None:
+        # Console data is typically event-driven (benchmark results)
+        # but we could refresh any persistent data here
+        pass
 
     def populate_composer_table(self, rows: List[List[str]]) -> None:
         # Called when CSV is loaded, typically from a GUI thread interaction.
@@ -114,6 +189,11 @@ class QtUIBridgeImpl(AppUIBridge):
         # So, this notify method will be called from a worker thread.
         # Thus, emitting the signal should be done via QTimer to ensure it happens on the main thread.
         QTimer.singleShot(0, lambda: self.main_window.active_benchmarks_changed.emit(active_benchmarks_data))
+
+    # --- Method to populate home page benchmark table ---
+    def populate_home_benchmarks_table(self, benchmarks_data: Optional[List[Tuple]] = None) -> None:
+        # HomePage is responsible for loading its own data. This call just triggers it.
+        QTimer.singleShot(0, lambda: self.main_window.home.load_runs_from_db())
 
     # These are not used from ui_bridge.py, removing
     # def register_benchmark_worker_callbacks(self, worker_progress_callback: callable, worker_finished_callback: callable) -> None:

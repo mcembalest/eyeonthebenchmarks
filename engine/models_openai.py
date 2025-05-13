@@ -49,7 +49,7 @@ def openai_upload(pdf_path: Path) -> str:
         print(f"Error uploading {pdf_path} to OpenAI: {e}")
         raise
 
-def openai_ask(file_id: str, prompt_text: str, model_name="gpt-4o-mini") -> tuple[str, int, int]:
+def openai_ask(file_id: str, prompt_text: str, model_name="gpt-4o-mini") -> tuple[str, int, int, int]:
     """
     
     Args:
@@ -60,7 +60,8 @@ def openai_ask(file_id: str, prompt_text: str, model_name="gpt-4o-mini") -> tupl
     Returns:
         A tuple containing:
             - answer (str): The model's text response.
-            - input_tokens (int): Tokens used in the input.
+            - standard_input_tokens (int): Tokens used in the input (non-cached portion).
+            - cached_input_tokens (int): Tokens used in the input (cached portion).
             - output_tokens (int): Tokens used in the output.
     """
     try:
@@ -88,7 +89,8 @@ def openai_ask(file_id: str, prompt_text: str, model_name="gpt-4o-mini") -> tupl
         )
         
         answer = None
-        input_tokens = 0
+        standard_input_tokens = 0
+        cached_input_tokens = 0
         output_tokens = 0
 
         # Primary attempt: Directly access response.output_text.
@@ -111,17 +113,32 @@ def openai_ask(file_id: str, prompt_text: str, model_name="gpt-4o-mini") -> tupl
             print(f"Unexpected response structure from OpenAI: Failed to extract answer. 'response.output_text' was None or empty, and no 'text' type block found in 'response.output'. Response: {response}")
             raise Exception("Failed to extract answer from OpenAI response. Please check API response structure.")
 
-        # Token usage extraction (remains as per previous successful state)
-        # Direct access will raise AttributeError if 'usage' or its sub-attributes are missing.
-        input_tokens = response.usage.input_tokens
-        output_tokens = response.usage.output_tokens
+        # Token usage extraction based on actual OpenAI response structure
+        # See: https://platform.openai.com/docs/api-reference/responses/object
+        standard_input_tokens = 0
+        cached_input_tokens = 0
+        output_tokens = 0
         
-        input_tokens = input_tokens if input_tokens is not None else 0
-        output_tokens = output_tokens if output_tokens is not None else 0
+        try:
+            if hasattr(response, 'usage'):
+                # Standard input tokens are in response.usage.input_tokens
+                if hasattr(response.usage, 'input_tokens'):
+                    standard_input_tokens = response.usage.input_tokens or 0
+                
+                # Cached tokens are in response.usage.input_tokens_details.cached_tokens
+                if hasattr(response.usage, 'input_tokens_details') and hasattr(response.usage.input_tokens_details, 'cached_tokens'):
+                    cached_input_tokens = response.usage.input_tokens_details.cached_tokens or 0
+                
+                # Output tokens are in response.usage.output_tokens
+                if hasattr(response.usage, 'output_tokens'):
+                    output_tokens = response.usage.output_tokens or 0
+        except Exception as e:
+            print(f"Error extracting token usage details: {e}")
+            # Continue with default values (0) in case of any error
 
         print(f"Received answer from model: '{str(answer)[:100]}...'")
-        print(f"Tokens - Input: {input_tokens}, Output: {output_tokens}")
-        return answer, input_tokens, output_tokens
+        print(f"Tokens - Standard Input: {standard_input_tokens}, Cached Input: {cached_input_tokens}, Output: {output_tokens}")
+        return answer, standard_input_tokens, cached_input_tokens, output_tokens
             
     except openai.APIError as e:
         print(f"OpenAI API Error asking about file {file_id} with model {model_name}: {e}")
@@ -132,4 +149,3 @@ def openai_ask(file_id: str, prompt_text: str, model_name="gpt-4o-mini") -> tupl
         print(f"Generic error asking OpenAI about file {file_id} with model {model_name}: {e}")
         # Return 0 tokens on error
         raise Exception(f"Generic error in openai_ask: {e}") from e # Re-raise
-

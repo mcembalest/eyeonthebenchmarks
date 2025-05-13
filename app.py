@@ -1,18 +1,13 @@
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional, Dict, List, Any
 import os
 import csv
-import threading # Added for threading.Thread
+import threading
 
-# Removed PySide6 imports for QThread, Signal, Slot as they are being decoupled from AppLogic
-# from PySide6.QtWidgets import QApplication, QFileDialog, QTableWidgetItem
-# from PySide6.QtCore import QThread, Signal, Slot
-
-# UI components - will be managed by the UI layer (e.g., main_qt.py)
-# from qt_ui import MainWindow
-# Styles - will be managed by the UI layer
-# from ui_styles import APP_STYLESHEET
+# Import the CSV exporter
+from engine.exporter import export_benchmark_to_csv
 
 # Engine components
 from engine.file_store import (
@@ -25,8 +20,8 @@ from engine.file_store import (
 )
 # engine.runner is imported within BenchmarkWorker to allow monkeypatching
 
-# Import the UI bridge protocol
-from ui_bridge import AppUIBridge
+# Import the UI bridge protocol and data change types
+from ui_bridge import AppUIBridge, DataChangeType
 
 
 class BenchmarkWorker(threading.Thread): # Changed from QThread
@@ -97,23 +92,64 @@ class AppLogic:
         self._next_job_id = 0
         self._current_benchmark_id = None
         self._current_benchmark_file_paths = []
+        
         # Initial setup
         self._initialize_database()
         self._ensure_directories_exist()
+        self._setup_data_observers()
         
-        # The UI layer is responsible for showing the initial page.
-        # self.ui_bridge.show_home_page() # This could be called by the runner after AppLogic init
+        # Start automatic refresh
+        self.ui_bridge.start_auto_refresh()
+
+    def _setup_data_observers(self):
+        """Set up observers for various data changes"""
+        self.ui_bridge.register_data_callback(
+            DataChangeType.BENCHMARK_LIST,
+            lambda _: self._refresh_benchmark_list()
+        )
+        self.ui_bridge.register_data_callback(
+            DataChangeType.COMPOSER_DATA,
+            lambda _: self._refresh_composer_data()
+        )
+
+    def _refresh_benchmark_list(self):
+        """Refresh the list of benchmarks and active runs for the home page."""
+        # Trigger HomePage to load/refresh its main benchmark table (grid/table views)
+        # The HomePage.load_runs_from_db() method handles fetching and populating.
+        self.ui_bridge.populate_home_benchmarks_table(None) # Argument is now optional/unused
+
+        # Update active benchmarks display separately
+        self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
+
+    def _refresh_composer_data(self):
+        """Refresh composer page data"""
+        # Any composer-specific data refresh logic here
+        pass
 
     def _initialize_database(self):
+        """Initialize the file store database"""
         try:
-            init_file_store_db()
+            init_file_store_db(Path.cwd())
         except Exception as e:
-            print(f"CRITICAL: Failed to initialize file store database: {e}")
-            self.ui_bridge.show_message( # Use UI bridge
-                "critical", 
-                "Database Error", 
-                f"Could not initialize the file store database: {e}. The application might not work correctly."
-            )
+            print(f"Error initializing database: {e}")
+            
+    def handle_export_benchmark_csv(self, benchmark_id: int):
+        """Handle a request to export a benchmark's results to CSV"""
+        try:
+            # Create exports directory if it doesn't exist
+            exports_dir = Path.cwd() / "exports"
+            os.makedirs(exports_dir, exist_ok=True)
+            
+            # Export the benchmark to CSV
+            csv_path = export_benchmark_to_csv(benchmark_id, exports_dir)
+            
+            # Show success message
+            self.ui_bridge.show_message("Success", "CSV Export", f"Benchmark exported to:\n{csv_path}")
+            
+        except Exception as e:
+            error_msg = f"Error exporting benchmark to CSV: {str(e)}"
+            print(error_msg)
+            self.ui_bridge.show_message("Error", "CSV Export Failed", error_msg)
 
     def _ensure_directories_exist(self):
         files_dir = Path.cwd() / "files"
@@ -162,41 +198,43 @@ class AppLogic:
             return
 
         label = f"Benchmark {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        description = f"Benchmark run for file(s): {pdf_to_run.name}"
-        file_paths = [str(pdf_to_run.resolve())]
-        benchmark_id = find_benchmark_by_files(file_paths)
-        if benchmark_id is None:
-            benchmark_id = save_benchmark(label, description, file_paths)
-            if benchmark_id is None:
-                # Handle error: benchmark was not saved
-                print("Failed to save benchmark!")
-                return
-        self._current_benchmark_id = benchmark_id
-        self._current_benchmark_file_paths = file_paths
+        description = f"Benchmark with {pdf_to_run.name}"
 
-        model_to_run = model_names[0]
+        # We need to be able to support multiple models, so we need to break this into multiple runs (queue-based)
+        # For now we're just grabbing the first model in the list to keep the interface working.
+        # In a future update, we'd want to run multiple models in sequence, or even in parallel.
+        model_to_run = model_names[0] # Just use the first model for now
+
+        # Always create a new benchmark when initiated from the benchmark creation page
+        # This ensures different question+answer sets using the same PDF don't overwrite each other
+        benchmark_id = save_benchmark(label, description, [str(pdf_to_run)], model_name=model_to_run)
+
+        self._current_benchmark_id = benchmark_id
+        self._current_benchmark_file_paths = [pdf_to_run]
+
         job_id = self._next_job_id
         self._next_job_id += 1
-        # Track job as 'unfinished' with initial metadata
         self.jobs[job_id] = {
+            'benchmark_id': benchmark_id,
             'status': 'unfinished',
             'progress': 0.0,
-            'label': label,
-            'file_paths': file_paths,
-            'model': model_to_run,
-            'start_time': datetime.now(),
+            'pdf_name': pdf_to_run.name,
+            'model_name': model_to_run,
             'total_prompts': len(prompts),
             'current_prompt': 0,
             'status_message': 'Initializing...'
         }
-        if hasattr(self.ui_bridge, 'notify_active_benchmarks_updated'):
-            self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
+        
+        # Update active benchmarks in the UI
+        self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
+        self.ui_bridge.notify_data_change(DataChangeType.ACTIVE_BENCHMARKS, self.get_active_benchmarks_info())
 
+        # Log the benchmark start in the console
         self.ui_bridge.clear_console_log()
         self.ui_bridge.update_console_log(f"[{job_id}] Running benchmark with {pdf_to_run.name}...\n")
-        self.ui_bridge.show_console_page()
         self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] starting with {pdf_to_run.name}")
-
+        
+        # Start the worker thread
         self.worker = BenchmarkWorker(
             prompts,
             pdf_to_run,
@@ -205,6 +243,9 @@ class AppLogic:
             on_finished=lambda result_data: self.handle_run_finished(job_id, result_data)
         )
         self.worker.start()
+        
+        # Immediately go to home page after starting the benchmark
+        self.ui_bridge.show_home_page()
 
     def handle_benchmark_progress(self, job_id: int, progress_data: dict):
         # Update job progress generically
@@ -214,8 +255,17 @@ class AppLogic:
             total = self.jobs[job_id].get('total_prompts', 1)
             current = progress_data.get('current', 0)
             self.jobs[job_id]['progress'] = float(current) / float(total) if total else 0.0
-            if hasattr(self.ui_bridge, 'notify_active_benchmarks_updated'):
-                self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
+            
+            # Notify UI of progress update
+            self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_PROGRESS, {
+                'job_id': job_id,
+                'progress': self.jobs[job_id]['progress'],
+                'message': progress_data.get('message', '')
+            })
+            
+            # Update active benchmarks display
+            self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
+            
         self.ui_bridge.update_console_log(f"[{job_id}] {progress_data.get('message', 'Progress update...')}\n")
 
     def handle_run_finished(self, job_id: int, result: dict):
@@ -224,9 +274,9 @@ class AppLogic:
             self.ui_bridge.show_message("critical", "Worker Error", "Benchmark worker not found during finish.")
             if job_id in self.jobs:
                 self.jobs[job_id]['status'] = 'finished'
-                if hasattr(self.ui_bridge, 'notify_active_benchmarks_updated'):
-                    self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
+                self._notify_benchmark_completion(job_id, None, error="Worker not found")
             return
+
         if result.get("error"):
             error_message = f"Benchmark [{job_id}] failed: {result['error']}"
             self.ui_bridge.show_message("critical", "Benchmark Error", error_message)
@@ -236,17 +286,23 @@ class AppLogic:
                 'message': error_message
             }
             self.ui_bridge.display_benchmark_summary_in_console(summary_for_console, f"Failed Run {job_id}")
+            self._notify_benchmark_completion(job_id, None, error=result['error'])
         else:
             benchmark_id = self._current_benchmark_id
             model_name = result.get('model_name', 'unknown')
             report = f"Mean score: {result.get('mean_score', 'N/A')}, Items: {result.get('items', 'N/A')}, Time: {result.get('elapsed_s', 'N/A')}s"
             latency = result.get('elapsed_s', 0.0)
 
-            total_input_tokens = result.get('total_input_tokens', 0)
+            # Get detailed token counts using new token structure
+            total_standard_input_tokens = result.get('total_standard_input_tokens', 0)
+            total_cached_input_tokens = result.get('total_cached_input_tokens', 0)
             total_output_tokens = result.get('total_output_tokens', 0)
-            total_tokens_overall = result.get('total_tokens', 0) # This is total_input + total_output from runner
+            total_tokens_overall = result.get('total_tokens', 0)
 
-            run_id = save_benchmark_run(benchmark_id, model_name, report, latency, total_input_tokens, total_output_tokens, total_tokens_overall)
+            # Use updated save_benchmark_run signature with standard and cached input tokens
+            run_id = save_benchmark_run(benchmark_id, model_name, report, latency, 
+                                       total_standard_input_tokens, total_cached_input_tokens, 
+                                       total_output_tokens, total_tokens_overall)
 
             if run_id:
                 prompts_data = result.get('prompts_data', [])
@@ -256,24 +312,57 @@ class AppLogic:
                     response = p.get('actual_answer', '')
                     score = str(p.get('score', ''))
                     latency_val = p.get('latency_ms', 0.0)
-
-                    input_tokens_prompt = p.get('input_tokens', 0)
+                    
+                    # Use detailed token breakdown
+                    standard_input_tokens_prompt = p.get('standard_input_tokens', 0)
+                    cached_input_tokens_prompt = p.get('cached_input_tokens', 0)
                     output_tokens_prompt = p.get('output_tokens', 0)
 
-                    save_benchmark_prompt(run_id, prompt, answer, response, score, latency_val, input_tokens_prompt, output_tokens_prompt)
+                    save_benchmark_prompt(run_id, prompt, answer, response, score, latency_val, 
+                                         standard_input_tokens_prompt, cached_input_tokens_prompt, output_tokens_prompt)
 
                 self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] run saved with DB ID: {run_id}", 5000)
+                
+                # Store summary in the result for notifications
+                result['summary'] = {
+                    'run_id': run_id,
+                    'model_name': model_name,
+                    'mean_score': result.get('mean_score', 'N/A'),
+                    'items': result.get('items', 'N/A'),
+                    'elapsed_s': result.get('elapsed_s', 'N/A')
+                }
             else:
                 self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] failed to save to database.", 5000)
                 self.ui_bridge.show_message("warning", "DB Error", f"Could not save benchmark [{job_id}] results to the database.")
+
+            # Display results in console
             summary_result_for_console = result.copy()
             self.ui_bridge.display_benchmark_summary_in_console(summary_result_for_console, f"Run {job_id} (DB ID: {run_id})")
             self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] completed.", 5000)
-        # Mark job as finished
+            
+            # Notify completion with success
+            self._notify_benchmark_completion(job_id, result)
+
+        # Mark job as finished and redirect to home
         if job_id in self.jobs:
             self.jobs[job_id]['status'] = 'finished'
-            if hasattr(self.ui_bridge, 'notify_active_benchmarks_updated'):
-                self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
+        self.ui_bridge.show_home_page()
+
+    def _notify_benchmark_completion(self, job_id: int, result: Optional[dict], error: str = None) -> None:
+        """Notify UI of benchmark completion"""
+        # Notify benchmark completion
+        self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_COMPLETED, {
+            'job_id': job_id,
+            'success': error is None,
+            'error': error,
+            'result': result
+        })
+        
+        # Update active benchmarks list
+        self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
+        
+        # Trigger a refresh of the benchmark list
+        self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_LIST, None)
 
     def get_active_benchmarks_info(self) -> dict:
         # Return only unfinished jobs for UI display

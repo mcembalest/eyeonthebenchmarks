@@ -57,7 +57,8 @@ def init_db(db_path: Path = Path.cwd()):
             report TEXT,
             latency REAL,
             created_at TEXT NOT NULL,
-            total_input_tokens INTEGER DEFAULT 0,
+            total_standard_input_tokens INTEGER DEFAULT 0,
+            total_cached_input_tokens INTEGER DEFAULT 0,
             total_output_tokens INTEGER DEFAULT 0,
             total_tokens INTEGER DEFAULT 0,
             FOREIGN KEY (benchmark_id) REFERENCES {BENCHMARKS_TABLE_NAME}(id)
@@ -65,21 +66,22 @@ def init_db(db_path: Path = Path.cwd()):
     ''')
 
     # Benchmark Prompts Table
-    cursor.execute(f'''
-        CREATE TABLE IF NOT EXISTS {BENCHMARK_PROMPTS_TABLE_NAME} (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            benchmark_run_id INTEGER NOT NULL,
-            prompt TEXT,
-            answer TEXT,
-            response TEXT,
-            score TEXT,
-            latency REAL,
-            input_tokens INTEGER,
-            output_tokens INTEGER,
-            scoring_config_id INTEGER,
-            FOREIGN KEY (benchmark_run_id) REFERENCES {BENCHMARK_RUNS_TABLE_NAME}(id),
-            FOREIGN KEY (scoring_config_id) REFERENCES {SCORING_CONFIGS_TABLE_NAME}(id)
-        )
+    cursor.execute(f'''    
+        CREATE TABLE IF NOT EXISTS {BENCHMARK_PROMPTS_TABLE_NAME} (        
+            id INTEGER PRIMARY KEY AUTOINCREMENT,        
+            benchmark_run_id INTEGER NOT NULL,        
+            prompt TEXT,        
+            answer TEXT,        
+            response TEXT,        
+            score TEXT,        
+            latency REAL,        
+            standard_input_tokens INTEGER,      
+            cached_input_tokens INTEGER,      
+            output_tokens INTEGER,        
+            scoring_config_id INTEGER,        
+            FOREIGN KEY (benchmark_run_id) REFERENCES {BENCHMARK_RUNS_TABLE_NAME}(id),        
+            FOREIGN KEY (scoring_config_id) REFERENCES {SCORING_CONFIGS_TABLE_NAME}(id)    
+        )       
     ''')
 
     # Scoring Configs Table
@@ -180,7 +182,7 @@ def get_openai_file_id(pdf_path: Path, db_path: Path = Path.cwd()) -> str | None
     finally:
         conn.close()
 
-def save_benchmark(label: str, description: str, file_paths: list[str], db_path: Path = Path.cwd()) -> int | None:
+def save_benchmark(label: str, description: str, file_paths: list[str], model_name: str = None, db_path: Path = Path.cwd()) -> int | None:
     """Saves a new benchmark and its associated files, returns the benchmark ID."""
     db_file = db_path / DB_NAME
     conn = sqlite3.connect(db_file)
@@ -198,6 +200,14 @@ def save_benchmark(label: str, description: str, file_paths: list[str], db_path:
                 INSERT INTO benchmark_files (benchmark_id, file_path)
                 VALUES (?, ?)
             ''', (benchmark_id, file_path))
+        # Store model name if provided
+        if model_name:
+            # Create a placeholder benchmark run to store the model association
+            cursor.execute(f'''
+                INSERT INTO {BENCHMARK_RUNS_TABLE_NAME} 
+                (benchmark_id, model_name, report, latency, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (benchmark_id, model_name, "Model association", 0.0, timestamp))
         conn.commit()
         return benchmark_id
     except sqlite3.Error as e:
@@ -242,7 +252,7 @@ def get_benchmark_files(benchmark_id: int, db_path: Path = Path.cwd()) -> list[s
     finally:
         conn.close()
 
-def save_benchmark_run(benchmark_id: int, model_name: str, report: str, latency: float, total_input_tokens: int, total_output_tokens: int, total_tokens: int, db_path: Path = Path.cwd()) -> int | None:
+def save_benchmark_run(benchmark_id: int, model_name: str, report: str, latency: float, total_standard_input_tokens: int, total_cached_input_tokens: int, total_output_tokens: int, total_tokens: int, db_path: Path = Path.cwd()) -> int | None:
     """Saves a benchmark run and returns its ID."""
     db_file = db_path / DB_NAME
     conn = sqlite3.connect(db_file)
@@ -250,9 +260,9 @@ def save_benchmark_run(benchmark_id: int, model_name: str, report: str, latency:
     created_at_ts = datetime.datetime.now().isoformat()
     try:
         cursor.execute(f'''
-            INSERT INTO {BENCHMARK_RUNS_TABLE_NAME} (benchmark_id, model_name, report, latency, created_at, total_input_tokens, total_output_tokens, total_tokens)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (benchmark_id, model_name, report, latency, created_at_ts, total_input_tokens, total_output_tokens, total_tokens))
+            INSERT INTO {BENCHMARK_RUNS_TABLE_NAME} (benchmark_id, model_name, report, latency, created_at, total_standard_input_tokens, total_cached_input_tokens, total_output_tokens, total_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (benchmark_id, model_name, json.dumps(report), latency, created_at_ts, total_standard_input_tokens, total_cached_input_tokens, total_output_tokens, total_tokens))
         run_id = cursor.lastrowid
         conn.commit()
         return run_id
@@ -262,16 +272,16 @@ def save_benchmark_run(benchmark_id: int, model_name: str, report: str, latency:
     finally:
         conn.close()
 
-def save_benchmark_prompt(benchmark_run_id: int, prompt: str, answer: str, response: str, score: str, latency: float, input_tokens: int, output_tokens: int, scoring_config_id: int | None = None, db_path: Path = Path.cwd()) -> int | None:
+def save_benchmark_prompt(benchmark_run_id: int, prompt: str, answer: str, response: str, score: str, latency: float, standard_input_tokens: int, cached_input_tokens: int, output_tokens: int, scoring_config_id: int | None = None, db_path: Path = Path.cwd()):
     """Saves a prompt result for a benchmark run."""
     db_file = db_path / DB_NAME
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
     try:
         cursor.execute(f'''
-            INSERT INTO {BENCHMARK_PROMPTS_TABLE_NAME} (benchmark_run_id, prompt, answer, response, score, latency, input_tokens, output_tokens, scoring_config_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (benchmark_run_id, prompt, answer, response, score, latency, input_tokens, output_tokens, scoring_config_id))
+            INSERT INTO {BENCHMARK_PROMPTS_TABLE_NAME} (benchmark_run_id, prompt, answer, response, score, latency, standard_input_tokens, cached_input_tokens, output_tokens, scoring_config_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (benchmark_run_id, prompt, answer, response, score, latency, standard_input_tokens, cached_input_tokens, output_tokens, scoring_config_id))
         prompt_id = cursor.lastrowid
         conn.commit()
         return prompt_id
@@ -327,43 +337,49 @@ def load_all_benchmark_runs(db_path: Path = Path.cwd()) -> list[dict]:
     runs = []
     try:
         cursor.execute(f'''
-            SELECT 
-                b.id as benchmark_id, 
-                b.timestamp as benchmark_timestamp, 
-                b.label as benchmark_label,
-                (SELECT file_path FROM benchmark_files bf WHERE bf.benchmark_id = b.id LIMIT 1) as pdf_path, 
-                br.model_name, 
-                br.report, 
-                br.latency as elapsed_seconds,
-                br.total_input_tokens, 
-                br.total_output_tokens, 
-                br.total_tokens,
-                br.id as run_id,
-                br.created_at as run_timestamp
+            SELECT br.id, br.benchmark_id, b.label as benchmark_label, br.model_name, br.report, br.latency, br.created_at,
+                br.total_standard_input_tokens, br.total_cached_input_tokens, br.total_output_tokens, br.total_tokens,
+                GROUP_CONCAT(DISTINCT bf.file_path) as file_paths
             FROM {BENCHMARK_RUNS_TABLE_NAME} br
-            JOIN {BENCHMARKS_TABLE_NAME} b ON br.benchmark_id = b.id
-            ORDER BY br.created_at DESC
+        JOIN {BENCHMARKS_TABLE_NAME} b ON br.benchmark_id = b.id
+        LEFT JOIN benchmark_files bf ON br.benchmark_id = bf.benchmark_id
+        GROUP BY br.id
+        ORDER BY br.created_at DESC
         ''')
         rows = cursor.fetchall()
         for row_data in rows:
-            run_dict = dict(row_data)
-            # Attempt to parse mean_score and total_items from report string for compatibility
-            # This is brittle; ideally, these would be separate columns in BENCHMARK_RUNS_TABLE_NAME
-            run_dict['mean_score'] = None
-            run_dict['total_items'] = None
-            if run_dict.get('report'):
-                try:
-                    report_str = run_dict['report']
-                    if "Mean score:" in report_str and "Items:" in report_str:
-                        parts = report_str.split(',')
-                        for part in parts:
-                            if "Mean score:" in part:
-                                run_dict['mean_score'] = float(part.split(':')[1].strip())
-                            if "Items:" in part:
-                                run_dict['total_items'] = int(part.split(':')[1].split(',')[0].strip())
-                except Exception:
-                    pass # Ignore parsing errors, fields will remain None
-            runs.append(run_dict)
+            runs.append({    
+                "id": row_data[0], 
+                "benchmark_id": row_data[1], 
+                "benchmark_label": row_data[2], 
+                "model_name": row_data[3],    
+                "report": json.loads(row_data[4]) if row_data[4] else {}, 
+                "latency": row_data[5], 
+                "created_at": row_data[6],    
+                "total_standard_input_tokens": row_data[7], 
+                "total_cached_input_tokens": row_data[8], 
+                "total_output_tokens": row_data[9], 
+                "total_tokens": row_data[10],    
+                "file_paths": row_data[11].split(',') if row_data[11] else []}
+            )
+            # run_dict = dict(row_data)
+            # # Attempt to parse mean_score and total_items from report string for compatibility
+            # # This is brittle; ideally, these would be separate columns in BENCHMARK_RUNS_TABLE_NAME
+            # run_dict['mean_score'] = None
+            # run_dict['total_items'] = None
+            # if run_dict.get('report'):
+            #     try:
+            #         report_str = run_dict['report']
+            #         if "Mean score:" in report_str and "Items:" in report_str:
+            #             parts = report_str.split(',')
+            #             for part in parts:
+            #                 if "Mean score:" in part:
+            #                     run_dict['mean_score'] = float(part.split(':')[1].strip())
+            #                 if "Items:" in part:
+            #                     run_dict['total_items'] = int(part.split(':')[1].split(',')[0].strip())
+            #     except Exception:
+            #         pass # Ignore parsing errors, fields will remain None
+            # runs.append(run_dict)
         print(f"Loaded {len(runs)} benchmark runs from DB.")
     except sqlite3.Error as e:
         print(f"SQLite error when loading benchmark runs: {e}")
@@ -405,7 +421,8 @@ def load_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> dic
 
         # 3. Fetch the most recent benchmark run for this benchmark
         cursor.execute(f'''
-            SELECT id AS run_id, model_name, report, latency, created_at AS run_timestamp
+            SELECT id AS run_id, model_name, report, latency, created_at AS run_timestamp, 
+                   total_standard_input_tokens, total_cached_input_tokens, total_output_tokens, total_tokens
             FROM {BENCHMARK_RUNS_TABLE_NAME}
             WHERE benchmark_id = ?
             ORDER BY created_at DESC 
@@ -438,7 +455,8 @@ def load_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> dic
 
             # 4. Fetch prompts for this specific run
             cursor.execute(f'''
-                SELECT prompt, answer AS expected_answer, response AS actual_answer, score, latency AS prompt_latency, input_tokens, output_tokens
+                SELECT prompt, answer AS expected_answer, response AS actual_answer, score, 
+                       latency AS prompt_latency, standard_input_tokens, cached_input_tokens, output_tokens
                 FROM {BENCHMARK_PROMPTS_TABLE_NAME}
                 WHERE benchmark_run_id = ?
                 ORDER BY id ASC
@@ -475,6 +493,8 @@ def load_all_benchmarks_with_models(db_path: Path = Path.cwd()) -> list[dict]:
         rows = cursor.fetchall()
         for row in rows:
             benchmark = dict(row)
+            
+            # Get model names
             cursor.execute(f'''
                 SELECT DISTINCT model_name FROM {BENCHMARK_RUNS_TABLE_NAME}
                 WHERE benchmark_id = ?
@@ -482,11 +502,91 @@ def load_all_benchmarks_with_models(db_path: Path = Path.cwd()) -> list[dict]:
             model_rows = cursor.fetchall()
             model_names = [m['model_name'] for m in model_rows]
             benchmark['model_names'] = model_names
+            
+            # Get file paths
             cursor.execute('''
                 SELECT file_path FROM benchmark_files WHERE benchmark_id = ?
             ''', (row['id'],))
             file_rows = cursor.fetchall()
             benchmark['file_paths'] = [f['file_path'] for f in file_rows]
+            
+            # Get model results (score, latency, cost)
+            model_results = {}
+            for model_name in model_names:
+                # Get run data for this model
+                cursor.execute(f'''
+                    SELECT id, latency, total_standard_input_tokens, total_cached_input_tokens, total_output_tokens, total_tokens, report
+                    FROM {BENCHMARK_RUNS_TABLE_NAME}
+                    WHERE benchmark_id = ? AND model_name = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ''', (row['id'], model_name))
+                run_row = cursor.fetchone()
+                
+                if run_row:
+                    run_data = dict(run_row)
+                    run_id = run_data['id']
+                    
+                    # Get average score from prompts
+                    cursor.execute(f'''
+                        SELECT AVG(CAST(score AS REAL)) as avg_score
+                        FROM {BENCHMARK_PROMPTS_TABLE_NAME}
+                        WHERE benchmark_run_id = ? AND score IS NOT NULL AND score != ''
+                    ''', (run_id,))
+                    score_row = cursor.fetchone()
+                    avg_score = score_row['avg_score'] if score_row and score_row['avg_score'] is not None else 0
+                    
+                    # Calculate estimated cost based on tokens and model
+                    # This uses the detailed token breakdown for more accurate pricing
+                    standard_input_tokens = run_data['total_standard_input_tokens'] or 0
+                    cached_input_tokens = run_data['total_cached_input_tokens'] or 0
+                    output_tokens = run_data['total_output_tokens'] or 0
+                    
+                    # Cost calculation based on accurate pricing
+                    cost = 0
+                    # Convert tokens to millions for easier calculation with pricing
+                    standard_input_tokens_m = standard_input_tokens / 1000000
+                    cached_input_tokens_m = cached_input_tokens / 1000000
+                    output_tokens_m = output_tokens / 1000000
+                    
+                    if model_name == "gpt-4o":
+                        cost = (standard_input_tokens_m * 2.50) + (cached_input_tokens_m * 0.63) + (output_tokens_m * 10.00)  # Estimated cached input 1/4 price
+                    elif model_name == "gpt-4o-mini":
+                        cost = (standard_input_tokens_m * 0.15) + (cached_input_tokens_m * 0.04) + (output_tokens_m * 0.60)  # Estimated cached input 1/4 price
+                    elif model_name == "gpt-4.1":
+                        cost = (standard_input_tokens_m * 2.00) + (cached_input_tokens_m * 0.50) + (output_tokens_m * 8.00)  # Exact pricing from user
+                    elif model_name == "gpt-4.1-mini":
+                        cost = (standard_input_tokens_m * 0.40) + (cached_input_tokens_m * 0.10) + (output_tokens_m * 1.60)  # Exact pricing from user
+                    elif model_name == "gpt-4.1-nano":
+                        cost = (standard_input_tokens_m * 0.100) + (cached_input_tokens_m * 0.025) + (output_tokens_m * 0.400)  # Exact pricing from user
+                    elif model_name == "o3-mini":
+                        cost = (standard_input_tokens_m * 1.10) + (cached_input_tokens_m * 0.28) + (output_tokens_m * 4.40)  # Estimated cached input 1/4 price
+                    elif model_name == "o4":
+                        cost = (standard_input_tokens_m * 2.00) + (cached_input_tokens_m * 0.50) + (output_tokens_m * 8.00)  # Estimate based on similar models
+                    elif model_name == "o4-mini":
+                        cost = (standard_input_tokens_m * 1.10) + (cached_input_tokens_m * 0.28) + (output_tokens_m * 4.40)  # Estimated cached input 1/4 price
+                    
+                    model_results[model_name] = {
+                        'score': avg_score * 100 if avg_score is not None else 'N/A',  # Convert to percentage
+                        'latency': run_data['latency'] or 'N/A',
+                        'cost': cost,
+                        'standard_input_tokens': standard_input_tokens,
+                        'cached_input_tokens': cached_input_tokens,
+                        'output_tokens': output_tokens,
+                        'total_tokens': run_data['total_tokens'] or 0
+                    }
+                else:
+                    model_results[model_name] = {
+                        'score': 'N/A',
+                        'latency': 'N/A',
+                        'cost': 'N/A',
+                        'standard_input_tokens': 0,
+                        'cached_input_tokens': 0,
+                        'output_tokens': 0,
+                        'total_tokens': 0
+                    }
+            
+            benchmark['model_results'] = model_results
             benchmarks.append(benchmark)
     except sqlite3.OperationalError as e:
         if "no such table" in str(e).lower():
@@ -504,15 +604,21 @@ def load_all_benchmarks_with_models(db_path: Path = Path.cwd()) -> list[dict]:
             conn.close()
     return benchmarks
 
-def find_benchmark_by_files(file_paths: list[str], db_path: Path = Path.cwd()) -> int | None:
+def find_benchmark_by_files(file_paths: list, db_path: Path = Path.cwd()) -> int | None:
     """Returns the benchmark ID for a given set of file paths, or None if not found. (Matches on first file for now)"""
+    if not file_paths or len(file_paths) == 0:
+        return None
+        
+    # Convert Path objects to strings if necessary
+    first_path = str(file_paths[0]) if hasattr(file_paths[0], '__fspath__') else file_paths[0]
+    
     db_file = db_path / DB_NAME
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
     try:
         cursor.execute('''
             SELECT benchmark_id FROM benchmark_files WHERE file_path = ?
-        ''', (file_paths[0],))
+        ''', (first_path,))
         row = cursor.fetchone()
         if row:
             return row[0]
@@ -522,6 +628,19 @@ def find_benchmark_by_files(file_paths: list[str], db_path: Path = Path.cwd()) -
         return None
     finally:
         conn.close()
+
+def get_active_benchmarks():
+    """Return a dictionary of active benchmarks based on recent runs.
+    This is used for UI display to show which benchmarks are currently running.
+    
+    Returns:
+        dict: Dictionary with benchmark IDs as keys and benchmark data as values
+    """
+    # In this implementation, we'll return an empty dictionary
+    # The actual active benchmarks are tracked in AppLogic.jobs with 'unfinished' status
+    # This function is called directly from the UI bridge to minimize visual disruption
+    # during polling updates
+    return {}
 
 def delete_benchmark(benchmark_id: int, db_path: Path = Path.cwd()) -> bool:
     """Deletes a benchmark and all associated files, runs, and prompts."""
@@ -547,6 +666,7 @@ def delete_benchmark(benchmark_id: int, db_path: Path = Path.cwd()) -> bool:
 
 # Example usage (optional, for testing)
 if __name__ == '__main__':
+    # ... (rest of the code remains the same)
     # Create a dummy files directory and a dummy PDF for testing
     test_files_dir = Path.cwd() / "test_files_for_store"
     test_files_dir.mkdir(exist_ok=True)
