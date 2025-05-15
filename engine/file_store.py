@@ -568,8 +568,8 @@ def load_all_benchmarks_with_models(db_path: Path = Path.cwd()) -> list[dict]:
                     
                     model_results[model_name] = {
                         'score': avg_score * 100 if avg_score is not None else 'N/A',  # Convert to percentage
-                        'latency': run_data['latency'] or 'N/A',
-                        'cost': cost,
+                        'latency': run_data['latency'] if run_data['latency'] is not None else 'N/A',
+                        'cost': cost if cost is not None else 0.0,
                         'standard_input_tokens': standard_input_tokens,
                         'cached_input_tokens': cached_input_tokens,
                         'output_tokens': output_tokens,

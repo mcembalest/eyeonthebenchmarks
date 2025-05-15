@@ -10,8 +10,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView
 )
 from PySide6.QtGui import QIcon, QPixmap, QColor, QBrush, QAction
-
-from PySide6.QtCore import Qt, QSize, QThread, QEvent, QObject, Signal
+from PySide6.QtCore import Qt, QSize, QThread, QEvent, QObject, Signal, QTimer
 # Import styles
 from ui_styles import APP_STYLESHEET
 
@@ -141,6 +140,7 @@ class HomePage(QWidget):
         self.grid_widget = QWidget()
         self.grid_layout = QGridLayout(self.grid_widget)
         self.grid_layout.setSpacing(16)  # Add spacing between cards
+        self.grid_layout.setRowMinimumHeight(0, 20)  # Reduced height since delete icon is now smaller
         scroll_area.setWidget(self.grid_widget)
         self.layout.addWidget(scroll_area)
 
@@ -261,13 +261,15 @@ class HomePage(QWidget):
             card_layout = QGridLayout(card)
             card_layout.setContentsMargins(12, 12, 12, 12)
             card_layout.setSpacing(8)
+            card_layout.setRowMinimumHeight(0, 28)  # Reserve space in row 0 for delete icon without overlapping content
             
             # Content container for the card
             content_widget = QWidget()
             vbox = QVBoxLayout(content_widget)
             vbox.setContentsMargins(0, 0, 0, 0)
             vbox.setSpacing(8)
-            card_layout.addWidget(content_widget, 0, 0, 1, 2)
+            # Place main content below the delete button to avoid overlap
+            card_layout.addWidget(content_widget, 1, 0, 1, 2)
             
             # Header with title and status icon
             header_layout = QHBoxLayout()
@@ -366,24 +368,33 @@ class HomePage(QWidget):
             # Create a QLabel for the delete icon that appears on hover
             del_label = QLabel()
             del_label.setToolTip("Delete benchmark")
-            del_label.setFixedSize(20, 20)
+            del_label.setFixedSize(16, 16)  # Smaller size to be less disruptive
             del_label.setCursor(Qt.PointingHandCursor)
+            # Keep a reference to prevent garbage collection
+            card._del_label = del_label
             
             # Load the image directly as a pixmap
             del_pixmap = QPixmap("assets/delete.jpg")
             if not del_pixmap.isNull():
-                del_label.setPixmap(del_pixmap.scaled(20, 20, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                del_label.setPixmap(del_pixmap.scaled(16, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             
             # Create a mouse event handler for the label
             def label_click_handler(event):
                 self.confirm_delete_benchmark(bench.get('id'))
             del_label.mousePressEvent = label_click_handler
             
-            # Initially hide the delete label
+            # Create a container widget for the delete button to maintain layout stability
+            delete_container = QWidget()
+            delete_container.setFixedSize(18, 18)  # Slightly larger than the button to provide padding
+            delete_layout = QVBoxLayout(delete_container)
+            delete_layout.setContentsMargins(0, 0, 0, 0)
+            delete_layout.addWidget(del_label, alignment=Qt.AlignCenter)
+            
+            # Initially hide just the label, not the container
             del_label.hide()
             
-            # Position in top-right corner
-            card_layout.addWidget(del_label, 0, 1, 1, 1, Qt.AlignTop | Qt.AlignRight)
+            # Position delete container in top-right corner of the grid cell
+            card_layout.addWidget(delete_container, 0, 1, 1, 1, Qt.AlignTop | Qt.AlignRight)
             
             # Create an event filter for the card to handle hover events
             class HoverFilter(QObject):
@@ -401,7 +412,7 @@ class HomePage(QWidget):
                     return False
             
             # Install the event filter on the card
-            hover_filter = HoverFilter(card, del_label)
+            hover_filter = HoverFilter(card, del_label)  # We still pass del_label as what gets shown/hidden
             card.installEventFilter(hover_filter)
             
             # Store reference to filter to prevent garbage collection
@@ -569,6 +580,7 @@ class HomePage(QWidget):
 
 
 class ComposerPage(QWidget):
+    
     def __init__(self):
         super().__init__()
         self.selected_pdf_path: Path | None = None
@@ -591,8 +603,16 @@ class ComposerPage(QWidget):
         prompts_layout = QVBoxLayout(prompts_card)
         prompts_layout.setContentsMargins(0, 0, 0, 0)
         prompts_layout.setSpacing(12)
+        # Header row with label and import button
+        prompts_header = QHBoxLayout()
         prompts_label = QLabel("Paste or type your test prompts:")
-        prompts_layout.addWidget(prompts_label)
+        prompts_header.addWidget(prompts_label)
+        prompts_header.addStretch(1)
+        self.csv_import_button = QPushButton("Import from CSV")
+        self.csv_import_button.setToolTip("Import prompts from a CSV file")
+        self.csv_import_button.clicked.connect(self.import_csv)
+        prompts_header.addWidget(self.csv_import_button)
+        prompts_layout.addLayout(prompts_header)
         self.table = QTableWidget(5, 2)
         self.table.setObjectName("PromptsTable")
         self.table.setAlternatingRowColors(True)
@@ -686,17 +706,26 @@ class ComposerPage(QWidget):
         outer_layout.setSpacing(0)
 
     def select_pdf_file(self):
-        start_dir = str(Path.cwd() / "files")
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, 
-            "Select PDF File", 
-            start_dir, 
-            "PDF Files (*.pdf)"
-        )
-        if file_path:
-            self.selected_pdf_path = Path(file_path)
-            self.selected_pdf_label.setText(self.selected_pdf_path.name)
-        else:
+        try:
+            # Use native=False to avoid macOS-specific issues
+            options = QFileDialog.Option.DontUseNativeDialog
+            start_dir = str(Path.cwd() / "files")
+            
+            # Use a more robust file selection approach
+            dialog = QFileDialog(self, "Select PDF File", start_dir, "PDF Files (*.pdf)")
+            dialog.setOptions(options)
+            
+            if dialog.exec():
+                file_path = dialog.selectedFiles()[0]
+                self.selected_pdf_path = Path(file_path)
+                self.selected_pdf_label.setText(self.selected_pdf_path.name)
+            else:
+                self.selected_pdf_path = None
+                self.selected_pdf_label.setText("No PDF selected")
+                
+        except Exception as e:
+            print(f"Error selecting file: {e}")
+            QMessageBox.critical(self, "File Selection Error", f"Could not open file dialog: {e}")
             self.selected_pdf_path = None
             self.selected_pdf_label.setText("No PDF selected")
 
@@ -719,6 +748,53 @@ class ComposerPage(QWidget):
             if item.checkState() == Qt.Checked:
                 selected_models.append(item.text())
         return selected_models
+        
+    def import_csv(self):
+        try:
+            # Use native=False to avoid macOS-specific issues
+            options = QFileDialog.Option.DontUseNativeDialog
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select CSV File",
+                str(Path.cwd()),
+                "CSV Files (*.csv)",
+                options=options
+            )
+            
+            if not file_path:
+                return  # User canceled the operation
+                
+            # Read CSV file
+            import csv
+            with open(file_path, 'r', encoding='utf-8') as csv_file:
+                csv_reader = csv.reader(csv_file)
+                data = list(csv_reader)
+                
+            # Clear existing table
+            self.table.clearContents()
+            
+            # Make sure we have enough rows
+            required_rows = len(data)
+            current_rows = self.table.rowCount()
+            if required_rows > current_rows:
+                self.table.setRowCount(required_rows)
+            
+            # Populate table with CSV data
+            for row_idx, row_data in enumerate(data):
+                if len(row_data) >= 2:  # We need at least 2 columns
+                    # Set prompt (1st column)
+                    prompt_item = QTableWidgetItem(row_data[0])
+                    self.table.setItem(row_idx, 0, prompt_item)
+                    
+                    # Set expected (2nd column)
+                    expected_item = QTableWidgetItem(row_data[1])
+                    self.table.setItem(row_idx, 1, expected_item)
+            
+            QMessageBox.information(self, "CSV Import", f"Successfully imported {len(data)} rows from CSV.")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "CSV Import Error", f"Failed to import CSV: {str(e)}")
+            print(f"CSV import error: {e}")
 
 # --- Main window ----------------------------------------------------------
 class MainWindow(QMainWindow):
@@ -751,10 +827,6 @@ class MainWindow(QMainWindow):
         new_action = QAction("New Benchmark", self)
         new_action.triggered.connect(self.new_benchmark_requested.emit)
         tb.addAction(new_action)
-        tb.addSeparator()
-        open_action = QAction("Open prompts CSV", self)
-        open_action.triggered.connect(self.open_csv_requested.emit)
-        tb.addAction(open_action)
 
         # Connect signals from composer and home page
         self.composer.run_btn.clicked.connect(self._emit_run_benchmark_request)
@@ -773,30 +845,37 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Ready")
 
     def _emit_run_benchmark_request(self):
-        prompts = self.composer.get_prompt_rows()
-        pdf_path = self.composer.selected_pdf_path
-        selected_models = self.composer.get_selected_models() # Get list of selected models
+        try:
+            prompts = self.composer.get_prompt_rows()
+            pdf_path = self.composer.selected_pdf_path
+            selected_models = self.composer.get_selected_models() # Get list of selected models
 
-        if not prompts:
-            QMessageBox.warning(self, "No prompts", "Please enter at least one prompt.")
-            return
-        if not pdf_path:
-            QMessageBox.warning(self, "No PDF", "Please select a PDF file for the benchmark.")
-            return
-        if not pdf_path.exists(): # Check existence here as it's UI related
-            QMessageBox.critical(self, "File Error", f"Selected PDF not found: {pdf_path}")
-            return
-        if not selected_models: # Check if at least one model is selected
-            QMessageBox.warning(self, "No Model(s)", "Please select at least one model for the benchmark.")
-            return
-        self.run_benchmark_requested.emit(prompts, pdf_path, selected_models) # Emit with list of models
+            if not prompts:
+                QMessageBox.warning(self, "No prompts", "Please enter at least one prompt.")
+                return
+            if not pdf_path:
+                QMessageBox.warning(self, "No PDF", "Please select a PDF file for the benchmark.")
+                return
+            if not pdf_path.exists(): # Check existence here as it's UI related
+                QMessageBox.critical(self, "File Error", f"Selected PDF not found: {pdf_path}")
+                return
+            if not selected_models: # Check if at least one model is selected
+                QMessageBox.warning(self, "No Model(s)", "Please select at least one model for the benchmark.")
+                return
+                
+            # Use QTimer.singleShot to ensure we return to the event loop before emitting the signal
+            QTimer.singleShot(0, lambda: self.run_benchmark_requested.emit(prompts, pdf_path, selected_models))
+        except Exception as e:
+            print(f"Error in run benchmark request: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to prepare benchmark: {e}")
 
     def _emit_benchmark_selected(self, benchmark_id: int):
         if benchmark_id is not None:
+            # Use QTimer.singleShot to ensure we return to the event loop before emitting the signal
+            QTimer.singleShot(0, lambda: self.benchmark_selected.emit(benchmark_id))
             self.benchmark_selected.emit(benchmark_id)
         else:
             QMessageBox.warning(self, "Error", "Could not retrieve benchmark ID.")
-
 
     def show_composer_page(self):
         self.stack.setCurrentWidget(self.composer)
