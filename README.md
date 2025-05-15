@@ -40,8 +40,13 @@ python main_qt.py
 ## Features
 
 - Create new benchmarks with PDF documents
+- Import prompts from CSV files
 - Define custom test prompts and expected answers
 - Run multiple models on the same benchmark
+- Detailed token tracking (standard and cached input tokens)
+- Accurate cost calculation for each model
+- Latency measurement per prompt
+- CSV export for analysis in external tools
 - View and compare results across different models
 - Support for multiple benchmarks with the same PDF
 - Grid and table view for benchmark management
@@ -50,6 +55,6 @@ python main_qt.py
 
 The application uses:
 - PySide6 for the native UI
-- SQLite for data storage
+- SQLite for data storage (with token-type-aware schema)
 - PyPDF2 for PDF processing
 - OpenAI API for model interactions

@@ -4,17 +4,19 @@
 - [HIGH PRIORITY] Ensure overall benchmark creation and deployment process is extremely frictionless, especially for non-AI users.
 - [HIGH PRIORITY] Enable easy export of benchmark results to **CSV files** (for analysis and chart creation in tools like Excel).
 - [ ] (Clarify) No direct application-to-Excel integration needed. Output is CSV.
-- [ ] Decouple application logic from Qt (currently `[started]`)
+- [x] Decouple application logic from Qt (currently `[completed]` - UI bridge pattern implemented in main_qt.py)
 - [ ] Implement VBA macro reception (if for Python-side execution of user-defined scoring logic, otherwise re-evaluate)
 - [ ] Allow model customization (beyond predefined list)
 
 ## UI
 - [ ] Display model icon next to model name consistently (including benchmark creation dropdown)
+- [ ] Improve UI responsiveness during benchmark runs
+- [ ] Add progress indicators for long operations (file uploads, benchmark runs)
 
 ## Models
 ### OpenAI
-- [ ] Add support for gpt4o (+mini)
-- [ ] Add support for gpt4.1 (+mini, nano)
+- [x] Add support for gpt4o (+mini) (currently `[done]`)
+- [x] Add support for gpt4.1 (+mini, nano) (currently `[done]`)
 - [x] **BUG**: gpt 4.1 nano did not save results even after a successful run (FIXED)
 - [ ] Add support for o3-mini
 - [ ] Add support for o3
@@ -25,6 +27,7 @@
 - [ ] Add support for Gemini 2.5 Flash
 - [ ] Add support for Gemini 2.5 Pro
 - [ ] (Consider Gemini models for image generation if applicable)
+- [ ] Implement Google API client with proper authentication
 
 ## Cloud Providers & File Handling
 ### File Upload & Sync
@@ -46,7 +49,7 @@
 - [x] View benchmarks from load screen (currently `[done]`)
 - [x] Create benchmarks from a CSV (currently `[done]`)
 - [ ] **BUG**: New benchmark overwrites the last benchmark (Needs re-verification given user feedback)
-- [x] **BUG**: Incorrect token count (FIXED)
+- [x] **BUG**: Incorrect token count (FIXED - now correctly handling standard and cached tokens separately)
 - [ ] Replace 'Answer' with 'Response' in UI and data structures where appropriate (clarify if 'Expected Answer' vs 'Model Response')
 
 ### Benchmark Creation
@@ -54,6 +57,7 @@
 - [ ] Allow loading images as part of benchmark questions (especially for multi-modal models)
 - [ ] Fix pasting text into the spreadsheet component (ensure smooth data entry)
 - [ ] Restrict "Open Prompts CSV" button to only the new benchmark creation page (remove from homepage for clarity)
+- [ ] Add template prompts for common benchmark scenarios
 
 ### Benchmark Execution & Sync
 - [x] Navigate to home screen after hitting 'Start'/'Run' (instead of console) (currently `[done]`)
@@ -65,7 +69,9 @@
 
 ### Reporting & Plotting
 - [HIGH PRIORITY] Generate **CSV files** that users can easily use to make charts.
+- [ ] Implement exporter.py to generate detailed CSV exports with all metrics
 - [ ] Auto-update relevant reports and plots within the app when new runs are added (long-term)
+- [ ] Add custom report templates for different analysis needs
 
 ### Contexts for Benchmarks
 - [HIGH PRIORITY] Allow flexible context configuration.
@@ -85,18 +91,19 @@
 - [ ] UI: Clearly display PDF/context limitations (file size, page count, token limits from `runner.py`) to the user during the benchmark setup phase in `ComposerPage`.
 - [ ] Consider adding an option for Optical Character Recognition (OCR) for image-based PDFs - low priority.
 
-
 ### Metrics
 - [MAJOR TODO] Accurately Calculate and Report Cost per Candidate, incorporating KV Caching.
+    - [x] Define database schema to store standard input tokens and cached input tokens separately (implemented in file_store.py)
+    - [x] Update runner.py to track and return standard_input_tokens, cached_input_tokens, and output_tokens separately
     - [ ] Define and store pricing tiers for different models (e.g., GPT-4.1: $2.00/$0.50/$8.00, GPT-4.1-mini: $0.40/$0.10/$1.60, GPT-4.1-nano: $0.100/$0.025/$0.400 per 1M input/cached-input/output tokens respectively).
-    - [ ] Modify token processing to differentiate and record: standard input tokens, **cached input tokens**, and output tokens for each prompt run.
+    - [x] Modify token processing to differentiate and record: standard input tokens, cached input tokens, and output tokens for each prompt run (implemented in runner.py).
     - [ ] Research and implement mechanisms with the OpenAI `responses` API to:
         - [ ] Reliably trigger KV caching for repeated token prefixes.
         - [ ] Verify or get confirmation from API responses if caching was utilized (if possible).
-    - [ ] Update `benchmark_prompts` table (or add new table) in `engine/file_store.py` to store detailed token breakdown (standard input, cached input, output).
-    - [ ] Implement logic to calculate cost based on this detailed token breakdown and model-specific pricing.
-    - [ ] Aggregate and display detailed cost breakdowns in benchmark views and CSV exports.
-- [ ] Measure latency per candidate (already implemented, verify consistency)
+    - [ ] Implement logic to calculate cost based on token breakdown and model-specific pricing.
+    - [ ] Add UI components to display detailed cost breakdowns in benchmark views
+    - [ ] Include cost breakdowns in CSV exports
+- [x] Measure latency per candidate (implemented - each prompt result includes latency_ms)
 - [ ] Measure reasoning cost accurately (re-evaluate if distinct from token costs or if it implies a different metric)
 
 ## Image Generation Benchmarks
@@ -106,13 +113,23 @@
 - [ ] Develop/Integrate scoring mechanisms for image outputs (see Scoring section)
     - [ ] Explore system-defined image scoring (e.g., CLIP scores, aesthetic scores if available via API)
     - [ ] Explore user-provided/manual image scoring rubrics
+- [ ] Implement image storage and retrieval in the database
 
 ## Scoring
 ### Core Functionality
-- [x] Basic scoring: check for expected answer in output (currently `[done]`)
+- [x] Basic scoring: check for expected answer in output (currently `[done]` - implemented in simple_score function in runner.py)
 - [ ] Make scoring configurable during benchmark setup (dropdown of choices, beyond `expected in output`)
 - [ ] Handle image outputs for scoring (critical for Image Generation Benchmarks)
 - [ ] Allow scoring configuration via Visual Basic macros (if for Python-side execution of user-defined scoring logic)
 - [ ] Allow custom scoring item by item (varied correctness logic per question)
 - [ ] Implement manual user review as a scoring mechanism
     - [ ] Support blind manual review (A/B testing for subjective evaluations)
+- [ ] Add semantic similarity scoring option (not just substring matching)
+
+## Architecture & Performance Improvements
+- [x] Implement UI bridge pattern for better separation of concerns (implemented in ui_bridge.py)
+- [ ] Optimize file handling for large PDFs (streaming approach instead of loading entire content)
+- [ ] Add comprehensive error handling and recovery mechanisms
+- [ ] Implement caching layer for frequently accessed data
+- [ ] Add automated testing for core functionality
+- [ ] Improve multithreading to prevent UI freezing during operations
