@@ -10,111 +10,144 @@ import json
 import sqlite3
 from datetime import datetime
 
-# Database path - relative to the script location
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmark_results.db")
+# Debug to log file
+LOG_FILE = "/Users/maxcembalest/Desktop/repos/eyeonthebenchmarks/list_benchmarks.log"
+
+def log_to_file(message):
+    """Write debug message to log file"""
+    with open(LOG_FILE, 'a') as f:
+        f.write(f"{datetime.now()}: {message}\n")
+
+# Clear log file on start
+with open(LOG_FILE, 'w') as f:
+    f.write(f"{datetime.now()}: Starting benchmark listing\n")
+
+# Use absolute path to database file
+DB_PATH = "/Users/maxcembalest/Desktop/repos/eyeonthebenchmarks/eotm_file_store.sqlite"
+log_to_file(f"Using database path: {DB_PATH}")
+print(f"Using database path: {DB_PATH}", file=sys.stderr)
 
 def get_benchmarks():
     """Fetch benchmark data from the database"""
+    log_to_file("Starting get_benchmarks function")
+    
     if not os.path.exists(DB_PATH):
+        log_to_file(f"Database file doesn't exist: {DB_PATH}")
         return []
+    else:
+        log_to_file(f"Database file found at: {DB_PATH}")
     
     try:
+        log_to_file("Connecting to database...")
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
+        log_to_file("Database connection successful")
         
-        # Query benchmark runs
+        # Query benchmarks table based on the exact database structure seen in database.sh
         cursor.execute("""
             SELECT 
-                br.id, 
-                br.start_time, 
-                br.end_time,
-                br.pdf_path,
-                br.label,
-                br.total_standard_input_tokens,
-                br.total_cached_input_tokens
+                b.id, 
+                b.timestamp, 
+                b.label,
+                b.description
             FROM 
-                benchmark_runs br
+                benchmarks b
             ORDER BY 
-                br.start_time DESC
+                b.timestamp DESC
         """)
         
-        runs = cursor.fetchall()
+        benchmark_rows = cursor.fetchall()
         benchmarks = []
         
-        for run in runs:
-            run_id, start_time, end_time, pdf_path, label, std_tokens, cached_tokens = run
+        for benchmark_row in benchmark_rows:
+            benchmark_id, timestamp, label, description = benchmark_row
             
-            # Get models used in this run
+            # Get file paths associated with this benchmark
+            cursor.execute("""
+                SELECT file_path 
+                FROM benchmark_files 
+                WHERE benchmark_id = ?
+            """, (benchmark_id,))
+            file_paths = [row[0] for row in cursor.fetchall()]
+            files = [os.path.basename(path) for path in file_paths if path]
+            
+            # Get models used in this benchmark's runs
             cursor.execute("""
                 SELECT DISTINCT model_name 
-                FROM benchmark_prompts 
-                WHERE run_id = ?
-            """, (run_id,))
+                FROM benchmark_runs 
+                WHERE benchmark_id = ?
+            """, (benchmark_id,))
             models = [row[0] for row in cursor.fetchall()]
             
-            # Calculate elapsed time
-            elapsed_seconds = None
-            if start_time and end_time:
-                try:
-                    start_dt = datetime.fromisoformat(start_time)
-                    end_dt = datetime.fromisoformat(end_time)
-                    elapsed_seconds = (end_dt - start_dt).total_seconds()
-                except:
-                    pass
-            
-            # Get score data
+            # Get token data from runs
             cursor.execute("""
-                SELECT AVG(score), COUNT(*) 
-                FROM benchmark_prompts 
-                WHERE run_id = ? AND score IS NOT NULL
-            """, (run_id,))
-            score_data = cursor.fetchone()
-            mean_score = score_data[0] if score_data and score_data[0] is not None else None
-            total_items = score_data[1] if score_data else 0
-            
-            # Handle file names
-            files = []
-            if pdf_path:
-                files.append(os.path.basename(pdf_path))
+                SELECT 
+                    SUM(total_standard_input_tokens), 
+                    SUM(total_cached_input_tokens),
+                    SUM(total_output_tokens)
+                FROM benchmark_runs 
+                WHERE benchmark_id = ?
+            """, (benchmark_id,))
+            token_data = cursor.fetchone()
+            std_tokens = token_data[0] if token_data and token_data[0] is not None else 0
+            cached_tokens = token_data[1] if token_data and token_data[1] is not None else 0
+            output_tokens = token_data[2] if token_data and token_data[2] is not None else 0
             
             # Calculate total tokens (standard + cached)
-            total_tokens = 0
-            if std_tokens is not None:
-                total_tokens += std_tokens
-            if cached_tokens is not None:
-                total_tokens += cached_tokens
+            total_tokens = std_tokens + cached_tokens + output_tokens
+            
+            # Get run count as total_items since we don't have prompt data
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM benchmark_runs 
+                WHERE benchmark_id = ?
+            """, (benchmark_id,))
+            total_items = cursor.fetchone()[0]
             
             # Format timestamp
-            timestamp = start_time
+            formatted_timestamp = timestamp
             if timestamp:
                 try:
                     dt = datetime.fromisoformat(timestamp)
-                    timestamp = dt.strftime("%Y-%m-%d %H:%M")
+                    formatted_timestamp = dt.strftime("%Y-%m-%d %H:%M")
                 except:
                     pass
             
             benchmark = {
-                "id": run_id,
-                "timestamp": timestamp,
-                "status": "completed" if end_time else "in-progress",
-                "label": label or f"Benchmark {run_id}",
+                "id": benchmark_id,
+                "timestamp": formatted_timestamp,
+                "status": "completed" if models else "in-progress",
+                "label": label or f"Benchmark {benchmark_id}",
+                "description": description,
                 "models": models,
                 "files": files,
-                "mean_score": mean_score,
+                "mean_score": None,  # Not available in current schema
                 "total_items": total_items,
-                "elapsed_seconds": elapsed_seconds,
+                "elapsed_seconds": None,  # Not available in current schema
                 "total_tokens": total_tokens,
             }
             
             benchmarks.append(benchmark)
+        try:
+            conn.close()
+            log_to_file("Database connection closed properly")
+        except Exception as close_error:
+            log_to_file(f"Error closing database: {close_error}")
         
-        conn.close()
+        log_to_file(f"Returning {len(benchmarks)} benchmarks")
         return benchmarks
         
     except Exception as e:
-        print(f"Error accessing database: {e}", file=sys.stderr)
+        error_msg = f"Error accessing database: {e}"
+        log_to_file(error_msg)
+        print(error_msg, file=sys.stderr)
         return []
 
 if __name__ == "__main__":
+    log_to_file("Script running in main context")
     benchmarks = get_benchmarks()
-    print(json.dumps(benchmarks))
+    log_to_file(f"Final benchmark count: {len(benchmarks)}")
+    result = json.dumps(benchmarks)
+    log_to_file(f"JSON result length: {len(result)}")
+    print(result)
+    log_to_file("Script completed")

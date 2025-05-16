@@ -922,6 +922,8 @@ except Exception as e:
 - [ ] Fix pasting text into the spreadsheet component (ensure smooth data entry)
 - [ ] Restrict "Open Prompts CSV" button to only the new benchmark creation page (remove from homepage for clarity)
 - [ ] Add template prompts for common benchmark scenarios
+- [ ] **BUG**: Creating new benchmarks does not work correctly - investigate and fix
+- [ ] **BUG**: Ensure new benchmarks are properly saved to the database with correct IDs
 
 ### Benchmark Execution & Sync
 - [x] Navigate to home screen after hitting 'Start'/'Run' (instead of console) (currently `[done]`)
@@ -997,3 +999,16 @@ except Exception as e:
 - [ ] Implement caching layer for frequently accessed data
 - [ ] Add automated testing for core functionality
 - [ ] Improve multithreading to prevent UI freezing during operations
+
+## Database & Data Access Improvements
+- [x] Fixed the database path in scripts to correctly point to eotm_file_store.sqlite
+- [x] Implemented correct handling of schema with standard_input_tokens and cached_input_tokens stored separately
+- [x] Created load_benchmarks.sh script that runs list_benchmarks.py and saves output to benchmark_data.json
+- [x] Modified the Electron app to read benchmark data from JSON file instead of executing Python each time
+- [x] Updated get_benchmark_details.py to use the correct database schema and relationships
+- [ ] **CRITICAL BUG**: Fix ID mismatch between benchmarks table (IDs 6, 7) and benchmark_runs table (IDs 8, 9 with foreign keys 6, 7)
+- [ ] Update get_benchmark_details.py to distinguish between benchmark IDs and run IDs
+- [ ] Ensure benchmark_data.json is properly regenerated when new benchmarks are created
+- [ ] Investigate issues with creating new benchmarks and ensure they're saved correctly
+- [ ] Add more robust error handling and debugging information in Python-Electron bridge
+- [ ] Consider implementing a proper API layer between Python and Electron for better integration

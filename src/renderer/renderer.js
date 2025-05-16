@@ -112,29 +112,74 @@ runBtn.addEventListener('click', () => {
 
 // Load benchmark data
 async function loadBenchmarks() {
+  // Display direct debugging in the UI
+  const debugContainer = document.getElementById('benchmarksGrid');
+  if (debugContainer) {
+    debugContainer.innerHTML = '<div class="loading">Starting benchmark loading process...</div>';
+  }
+  
   try {
+    console.log('Attempting to load benchmarks...');
+    debugContainer.innerHTML += '<div>Contacting main process...</div>';
+    
     const benchmarks = await window.electronAPI.listBenchmarks();
+    
+    console.log('Benchmarks loaded:', benchmarks);
+    console.log('Number of benchmarks:', benchmarks ? benchmarks.length : 0);
+    
+    // Show direct feedback in the UI
+    debugContainer.innerHTML = `
+      <div style="background: #f0f0f0; padding: 15px; margin-bottom: 15px; border-radius: 5px;">
+        <h3>Debug Information</h3>
+        <p>Benchmark data received: ${benchmarks ? 'Yes' : 'No'}</p>
+        <p>Number of benchmarks: ${benchmarks ? benchmarks.length : 0}</p>
+        <p>Data type: ${benchmarks ? typeof benchmarks : 'undefined'}</p>
+        <p>Is array: ${benchmarks ? Array.isArray(benchmarks) : 'N/A'}</p>
+        <pre>${benchmarks ? JSON.stringify(benchmarks, null, 2).substring(0, 500) : 'No data'}</pre>
+      </div>
+    `;
+      
     renderBenchmarks(benchmarks);
   } catch (error) {
     console.error('Error loading benchmarks:', error);
     document.getElementById('benchmarksGrid').innerHTML = 
-      '<div class="error">Error loading benchmarks</div>';
+      `<div class="error">
+         <h3>Error loading benchmarks:</h3>
+         <p>${error.message}</p>
+         <p>Stack: ${error.stack}</p>
+       </div>`;
   }
 }
 
 // Render benchmarks in grid and table views
 function renderBenchmarks(benchmarks) {
+  console.log('Rendering benchmarks:', benchmarks);
+  
   const gridContainer = document.getElementById('benchmarksGrid');
-  const tableBody = document.getElementById('benchmarksTable').querySelector('tbody');
+  console.log('Grid container found:', !!gridContainer);
+  
+  const tableContainer = document.getElementById('benchmarksTable');
+  console.log('Table container found:', !!tableContainer);
+  
+  let tableBody;
+  if (tableContainer) {
+    tableBody = tableContainer.querySelector('tbody');
+    console.log('Table body found:', !!tableBody);
+  }
   
   // Clear existing content
-  gridContainer.innerHTML = '';
-  tableBody.innerHTML = '';
+  if (gridContainer) gridContainer.innerHTML = '';
+  if (tableBody) tableBody.innerHTML = '';
   
-  if (benchmarks.length === 0) {
-    gridContainer.innerHTML = '<div class="empty">No benchmarks found</div>';
+  if (!benchmarks || benchmarks.length === 0) {
+    console.log('No benchmarks to display');
+    if (gridContainer) {
+      gridContainer.innerHTML = '<div class="empty">No benchmarks found</div>';
+    }
     return;
   }
+  
+  console.log('Proceeding to create UI elements for', benchmarks.length, 'benchmarks');
   
   // Populate grid view
   benchmarks.forEach(benchmark => {
@@ -250,6 +295,26 @@ window.electronAPI.onBenchmarkComplete(data => {
 
 // Initialize page
 function initPage() {
+  console.log('DOM loaded - initializing application');
+  
+  // Set up refresh button
+  const refreshBtn = document.getElementById('refreshBtn');
+  if (refreshBtn) {
+    console.log('Found refresh button, setting up event listener');
+    refreshBtn.addEventListener('click', () => {
+      console.log('Refresh button clicked');
+      // Clear any existing content
+      const gridContainer = document.getElementById('benchmarksGrid');
+      if (gridContainer) {
+        gridContainer.innerHTML = '<div class="loading">Loading benchmarks...</div>';
+      }
+      // Force reload benchmarks
+      loadBenchmarks();
+    });
+  } else {
+    console.error('Refresh button not found!');
+  }
+  
   // Add default prompt rows
   const promptsTable = document.getElementById('promptsTable');
   const defaultPrompts = [

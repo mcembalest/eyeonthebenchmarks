@@ -5,8 +5,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // File dialogs
   openFileDialog: (options) => ipcRenderer.invoke('open-file-dialog', options),
   
-  // Benchmark operations
-  listBenchmarks: () => ipcRenderer.invoke('list-benchmarks'),
+  // Benchmark operations with debugging
+  listBenchmarks: async () => {
+    console.log('Preload: Requesting benchmarks from main process');
+    try {
+      const result = await ipcRenderer.invoke('list-benchmarks');
+      console.log('Preload: Received benchmark data:', result);
+      return result;
+    } catch (error) {
+      console.error('Preload: Error fetching benchmarks:', error);
+      return [];
+    }
+  },
   runBenchmark: (prompts, pdfPath, modelNames) => {
     return ipcRenderer.invoke('run-benchmark', { prompts, pdfPath, modelNames });
   },
