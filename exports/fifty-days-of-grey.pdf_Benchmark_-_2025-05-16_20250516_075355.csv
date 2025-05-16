@@ -1,0 +1,13 @@
+Metric,gpt-4o-mini
+Average Score (%),50.0
+Latency (seconds),0.00
+Standard Input Tokens,13
+Cached Input Tokens,0
+Output Tokens,6
+Total Tokens,19
+Estimated Cost ($),0.0000
+---,---
+Benchmark ID,8
+Benchmark Label,fifty-days-of-grey.pdf Benchmark - 2025-05-16
+File Paths,/Users/maxcembalest/Desktop/repos/eyeonthebenchmarks/files/2025_Special_FiftyDaysOfGrey/fifty-days-of-grey.pdf
+Created,2025-05-16T07:48:49.654166

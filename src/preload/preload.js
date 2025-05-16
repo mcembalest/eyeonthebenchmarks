@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return ipcRenderer.invoke('run-benchmark', { prompts, pdfPath, modelNames });
   },
   getBenchmarkDetails: (id) => ipcRenderer.invoke('get-benchmark-details', id),
+  exportBenchmarkToCsv: (id) => ipcRenderer.invoke('export-benchmark-to-csv', id),
   
   // Navigation
   navigateTo: (page) => ipcRenderer.send('navigate-to', page),

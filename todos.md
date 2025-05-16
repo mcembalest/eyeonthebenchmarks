@@ -917,11 +917,122 @@ except Exception as e:
 - [ ] Replace 'Answer' with 'Response' in UI and data structures where appropriate (clarify if 'Expected Answer' vs 'Model Response')
 
 ### Benchmark Creation
-- [HIGH PRIORITY] Streamline the process of setting up prompts and expected outputs.
+## Benchmark Execution
+
+~~Currently, the benchmark creation process uses placeholder/filler data instead of actually running the models.~~ 
+
+The benchmark execution now uses real OpenAI API calls with token counting and cost calculation. The following tasks represent the current state and future enhancements:
+
+### API Integration
+- [x] Integrate OpenAI models directly via `engine/models_openai.py`
+  - [x] Support for GPT models (gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-4)
+  - [x] Implement proper API key handling via environment variables
+  - [x] Add token counting for OpenAI models (standard and cached tokens)
+- [ ] Create additional model-specific API clients for other providers
+  - [ ] Create `anthropic_client.py` for Claude models (claude-3-opus, claude-3-sonnet, claude-3-haiku)
+  - [ ] Create dedicated Google API client for Gemini models
+
+### Benchmark Engine
+- [x] Update `run_benchmark.py` to use real API calls instead of placeholder data
+  - [x] Replace the placeholder code with actual API calls to the respective model providers (OpenAI implemented)
+  - [x] Implement proper error handling for API rate limits, token limits, etc.
+  - [x] Add progress reporting via IPC to show real-time benchmark status
+  - [x] Implement proper token counting for both standard and cached inputs
+  - [x] Calculate actual costs based on model pricing
+
+### Scoring Implementation
+- [x] Implement benchmark scoring for comparing expected vs. actual answers
+  - [x] Basic exact match scoring
+  - [x] Partial match scoring with length-based weighting
+  - [x] Word overlap detection for partial credit
+  - [ ] Semantic similarity scoring using embeddings (future enhancement)
+  - [ ] Custom scoring functions for specific benchmark types
+
+### UI Improvements
+- [x] Add progress tracking in logs for models being benchmarked
+- [x] Display token usage and cost estimates in benchmark details
+- [x] Improve the benchmark results display with detailed metrics (standard/cached tokens, costs)
+- [ ] Add real-time progress visualization in the UI
+- [ ] Streamline the process of setting up prompts and expected outputs
+- [ ] Add template prompts for common benchmark scenarios
+
+## Code Structure Analysis and Cleanup Plan
+
+The repository currently contains several redundant and overlapping Python files that need to be organized and consolidated. This section outlines which files to keep, which to delete, and the recommended structure for future development.
+
+### Key Files to Keep
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `engine/file_store.py` | Core database functionality | KEEP - Central database management module |
+| `engine/models_openai.py` | OpenAI API integration | KEEP - Primary API client for OpenAI models |
+| `engine/exporter.py` | CSV export functionality | KEEP - Handles benchmark data export |
+| `run_benchmark.py` | Electron UI bridge for running benchmarks | KEEP - Recently updated to use real models |
+| `list_benchmarks.py` | Electron UI bridge for listing benchmarks | KEEP - Required for Electron integration |
+| `get_benchmark_details.py` | Electron UI bridge for benchmark details | KEEP - Required for Electron integration |
+| `export_benchmark.py` | Electron UI bridge for CSV export | KEEP - Implements exporter integration |
+
+### Files to Deprecate/Remove
+
+| File | Reason | Replacement |
+|------|--------|-------------|
+| `old_qt (archived)/runner.py` | Redundant with `run_benchmark.py` | Use `run_benchmark.py` for benchmark execution (moved to archived folder) |
+| `app.py` | Qt-specific application logic | Useful parts incorporated into Electron bridge scripts |
+| `old_qt (archived)/*` | Legacy Qt UI files | Already replaced by Electron interface |
+| `test_script.py` | Likely just for testing | Remove if not needed for automated tests |
+
+### Recommended Codebase Structure
+
+```
+/eyeonthebenchmarks
+  /engine/                   # Core functionality
+    /__init__.py            # Package initialization
+    /file_store.py          # Database management
+    /models_openai.py       # OpenAI API client
+    /exporter.py            # Export functionality
+  /src/                     # Electron app
+    /main/                  # Main process
+    /renderer/              # Renderer process
+    /preload/               # Preload scripts
+  # Bridge scripts for Electron
+  run_benchmark.py          # Execute benchmarks
+  list_benchmarks.py        # List benchmarks
+  get_benchmark_details.py  # Get benchmark details
+  export_benchmark.py       # Export benchmark data
+  # Config files
+  load_benchmarks.sh        # Script to refresh benchmark data
+  package.json              # Electron dependencies
+```
+
+### Implementation Plan
+
+1. **Consolidate Core Functionality**
+   - [x] Verify all needed functionality from `engine/runner.py` is in `run_benchmark.py`
+   - [x] Ensure `file_store.py` is used consistently across all scripts instead of direct SQL queries
+   - [x] Extract any useful logic from `app.py` into the appropriate bridge scripts
+
+2. **Improve API Integration**
+   - [x] Implement proper API clients for OpenAI models
+   - [ ] Implement API clients for additional model providers (Anthropic, Google, etc.)
+   - [x] Add token counting and cost calculation for OpenAI models
+   - [ ] Add token counting and cost calculation for other supported models
+   - [x] Implement caching mechanism to avoid redundant API calls (using file hash for OpenAI)
+
+3. **Standardize Error Handling and Logging**
+   - [x] Implement consistent logging across all bridge scripts
+   - [x] Add proper error handling with detailed error messages for troubleshooting
+   - [x] Update log file paths to use relative paths instead of hardcoded absolute paths
+
+### CSV Export Functionality
+- [x] Implement CSV export functionality for benchmark results
+- [ ] Add option to export raw response data for further analysis
+- [ ] Ensure proper formatting of token counts and costs in CSV exports
+- [ ] Add header information with benchmark metadata
+
+### Additional Features
 - [ ] Allow loading images as part of benchmark questions (especially for multi-modal models)
 - [ ] Fix pasting text into the spreadsheet component (ensure smooth data entry)
 - [ ] Restrict "Open Prompts CSV" button to only the new benchmark creation page (remove from homepage for clarity)
-- [ ] Add template prompts for common benchmark scenarios
 - [ ] **BUG**: Creating new benchmarks does not work correctly - investigate and fix
 - [ ] **BUG**: Ensure new benchmarks are properly saved to the database with correct IDs
 

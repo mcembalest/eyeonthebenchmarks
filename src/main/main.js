@@ -180,6 +180,8 @@ function setupIpcHandlers() {
   // IPC for running benchmarks
   ipcMain.handle('run-benchmark', async (event, { prompts, pdfPath, modelNames }) => {
     try {
+      console.log('Starting benchmark run with:', { pdfCount: 1, modelCount: modelNames.length, promptCount: prompts.length });
+      
       // Format arguments for Python script
       const args = [
         '--pdf', pdfPath,
@@ -187,8 +189,33 @@ function setupIpcHandlers() {
         '--prompts', JSON.stringify(prompts)
       ];
       
+      console.log('Running benchmark Python script...');
       const results = await runPythonCommand('run_benchmark.py', args);
-      return JSON.parse(results[0]);
+      const parsedResult = JSON.parse(results[0]);
+      console.log('Benchmark creation result:', parsedResult);
+      
+      // After creating a benchmark, regenerate the benchmark_data.json file
+      // so the new benchmark appears in the listing
+      console.log('Refreshing benchmark data file...');
+      const { exec } = require('child_process');
+      
+      await new Promise((resolve, reject) => {
+        exec('./load_benchmarks.sh', { cwd: process.cwd() }, (error, stdout, stderr) => {
+          if (error) {
+            console.error(`Error refreshing benchmark data: ${error.message}`);
+            // Don't reject, as the benchmark was already created successfully
+            console.log('Continuing despite refresh error');
+          }
+          if (stderr) {
+            console.error(`Refresh stderr: ${stderr}`);
+          }
+          console.log(`Refresh stdout: ${stdout}`);
+          resolve();
+        });
+      });
+      
+      console.log('Benchmark data refreshed, returning result');
+      return parsedResult;
     } catch (error) {
       console.error('Error running benchmark:', error);
       throw error;
@@ -203,6 +230,29 @@ function setupIpcHandlers() {
     } catch (error) {
       console.error('Error getting benchmark details:', error);
       throw error;
+    }
+  });
+  
+  // IPC for exporting benchmark to CSV
+  ipcMain.handle('export-benchmark-to-csv', async (event, benchmarkId) => {
+    try {
+      console.log(`Exporting benchmark ID ${benchmarkId} to CSV...`);
+      
+      // Call the export_benchmark.py script
+      const results = await runPythonCommand('export_benchmark.py', [benchmarkId]);
+      
+      // Parse the results
+      try {
+        const parsedResult = JSON.parse(results[0]);
+        console.log('CSV export result:', parsedResult);
+        return parsedResult;
+      } catch (parseError) {
+        console.error('Error parsing export result:', parseError);
+        return { success: false, error: 'Error parsing export result' };
+      }
+    } catch (error) {
+      console.error('Error exporting benchmark to CSV:', error);
+      return { success: false, error: String(error) };
     }
   });
 }

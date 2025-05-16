@@ -25,6 +25,46 @@ newBenchmarkBtn.addEventListener('click', () => navigateTo('composerContent'));
 returnHomeBtn.addEventListener('click', () => navigateTo('homeContent'));
 consoleReturnBtn.addEventListener('click', () => navigateTo('homeContent'));
 
+// Export to CSV handler
+exportCsvBtn.addEventListener('click', () => {
+  // Get the current benchmark ID from the UI
+  const consoleContent = document.getElementById('consoleLog');
+  const idMatch = consoleContent.innerHTML.match(/Benchmark Details \(ID: (\d+)\)/);
+  
+  if (idMatch && idMatch[1]) {
+    const benchmarkId = parseInt(idMatch[1], 10);
+    console.log(`Exporting benchmark ID ${benchmarkId} to CSV...`);
+    
+    // Show a loading indicator
+    const exportBtn = document.getElementById('exportCsvBtn');
+    const originalText = exportBtn.textContent;
+    exportBtn.textContent = 'Exporting...';
+    exportBtn.disabled = true;
+    
+    // Call the export function
+    window.electronAPI.exportBenchmarkToCsv(benchmarkId)
+      .then(result => {
+        console.log('Export result:', result);
+        if (result.success) {
+          alert(`Benchmark exported to CSV successfully!\nSaved to: ${result.filepath}`);
+        } else {
+          alert(`Error exporting benchmark: ${result.error}`);
+        }
+      })
+      .catch(error => {
+        console.error('Export error:', error);
+        alert(`Error exporting benchmark: ${error.message || error}`);
+      })
+      .finally(() => {
+        // Restore button state
+        exportBtn.textContent = originalText;
+        exportBtn.disabled = false;
+      });
+  } else {
+    alert('No benchmark is currently selected. Please view a benchmark first.');
+  }
+});
+
 // View toggle between grid and table
 gridViewBtn.addEventListener('click', () => {
   document.getElementById('benchmarksGrid').classList.add('active');
