@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>EOTMBench</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>EOTM Benchmarks</h1>
+      <button id="newBenchmarkBtn">New Benchmark</button>
+    </header>
+    
+    <div id="homeContent" class="page active">
+      <div class="view-toggle">
+        <button id="gridViewBtn" class="active">Grid View</button>
+        <button id="tableViewBtn">Table View</button>
+      </div>
+      
+      <div id="benchmarksGrid" class="benchmarks-container grid-view active">
+        <!-- Benchmark cards will be loaded here -->
+        <div class="loading">Loading benchmarks...</div>
+      </div>
+      
+      <table id="benchmarksTable" class="benchmarks-container table-view">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Label</th>
+            <th>Date</th>
+            <th>Models</th>
+            <th>Files</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- Benchmark rows will be loaded here -->
+        </tbody>
+      </table>
+      
+      <button id="refreshBtn">🔄 Refresh</button>
+    </div>
+    
+    <div id="composerContent" class="page">
+      <!-- Benchmark composer content will go here -->
+      <div class="composer-container">
+        <div class="prompts-section">
+          <h2>Test Prompts</h2>
+          <button id="importCsvBtn">Import from CSV</button>
+          <table id="promptsTable">
+            <thead>
+              <tr>
+                <th>Prompt</th>
+                <th>Expected</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- Default rows will be added by JavaScript -->
+            </tbody>
+          </table>
+        </div>
+        
+        <div class="settings-section">
+          <div class="model-selection">
+            <h3>Select Model(s)</h3>
+            <div id="modelList" class="model-list">
+              <!-- Model options will be added by JavaScript -->
+            </div>
+          </div>
+          
+          <div class="pdf-selection">
+            <h3>Select PDF</h3>
+            <button id="selectPdfBtn">Select PDF</button>
+            <span id="selectedPdfLabel">No PDF selected</span>
+          </div>
+        </div>
+        
+        <div class="actions">
+          <button id="runBtn" class="primary">Run Benchmark ▸</button>
+          <button id="returnHomeBtn">Return to Home</button>
+        </div>
+      </div>
+    </div>
+    
+    <div id="consoleContent" class="page">
+      <!-- Console output will go here -->
+      <div id="consoleLog" class="console-log"></div>
+      <div class="console-actions">
+        <button id="exportCsvBtn">Export to CSV</button>
+        <button id="consoleReturnBtn">Return to Home</button>
+      </div>
+    </div>
+  </div>
+  
+  <script src="renderer.js"></script>
+</body>
+</html>

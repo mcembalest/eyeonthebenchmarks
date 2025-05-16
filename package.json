@@ -1,0 +1,21 @@
+{
+  "name": "eotm-electron",
+  "version": "1.0.0",
+  "description": "Eye on the Benchmarks",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "electron": "^36.2.1",
+    "electron-builder": "^26.0.12",
+    "python-shell": "^5.0.0"
+  },
+  "devDependencies": {
+    "electron-packager": "^17.1.2"
+  }
+}
