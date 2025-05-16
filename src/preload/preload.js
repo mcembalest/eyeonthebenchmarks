@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   // File dialogs
   openFileDialog: (options) => ipcRenderer.invoke('open-file-dialog', options),
+  readParseCsv: (filePath) => ipcRenderer.invoke('read-parse-csv', filePath),
   
   // Benchmark operations with debugging
   listBenchmarks: async () => {
@@ -22,6 +23,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   getBenchmarkDetails: (id) => ipcRenderer.invoke('get-benchmark-details', id),
   exportBenchmarkToCsv: (id) => ipcRenderer.invoke('export-benchmark-to-csv', id),
+  
+  // Get available models from Python
+  getAvailableModels: async () => {
+    console.log('Preload: Requesting available models from main process');
+    try {
+      const result = await ipcRenderer.invoke('get-available-models');
+      console.log('Preload: Received model data:', result);
+      return result;
+    } catch (error) {
+      console.error('Preload: Error fetching models:', error);
+      return { success: false, models: [] };
+    }
+  },
   
   // Navigation
   navigateTo: (page) => ipcRenderer.send('navigate-to', page),

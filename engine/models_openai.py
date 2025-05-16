@@ -1,8 +1,8 @@
 from pathlib import Path
+from typing import Dict, Any, Optional, Tuple
 import os
 from dotenv import load_dotenv
 import openai
-# from time import sleep # No longer needed for polling
 
 # Load environment variables from .env file
 load_dotenv()
@@ -15,12 +15,16 @@ if not api_key:
 # Configure OpenAI client
 client = openai.OpenAI(api_key=api_key)
 
+# Import cost calculator
+from .cost_calculator import calculate_cost, calculate_image_cost
+
 AVAILABLE_MODELS = [
     "gpt-4o",
     "gpt-4o-mini",
-    "gpt-4.1",         # User specified; verify actual OpenAI model ID if issues arise
-    "gpt-4.1-mini",    # User specified; verify actual OpenAI model ID
-    "gpt-4.1-nano",    # User specified; verify actual OpenAI model ID
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "dall-e-3"
 ]
 
 def openai_upload(pdf_path: Path) -> str:
@@ -49,8 +53,59 @@ def openai_upload(pdf_path: Path) -> str:
         print(f"Error uploading {pdf_path} to OpenAI: {e}")
         raise
 
-def openai_ask(file_id: str, prompt_text: str, model_name="gpt-4o-mini") -> tuple[str, int, int, int]:
+def estimate_cost(
+    model_name: str,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    search_queries: int = 0,
+    images: int = 0,
+    image_size: str = "1024x1024",
+    image_quality: str = "standard"
+) -> Dict[str, Any]:
     """
+    Estimate the cost of using this model.
+    
+    Args:
+        model_name: The model to use (e.g., "gpt-4o", "dall-e-3")
+        input_tokens: Number of input tokens (for text models)
+        output_tokens: Number of output tokens (for text models)
+        search_queries: Number of web search queries
+        images: Number of images to generate (for image models)
+        image_size: Size of generated images (for image models)
+        image_quality: Quality of generated images (standard/hd for DALL-E)
+        
+    Returns:
+        Dictionary with cost breakdown
+    """
+    if model_name.startswith('dall-e'):
+        # For image generation
+        return calculate_cost(
+            model_name=model_name,
+            standard_input_tokens=0,
+            cached_input_tokens=0,
+            output_tokens=0,
+            search_queries=0,
+            image_generation={
+                'model': model_name,
+                'count': images,
+                'size': image_size,
+                'quality': image_quality
+            } if images > 0 else None
+        )
+    else:
+        # For text generation
+        return calculate_cost(
+            model_name=model_name,
+            standard_input_tokens=input_tokens,
+            cached_input_tokens=0,  # OpenAI doesn't report cached tokens separately
+            output_tokens=output_tokens,
+            search_queries=search_queries
+        )
+
+
+def openai_ask(file_id: str, prompt_text: str, model_name: str = "gpt-4o-mini") -> Tuple[str, int, int, int]:
+    """
+    Send a query to an OpenAI model with a file attachment.
     
     Args:
         file_id: ID of the uploaded file (obtained via openai_upload).
@@ -60,8 +115,8 @@ def openai_ask(file_id: str, prompt_text: str, model_name="gpt-4o-mini") -> tupl
     Returns:
         A tuple containing:
             - answer (str): The model's text response.
-            - standard_input_tokens (int): Tokens used in the input (non-cached portion).
-            - cached_input_tokens (int): Tokens used in the input (cached portion).
+            - standard_input_tokens (int): Tokens used in the input.
+            - cached_input_tokens (int): Always 0 for OpenAI (not separately reported).
             - output_tokens (int): Tokens used in the output.
     """
     try:

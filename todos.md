@@ -1,5 +1,28 @@
 # EOTM Benchmark Todos
 
+## Cost Calculation Implementation
+
+### Cost Calculation Features
+- [x] Implemented centralized `cost_calculator.py` module
+- [x] Added support for both OpenAI and Google models
+- [x] Implemented separate pricing for standard and cached input tokens
+- [x] Added support for image generation costs
+- [x] Added support for web search costs
+- [x] Implemented cost estimation methods in model classes
+- [x] Updated model classes to track token usage
+- [x] Integrated cost calculation with benchmark results
+
+### Model Support
+- [x] OpenAI models (GPT-4o, GPT-4.1, etc.)
+- [x] Google Gemini models (gemini-2.5-flash, gemini-2.5-pro)
+- [x] Image generation model (GPT-Image-1)
+
+### Remaining Tasks
+- [ ] Add more robust error handling for API rate limits
+- [ ] Implement caching for cost calculations
+- [ ] Add unit tests for cost calculation functions
+- [ ] Add support for additional model providers (Anthropic, etc.)
+
 ## [COMPLETED] Qt to Electron Migration
 
 ### Migration Overview
@@ -321,7 +344,7 @@ The renderer components have been fully implemented, including:
 - [HIGH PRIORITY] Ensure overall benchmark creation and deployment process is extremely frictionless, especially for non-AI users.
 - [HIGH PRIORITY] Enable easy export of benchmark results to **CSV files** (for analysis and chart creation in tools like Excel).
 - [ ] (Clarify) No direct application-to-Excel integration needed. Output is CSV.
-- [x] Decouple application logic from Qt (currently `[completed]` - UI bridge pattern implemented in main_qt.py)
+- [x] Decouple application logic from Qt
 - [ ] Implement VBA macro reception (if for Python-side execution of user-defined scoring logic, otherwise re-evaluate)
 - [ ] Allow model customization (beyond predefined list)
 
@@ -378,12 +401,10 @@ The benchmark execution now uses real OpenAI API calls with token counting and c
 
 ### API Integration
 - [x] Integrate OpenAI models directly via `engine/models_openai.py`
-  - [x] Support for GPT models (gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-4)
   - [x] Implement proper API key handling via environment variables
   - [x] Add token counting for OpenAI models (standard and cached tokens)
-- [ ] Create additional model-specific API clients for other providers
-  - [ ] Create `anthropic_client.py` for Claude models (claude-3-opus, claude-3-sonnet, claude-3-haiku)
-  - [ ] Create dedicated Google API client for Gemini models
+- [x] Create additional model-specific API clients for other providers
+  - [x] Create dedicated Google API client for Gemini models
 
 ### Benchmark Engine
 - [x] Update `run_benchmark.py` to use real API calls instead of placeholder data
@@ -466,9 +487,10 @@ The repository currently contains several redundant and overlapping Python files
 
 2. **Improve API Integration**
    - [x] Implement proper API clients for OpenAI models
-   - [ ] Implement API clients for additional model providers (Anthropic, Google, etc.)
+   - [x] Implement API clients for Google models
+   - [ ] Implement API clients for additional model providers (Anthropic, etc.)
    - [x] Add token counting and cost calculation for OpenAI models
-   - [ ] Add token counting and cost calculation for other supported models
+   - [x] Add token counting and cost calculation for Google models
    - [x] Implement caching mechanism to avoid redundant API calls (using file hash for OpenAI)
 
 3. **Standardize Error Handling and Logging**
@@ -522,21 +544,46 @@ The repository currently contains several redundant and overlapping Python files
 - [ ] Consider adding an option for Optical Character Recognition (OCR) for image-based PDFs - low priority.
 
 ### Metrics
-- [MAJOR TODO] Accurately Calculate and Report Cost per Candidate, incorporating KV Caching.
-    - [x] Define database schema to store standard input tokens and cached input tokens separately (implemented in file_store.py)
-    - [x] Update runner.py to track and return standard_input_tokens, cached_input_tokens, and output_tokens separately
-    - [ ] Define and store pricing tiers for different models (e.g., GPT-4.1: $2.00/$0.50/$8.00, GPT-4.1-mini: $0.40/$0.10/$1.60, GPT-4.1-nano: $0.100/$0.025/$0.400 per 1M input/cached-input/output tokens respectively).
-    - [x] Modify token processing to differentiate and record: standard input tokens, cached input tokens, and output tokens for each prompt run (implemented in runner.py).
-    - [ ] Research and implement mechanisms with the OpenAI `responses` API to:
-        - [ ] Reliably trigger KV caching for repeated token prefixes.
-        - [ ] Verify or get confirmation from API responses if caching was utilized (if possible).
-    - [ ] Implement logic to calculate cost based on token breakdown and model-specific pricing.
-    - [ ] Add UI components to display detailed cost breakdowns in benchmark views
-    - [ ] Include cost breakdowns in CSV exports
+## Cost Calculation and Reporting
+
+### Core Functionality
+- [x] Define database schema to store standard input tokens and cached input tokens separately
+- [x] Update runner.py to track and return standard_input_tokens, cached_input_tokens, and output_tokens separately
+- [x] Define and store pricing tiers for different models
+- [x] Modify token processing to differentiate and record token types
+- [x] Implement cost calculation based on token breakdown and model-specific pricing
+- [x] Add cost breakdown to benchmark results
+
+### Model Support
+- [x] OpenAI models with proper token tracking
+- [x] Google models with proper token tracking
+- [x] Image generation model (GPT-Image-1)
+
+### UI/Reporting
+- [x] Add cost information to benchmark results
+- [ ] Add detailed cost breakdowns in benchmark views
+- [ ] Include cost breakdowns in CSV exports
+- [ ] Add cost visualization to dashboard
+
+### Future Enhancements
+- [ ] Add support for more granular cost tracking
+- [ ] Implement cost forecasting
+- [ ] Add budget tracking and alerts
 - [x] Measure latency per candidate (implemented - each prompt result includes latency_ms)
 - [ ] Measure reasoning cost accurately (re-evaluate if distinct from token costs or if it implies a different metric)
 
 ## Image Generation Benchmarks
+
+### Core Features
+- [x] Support for GPT-Image-1
+- [x] Cost calculation for image generation
+- [x] Support for different image sizes and qualities
+- [x] Integration with benchmark runner
+
+### Future Enhancements
+- [ ] Add more image generation models
+- [ ] Implement image quality metrics
+- [ ] Add support for image editing workflows
 - [HIGH PRIORITY] Enable benchmarking of image generation models.
 - [ ] Integrate support for image generation models (e.g., gpt-image-1, DALL-E series, Gemini vision)
 - [ ] Allow defining constraints for image generation prompts (e.g., "must include X," "must not include Y," style guidance)

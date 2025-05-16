@@ -1,4 +1,4 @@
-// Navigation handler
+
 function navigateTo(pageId) {
   document.querySelectorAll('.page').forEach(page => {
     page.classList.remove('active');
@@ -24,6 +24,55 @@ let selectedPdfPath = null;
 newBenchmarkBtn.addEventListener('click', () => navigateTo('composerContent'));
 returnHomeBtn.addEventListener('click', () => navigateTo('homeContent'));
 consoleReturnBtn.addEventListener('click', () => navigateTo('homeContent'));
+
+// CSV Import handler
+if (importCsvBtn) {
+  importCsvBtn.addEventListener('click', async () => {
+    try {
+      const filePath = await window.electronAPI.openFileDialog({
+        properties: ['openFile'],
+        filters: [{ name: 'CSV Files', extensions: ['csv'] }]
+      });
+
+      if (filePath) {
+        console.log('Selected CSV file:', filePath);
+        // Request main process to read and parse CSV
+        const parsedData = await window.electronAPI.readParseCsv(filePath);
+        console.log('Parsed CSV data:', parsedData);
+
+        if (parsedData && parsedData.length > 0) {
+          populatePromptsTable(parsedData);
+        } else {
+          alert('CSV file is empty or could not be parsed correctly.');
+        }
+      }
+    } catch (error) {
+      console.error('Error importing CSV:', error);
+      alert(`Error importing CSV: ${error.message || error}`);
+    }
+  });
+} else {
+  console.warn('importCsvBtn not found. CSV import functionality will not be available.');
+}
+
+// Function to populate the prompts table from CSV data
+function populatePromptsTable(data) {
+  const promptsTableBody = document.getElementById('promptsTable').querySelector('tbody');
+  promptsTableBody.innerHTML = ''; // Clear existing rows
+
+  data.forEach(item => {
+    if (item.prompt !== undefined && item.expected !== undefined) {
+      const row = promptsTableBody.insertRow();
+      const promptCell = row.insertCell();
+      const expectedCell = row.insertCell();
+
+      promptCell.textContent = item.prompt;
+      expectedCell.textContent = item.expected;
+    } else {
+      console.warn('Skipping row due to missing prompt or expected data:', item);
+    }
+  });
+}
 
 // Export to CSV handler
 exportCsvBtn.addEventListener('click', () => {
@@ -333,9 +382,108 @@ window.electronAPI.onBenchmarkComplete(data => {
   loadBenchmarks(); // Refresh benchmark list
 });
 
+// Populate the model list with available models from Python files
+async function populateModelList() {
+  const modelListContainer = document.getElementById('modelList');
+  if (!modelListContainer) {
+    console.warn('modelList container not found.');
+    return;
+  }
+  try {
+    // Clear any existing model entries completely
+    modelListContainer.innerHTML = '<p>Loading models...</p>';
+
+    // Get models dynamically from Python files
+    const result = await window.electronAPI.getAvailableModels();
+    
+    // Clear loading message
+    modelListContainer.innerHTML = '';
+    
+    // Check if we got a valid response
+    if (!result || !result.success) {
+      console.error('Failed to get models from API:', result);
+      modelListContainer.innerHTML = '<p>Error: Could not load models.</p>';
+      return;
+    }
+    
+    // Create a flat list of all models from all providers
+    let allModels = [];
+    
+    // Extract models from the response - could be flat list or provider-grouped
+    if (Array.isArray(result.models)) {
+      // It's already a flat list
+      allModels = result.models;
+    } else if (typeof result.models === 'object') {
+      // It's grouped by provider, so flatten it
+      for (const provider in result.models) {
+        if (Array.isArray(result.models[provider])) {
+          allModels = allModels.concat(result.models[provider]);
+        }
+      }
+    }
+    
+    if (allModels.length === 0) {
+      console.error('No models found in response:', result);
+      modelListContainer.innerHTML = '<p>No models available.</p>';
+      return;
+    }
+    
+    console.log('Found models:', allModels);
+    
+    // Transform the flat list into objects with id and name
+    const formattedModels = allModels.map(modelId => {
+      // Create a more user-friendly display name
+      const displayName = modelId
+        .split('-')
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(' ');
+      
+      return { id: modelId, name: displayName };
+    });
+    
+    // Populate with the dynamic model list
+    populateModelListWithModels(formattedModels);
+  } catch (error) {
+    console.error('Error populating model list:', error);
+    modelListContainer.innerHTML = '<p>Error loading models.</p>';
+  }
+}
+
+// Helper function to populate model list with model objects
+function populateModelListWithModels(models) {
+  const modelListContainer = document.getElementById('modelList');
+  if (!modelListContainer) return;
+  
+  // Container already cleared above, now populate it
+  models.forEach(model => {
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = model.id;
+    checkbox.value = model.id;
+    checkbox.name = 'model';
+    
+    // Check if this is gpt-4o-mini (our default)
+    if (model.id === 'gpt-4o-mini') {
+      checkbox.checked = true;
+    }
+    
+    const label = document.createElement('label');
+    label.htmlFor = model.id;
+    label.textContent = model.name;
+    
+    const div = document.createElement('div');
+    div.appendChild(checkbox);
+    div.appendChild(label);
+    modelListContainer.appendChild(div);
+  });
+}
+
 // Initialize page
-function initPage() {
+async function initPage() {
   console.log('DOM loaded - initializing application');
+  
+  // Call model list population
+  await populateModelList();
   
   // Set up refresh button
   const refreshBtn = document.getElementById('refreshBtn');
@@ -381,23 +529,6 @@ function initPage() {
   const emptyExpectedCell = emptyRow.insertCell(1);
   emptyPromptCell.contentEditable = 'true';
   emptyExpectedCell.contentEditable = 'true';
-  
-  // Add model options
-  const modelList = document.getElementById('modelList');
-  const models = [
-    "gpt-4o", "gpt-4o-mini", "claude-3-opus", "claude-3-sonnet", 
-    "gpt-4-turbo", "gpt-4", "claude-3-haiku"
-  ];
-  
-  models.forEach(model => {
-    const label = document.createElement('label');
-    label.className = 'model-option';
-    label.innerHTML = `
-      <input type="checkbox" value="${model}" ${model === 'gpt-4o-mini' ? 'checked' : ''}>
-      ${model}
-    `;
-    modelList.appendChild(label);
-  });
   
   // Load initial benchmark data
   loadBenchmarks();
