@@ -18,11 +18,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return [];
     }
   },
-  runBenchmark: (prompts, pdfPath, modelNames) => {
-    return ipcRenderer.invoke('run-benchmark', { prompts, pdfPath, modelNames });
+  runBenchmark: (prompts, pdfPath, modelNames, benchmarkName, benchmarkDescription) => {
+    console.log('Preload: runBenchmark called with name:', benchmarkName, 'desc:', benchmarkDescription);
+    return ipcRenderer.invoke('run-benchmark', { prompts, pdfPath, modelNames, benchmarkName, benchmarkDescription });
   },
   getBenchmarkDetails: (id) => ipcRenderer.invoke('get-benchmark-details', id),
   exportBenchmarkToCsv: (id) => ipcRenderer.invoke('export-benchmark-to-csv', id),
+  deleteBenchmark: (benchmarkId) => {
+    console.log('Preload: deleteBenchmark called for ID:', benchmarkId);
+    return ipcRenderer.invoke('delete-benchmark', benchmarkId);
+  },
+  updateBenchmarkDetails: (benchmarkId, newLabel, newDescription) => {
+    console.log('Preload: updateBenchmarkDetails called for ID:', benchmarkId, 'New Label:', newLabel, 'New Desc:', newDescription);
+    return ipcRenderer.invoke('update-benchmark-details', { benchmarkId, newLabel, newDescription });
+  },
   
   // Get available models from Python
   getAvailableModels: async () => {

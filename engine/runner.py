@@ -1,12 +1,14 @@
 from pathlib import Path
 from time import perf_counter
-# Removed PySide6.QtCore import as it's no longer used directly in this stripped-down version
-# import sys # sys is not used
 import time
-import PyPDF2 # Added PyPDF2 import
+import PyPDF2 # For PDF text extraction
 import os # For os.path.getsize
-# Import the actual OpenAI functions
+import logging
+
+# Import model functions
 from engine.models_openai import openai_upload, openai_ask
+from engine.models_google import google_upload, google_ask
+
 # Import file store functions
 from engine.file_store import get_openai_file_id, add_file_mapping
 
@@ -105,6 +107,18 @@ def emit_progress(data: dict):
 
 def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini") -> dict:
     """
+    Run a benchmark with prompts against a PDF using the specified model.
+    
+    Args:
+        prompts: List of prompt dictionaries. Expected keys: 'prompt_text' and 'expected_answer'
+                (will also accept 'prompt' and 'expected' for backwards compatibility)
+        pdf_path: Path to the PDF file
+        model_name: Name of the model to use (e.g., "gpt-4o-mini", "gemini-2.5-flash")
+        
+    Returns:
+        Dictionary with benchmark results
+    """
+    """
     prompts: [{"prompt": str, "expected": str}, ...]
     Returns: {"mean_score": float, "items": int, "elapsed_s": float, "model": str}
     """
@@ -172,31 +186,61 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
             "error": f"PDF processing failed: {e}"
         }
 
-    # 1. Get existing OpenAI file_id or upload new one
-    openai_file_id = None # Initialize
+    # 1. Determine provider (OpenAI or Google) and upload the file
+    file_id = None
+    is_google_model = model_name.startswith("gemini-") or model_name == "imagen-3"
+    
     try:
-        # Check if this PDF (by content hash) is already in our store
-        # Assuming db is in current working directory, or adjust db_path in file_store calls
-        openai_file_id = get_openai_file_id(pdf_path)
-        
-        if not openai_file_id:
-            emit_progress({"message": f"No existing OpenAI file ID found for {pdf_path.name}. Uploading..."})
-            # If not found, upload it
-            openai_file_id = openai_upload(pdf_path)
-            # And save the new mapping to our local store
-            add_file_mapping(pdf_path, openai_file_id)
-            emit_progress({"message": f"PDF uploaded successfully. File ID: {openai_file_id} (and mapped locally)"})
+        if is_google_model:
+            # For Google models
+            emit_progress({"message": f"Preparing to use Google model: {model_name}"})
+            try:
+                # Google doesn't have file ID caching yet, so always upload
+                emit_progress({"message": f"Uploading PDF to Google: {pdf_path.name}"})
+                file_id = google_upload(pdf_path)
+                emit_progress({"message": f"PDF uploaded successfully to Google. File ID: {file_id}"})
+            except Exception as e:
+                emit_progress({"message": f"Error during Google file upload: {e}"})
+                return {
+                    "items": 0,
+                    "mean_score": 0.0,
+                    "elapsed_s": round(perf_counter() - t0, 2),
+                    "model_name": model_name,
+                    "error": f"Google file upload failed: {e}"
+                }
         else:
-            emit_progress({"message": f"Using existing OpenAI file ID: {openai_file_id} for {pdf_path.name}"})
-            
+            # For OpenAI models
+            emit_progress({"message": f"Preparing to use OpenAI model: {model_name}"})
+            try:
+                # Check if this PDF (by content hash) is already in our store
+                file_id = get_openai_file_id(pdf_path)
+                
+                if not file_id:
+                    emit_progress({"message": f"No existing OpenAI file ID found for {pdf_path.name}. Uploading..."})
+                    # If not found, upload it
+                    file_id = openai_upload(pdf_path)
+                    # And save the new mapping to our local store
+                    add_file_mapping(pdf_path, file_id)
+                    emit_progress({"message": f"PDF uploaded successfully to OpenAI. File ID: {file_id} (and mapped locally)"})
+                else:
+                    emit_progress({"message": f"Using existing OpenAI file ID: {file_id} for {pdf_path.name}"})
+            except Exception as e:
+                emit_progress({"message": f"Error during OpenAI file handling (check/upload/map): {e}"})
+                return {
+                    "items": 0,
+                    "mean_score": 0.0,
+                    "elapsed_s": round(perf_counter() - t0, 2),
+                    "model_name": model_name,
+                    "error": f"OpenAI file operation failed: {e}"
+                }
     except Exception as e:
-        emit_progress({"message": f"Error during OpenAI file handling (check/upload/map): {e}"})
+        emit_progress({"message": f"Unexpected error during file preparation: {e}"})
         return {
             "items": 0,
             "mean_score": 0.0,
             "elapsed_s": round(perf_counter() - t0, 2),
-            "model": model_name,
-            "error": f"OpenAI file operation failed: {e}"
+            "model_name": model_name,
+            "error": f"File preparation failed: {e}"
         }
 
     # 2. ask questions
@@ -219,8 +263,9 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
             }
 
         for i, row in enumerate(prompts):
-            prompt_text = row.get("prompt", "")
-            expected_text = row.get("expected", "")
+            # Support both formats: 'prompt_text'/'expected_answer' and legacy 'prompt'/'expected'
+            prompt_text = row.get("prompt_text", row.get("prompt", ""))
+            expected_text = row.get("expected_answer", row.get("expected", ""))
             prompt_length_chars = len(prompt_text)
             
             try:
@@ -228,7 +273,12 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
                 emit_progress({"current": i + 1, "total": total_prompts, "message": progress_message})
                 
                 prompt_t0 = perf_counter()
-                ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = openai_ask(openai_file_id, prompt_text, model_name)
+                if is_google_model:
+                    # Use Google API for Google models
+                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = google_ask(file_id, prompt_text, model_name)
+                else:
+                    # Use OpenAI API for OpenAI models
+                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = openai_ask(file_id, prompt_text, model_name)
                 prompt_t1 = perf_counter()
                 individual_latency_ms = round((prompt_t1 - prompt_t0) * 1000)
 

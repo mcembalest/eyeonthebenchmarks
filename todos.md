@@ -343,7 +343,6 @@ The renderer components have been fully implemented, including:
 ## Core Focus & Application Goals
 - [HIGH PRIORITY] Ensure overall benchmark creation and deployment process is extremely frictionless, especially for non-AI users.
 - [HIGH PRIORITY] Enable easy export of benchmark results to **CSV files** (for analysis and chart creation in tools like Excel).
-- [ ] (Clarify) No direct application-to-Excel integration needed. Output is CSV.
 - [x] Decouple application logic from Qt
 - [ ] Implement VBA macro reception (if for Python-side execution of user-defined scoring logic, otherwise re-evaluate)
 - [ ] Allow model customization (beyond predefined list)
@@ -585,7 +584,7 @@ The repository currently contains several redundant and overlapping Python files
 - [ ] Implement image quality metrics
 - [ ] Add support for image editing workflows
 - [HIGH PRIORITY] Enable benchmarking of image generation models.
-- [ ] Integrate support for image generation models (e.g., gpt-image-1, DALL-E series, Gemini vision)
+- [ ] Integrate support for image generation models
 - [ ] Allow defining constraints for image generation prompts (e.g., "must include X," "must not include Y," style guidance)
 - [ ] Develop/Integrate scoring mechanisms for image outputs (see Scoring section)
     - [ ] Explore system-defined image scoring (e.g., CLIP scores, aesthetic scores if available via API)

@@ -1,34 +1,25 @@
 # Import models with error handling
+import os
+import sys
+import logging
+
+# Add parent directory to path to allow absolute imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 def import_models():
     """Import model lists from provider modules with error handling"""
     models = {}
     has_imports = False
-    
 
-    from models_openai import AVAILABLE_MODELS
-    models["openai"] = AVAILABLE_MODELS
+    from engine.models_openai import AVAILABLE_MODELS as OPENAI_MODELS
+    models["openai"] = OPENAI_MODELS
     has_imports = True
-    print(f"Found {len(AVAILABLE_MODELS)} OpenAI models")
-
-    except Exception as e:
-        print(f"Error loading OpenAI models: {e}")
+    logging.info(f"Found {len(OPENAI_MODELS)} OpenAI models")
     
-    # Try to import Google models
-    try:
-        from models_google import AVAILABLE_MODELS
-        models["google"] = AVAILABLE_MODELS
-        has_imports = True
-        print(f"Found {len(AVAILABLE_MODELS)} Google models")
-    except ImportError as e:
-        print(f"Could not import Google models: {e}")
-        # Add default Google models
-        models["google"] = [
-            "gemini-2.5-flash", 
-            "gemini-2.5-pro"
-        ]
-        print(f"Using {len(models['google'])} default Google models")
-    except Exception as e:
-        print(f"Error loading Google models: {e}")
+    from engine.models_google import AVAILABLE_MODELS as GOOGLE_MODELS
+    models["google"] = GOOGLE_MODELS
+    has_imports = True
+    logging.info(f"Found {len(GOOGLE_MODELS)} Google models")
     
     # Note: We're not adding hardcoded Anthropic models per user request
     

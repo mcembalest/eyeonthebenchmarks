@@ -39,10 +39,75 @@ const createWindow = () => {
 // Only run the app setup if we're in Electron (not if just loaded by Node)
 if (app) {
   // Create window when app is ready
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => { 
     createWindow();
 
-    // Set up IPC handlers after the window is created
+    // Initialize AppLogic bridge
+    global.app_logic = {
+      // Helper to call Python AppLogic methods and process results/UI events
+      _callPythonAppLogic: async function(methodName, methodArgs = {}) {
+        if (!mainWindow) {
+          console.error('Cannot call Python AppLogic: mainWindow is not available.');
+          throw new Error('Main window is not available for Python communication.');
+        }
+        try {
+          console.log(`Calling AppLogic method: ${methodName} with args:`, methodArgs);
+          const rawOutputLines = await runPythonCommand('app.py', [
+            methodName,
+            JSON.stringify(methodArgs)
+          ]);
+
+          let finalResult = null;
+          if (rawOutputLines && rawOutputLines.length > 0) {
+            rawOutputLines.forEach(line => {
+              try {
+                const parsedLine = JSON.parse(line);
+                if (parsedLine && parsedLine.ui_bridge_event && mainWindow && mainWindow.webContents) {
+                  // This is a UI event from Python's ScriptUiBridge
+                  console.log(`Forwarding UI event from Python: ${parsedLine.ui_bridge_event}`, parsedLine.data);
+                  mainWindow.webContents.send(parsedLine.ui_bridge_event, parsedLine.data);
+                } else {
+                  // Assume it's the method's final result (or part of it if multiple JSONs are printed)
+                  // Convention: last JSON object not marked as ui_bridge_event is the result.
+                  finalResult = parsedLine;
+                }
+              } catch (e) {
+                // Line is not JSON or not relevant, log it if needed
+                console.log('Non-JSON/unhandled line from app.py:', line);
+              }
+            });
+          } else {
+            console.warn(`No output received from app.py for method ${methodName}`);
+          }
+          
+          if (finalResult && finalResult.hasOwnProperty('python_error')) {
+            console.error(`Error from Python (${methodName}):`, finalResult.python_error);
+            throw new Error(finalResult.python_error);
+          }
+          return finalResult;
+        } catch (error) {
+          console.error(`Error calling Python AppLogic method ${methodName}:`, error);
+          throw error; // Re-throw to be caught by IPC handler
+        }
+      },
+
+      launch_benchmark_run: function(prompts, pdfPath, modelNames, label, description) {
+        return this._callPythonAppLogic('launch_benchmark_run', { prompts, pdfPath, modelNames, label, description });
+      },
+      handle_delete_benchmark: function(benchmarkId) {
+        return this._callPythonAppLogic('handle_delete_benchmark', { benchmark_id: benchmarkId });
+      },
+      handle_update_benchmark_details: function(benchmarkId, newLabel, newDescription) {
+        return this._callPythonAppLogic('handle_update_benchmark_details', { benchmark_id: benchmarkId, new_label: newLabel, new_description: newDescription });
+      },
+      
+      list_benchmarks: function() {
+        return this._callPythonAppLogic('list_benchmarks', {});
+      }
+      // Add other AppLogic methods here if needed
+    };
+
+    // Set up IPC handlers after the window is created and app_logic is defined
     setupIpcHandlers();
 
     app.on('activate', () => {
@@ -65,9 +130,27 @@ function runPythonCommand(command, args) {
   return new Promise((resolve, reject) => {
     console.log(`Running Python command: ${command} with args:`, args);
     
+    // Get conda executable path from environment if available
+    const condaPath = process.env.CONDA_EXE || ''; // Path to conda executable
+    const condaPrefix = process.env.CONDA_PREFIX || ''; // Path to active conda environment
+    
+    // If we're in a conda environment, use its Python
+    let pythonExecutable = 'python'; // Default fallback
+    if (condaPrefix) {
+      // We're in an active conda environment, use its Python
+      console.log(`Using conda environment at: ${condaPrefix}`);
+      if (process.platform === 'win32') {
+        pythonExecutable = path.join(condaPrefix, 'python.exe');
+      } else {
+        pythonExecutable = path.join(condaPrefix, 'bin', 'python');
+      }
+    } else {
+      console.log('No active conda environment detected, using system Python');
+    }
+    
     const options = {
       mode: 'text',
-      pythonPath: 'python',  // Use system Python
+      pythonPath: pythonExecutable,  // Use conda environment Python if available
       pythonOptions: ['-u'], // Unbuffered output
       scriptPath: pythonPath,
       args: args || []
@@ -141,7 +224,7 @@ function setupIpcHandlers() {
       // Remove potential BOM character from the first header before splitting
       const headers = headerLine.replace(/^\uFEFF/, '').split(',').map(h => h.trim().replace(/^"|"$/g, '')); // remove outer quotes from headers
 
-      const promptIndex = headers.findIndex(h => h === 'prompt' || h === 'prompt_text' || h === 'question');
+      let promptIndex = headers.findIndex(h => h === 'prompt' || h === 'prompt_text' || h === 'question');
       let expectedIndex = headers.findIndex(h => ['expected', 'expected_answer', 'ground_truth', 'answer'].includes(h));
 
       if (promptIndex === -1 || expectedIndex === -1) {
@@ -183,59 +266,26 @@ function setupIpcHandlers() {
     }
   });
 
-  // Benchmark listing IPC handler - read from pre-generated JSON file
+  // Benchmark listing IPC handler - get data directly from Python
   ipcMain.handle('list-benchmarks', async () => {
     try {
-      console.log('Reading benchmark data from file...');
-      
-      // Path to the benchmark data file
-      const dataFilePath = path.join(process.cwd(), 'benchmark_data.json');
-      console.log(`Looking for benchmark data at: ${dataFilePath}`);
-      
-      // Check if the file exists
-      if (!require('fs').existsSync(dataFilePath)) {
-        console.error(`Benchmark data file not found at: ${dataFilePath}`);
-        
-        // Try to generate it by running the shell script
-        console.log('Attempting to generate benchmark data by running shell script...');
-        
-        const { exec } = require('child_process');
-        
-        await new Promise((resolve, reject) => {
-          exec('./load_benchmarks.sh', { cwd: process.cwd() }, (error, stdout, stderr) => {
-            if (error) {
-              console.error(`Error running shell script: ${error.message}`);
-              reject(error);
-              return;
-            }
-            if (stderr) {
-              console.error(`Shell script stderr: ${stderr}`);
-            }
-            console.log(`Shell script stdout: ${stdout}`);
-            resolve();
-          });
-        });
-        
-        // Check again if file exists after running script
-        if (!require('fs').existsSync(dataFilePath)) {
-          console.error('Failed to generate benchmark data file');
-          return [];
-        }
+      console.log('Requesting benchmark data from Python...');
+      if (!global.app_logic) {
+        throw new Error('AppLogic not initialized');
       }
       
-      // Read the file
-      const fileData = require('fs').readFileSync(dataFilePath, 'utf8');
-      console.log(`Read ${fileData.length} bytes from benchmark data file`);
+      const response = await global.app_logic._callPythonAppLogic('list_benchmarks', {});
+      console.log('Got benchmark data from Python:', response);
       
-      try {
-        const parsedData = JSON.parse(fileData);
-        console.log('Successfully parsed benchmark data from file');
-        console.log('Number of benchmarks found:', parsedData.length);
-        return parsedData;
-      } catch (parseError) {
-        console.error('Error parsing benchmark JSON from file:', parseError);
+      // Extract the benchmarks array from the response object
+      const benchmarks = response?.result;
+      
+      if (!benchmarks || !Array.isArray(benchmarks)) {
+        console.error('Invalid benchmark data received:', response);
         return [];
       }
+      
+      return benchmarks;
     } catch (error) {
       console.error('Error listing benchmarks:', error);
       return [];
@@ -243,73 +293,28 @@ function setupIpcHandlers() {
   });
 
   // IPC for running benchmarks
-  ipcMain.handle('run-benchmark', async (event, { prompts, pdfPath, modelNames }) => {
+  ipcMain.handle('run-benchmark', async (event, { prompts, pdfPath, modelNames, benchmarkName, benchmarkDescription }) => {
     try {
-      console.log('Starting benchmark run with:', { pdfCount: 1, modelCount: modelNames.length, promptCount: prompts.length });
-      
-      // Format arguments for Python script
-      const args = [
-        '--pdf', pdfPath,
-        '--models', modelNames.join(','),
-        '--prompts', JSON.stringify(prompts)
-      ];
-      
-      console.log('Running benchmark Python script...');
-      const results = await runPythonCommand('run_benchmark.py', args);
-      console.log('Raw results from run_benchmark.py:', results); // Log all output lines
+      // Assuming app_logic is initialized and available in this scope
+      // You might need to adjust how app_logic is accessed depending on your main.js structure
+      if (!global.app_logic) {
+        console.error('AppLogic not initialized or available.');
+        throw new Error('Backend logic (AppLogic) is not ready.');
+      }
 
-      if (!results || results.length === 0) {
-        throw new Error('No output received from run_benchmark.py');
-      }
-      
-      // Attempt to parse the last line of the output as JSON
-      const lastLine = results[results.length - 1];
-      let parsedResult;
-      try {
-        parsedResult = JSON.parse(lastLine);
-      } catch (e) {
-        console.error('Failed to parse last line from Python script as JSON:', lastLine, e);
-        throw new Error('Invalid JSON output from run_benchmark.py: ' + lastLine);
-      }
-      console.log('Parsed benchmark creation result (from last line):', parsedResult);
-      
-      console.log('Refreshing benchmark_data.json by running load_benchmarks.sh...');
-      const { exec } = require('child_process');
-      
-      await new Promise((resolve, reject) => {
-        exec('./load_benchmarks.sh', { cwd: process.cwd() }, (error, stdout, stderr) => {
-          if (error) {
-            console.error(`Error running load_benchmarks.sh: ${error.message}`);
-            // Log stderr if present, even on error
-            if (stderr) {
-              console.error(`load_benchmarks.sh stderr: ${stderr}`);
-            }
-            reject(error);
-            return;
-          }
-          if (stderr) {
-            // Log stderr even if the script technically succeeded (exit code 0)
-            console.warn(`load_benchmarks.sh stderr (non-fatal): ${stderr}`);
-          }
-          console.log(`load_benchmarks.sh stdout: ${stdout}`);
-          resolve();
-        });
-      });
-      console.log('benchmark_data.json should now be updated.');
-      
-      mainWindow.webContents.send('benchmark-complete', { 
-        success: true, 
-        benchmarkId: parsedResult.benchmark_id || parsedResult.id || null 
-      });
-      
-      return { 
-        success: true, 
-        message: 'Benchmark run successfully', 
-        benchmarkId: parsedResult.benchmark_id || parsedResult.id || null 
-      };
+      console.log('Main: Forwarding run-benchmark to AppLogic with name:', benchmarkName, 'desc:', benchmarkDescription);
+      // Call the method on the AppLogic instance
+      // The AppLogic class in app.py handles the actual benchmark execution process
+      // It will use file_store.save_benchmark with the label and description
+      await global.app_logic.launch_benchmark_run(prompts, pdfPath, modelNames, benchmarkName, benchmarkDescription);
+
+      // The AppLogic instance will handle progress updates and completion signals to the renderer.
+      // No direct JSON parsing or result handling needed here anymore for the run initiation.
+      return { success: true, message: 'Benchmark run initiated via AppLogic.' };
+
     } catch (error) {
-      console.error('Error running benchmark:', error);
-      throw error;
+      console.error('Error in run-benchmark IPC handler:', error);
+      return { success: false, error: error.message || 'Failed to start benchmark run' };
     }
   });
 
@@ -347,8 +352,66 @@ function setupIpcHandlers() {
     }
   });
   
+  // IPC for deleting a benchmark
+  ipcMain.handle('delete-benchmark', async (event, benchmarkId) => {
+    try {
+      if (!global.app_logic) {
+        console.error('AppLogic not initialized or available for delete-benchmark.');
+        throw new Error('Backend logic (AppLogic) is not ready.');
+      }
+      console.log(`Main: Received delete-benchmark request for ID: ${benchmarkId}`);
+      // The handle_delete_benchmark method in app.py should return a status
+      const result = await global.app_logic.handle_delete_benchmark(benchmarkId);
+      
+      // If deletion was successful, regenerate the benchmark_data.json file
+      if (result && result.success) {
+        console.log('Benchmark deleted successfully, regenerating benchmark_data.json...');
+        const { exec } = require('child_process');
+        
+        // Run the load_benchmarks.sh script to regenerate the JSON file
+        await new Promise((resolve, reject) => {
+          exec('./load_benchmarks.sh', { cwd: process.cwd() }, (error, stdout, stderr) => {
+            if (error) {
+              console.error(`Error regenerating benchmark data: ${error.message}`);
+              // Continue even if regeneration fails
+              resolve();
+              return;
+            }
+            if (stderr) {
+              console.error(`Regeneration stderr: ${stderr}`);
+            }
+            console.log(`Benchmark data regenerated: ${stdout}`);
+            resolve();
+          });
+        });
+      }
+      
+      return result;
+    } catch (error) {
+      console.error(`Error in delete-benchmark IPC handler for ID ${benchmarkId}:`, error);
+      return { success: false, error: error.message || `Failed to delete benchmark ${benchmarkId}` };
+    }
+  });
+
+  // IPC for updating benchmark details (renaming)
+  ipcMain.handle('update-benchmark-details', async (event, { benchmarkId, newLabel, newDescription }) => {
+    try {
+      if (!global.app_logic) {
+        console.error('AppLogic not initialized or available for update-benchmark-details.');
+        throw new Error('Backend logic (AppLogic) is not ready.');
+      }
+      console.log(`Main: Received update-benchmark-details for ID: ${benchmarkId}, New Label: '${newLabel}', New Desc: '${newDescription}'`);
+      // The handle_update_benchmark_details method in app.py should return a status
+      const result = await global.app_logic.handle_update_benchmark_details(benchmarkId, newLabel, newDescription);
+      return result; // Assuming result is { success: true } or { success: false, error: '...' }
+    } catch (error) {
+      console.error(`Error in update-benchmark-details IPC handler for ID ${benchmarkId}:`, error);
+      return { success: false, error: error.message || `Failed to update benchmark ${benchmarkId}` };
+    }
+  });
+
   // IPC for getting available models
-  ipcMain.handle('get-available-models', async (event) => {
+  ipcMain.handle('get-available-models', async () => {
     try {
       console.log('Getting available models from Python...');
       

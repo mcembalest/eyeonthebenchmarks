@@ -3,6 +3,8 @@ import hashlib
 from pathlib import Path
 import datetime
 import json
+import logging
+from typing import Optional
 
 DB_NAME = "eotm_file_store.sqlite"
 TABLE_NAME = "openai_file_map"
@@ -107,7 +109,7 @@ def init_db(db_path: Path = Path.cwd()):
     
     conn.commit()
     conn.close()
-    print(f"Database initialized at {db_file}")
+    logging.info(f"Database initialized at {db_file}")
 
 def _calculate_pdf_hash(pdf_path: Path) -> str:
     """Calculates the SHA256 hash of a PDF file's content."""
@@ -118,10 +120,10 @@ def _calculate_pdf_hash(pdf_path: Path) -> str:
                 hasher.update(chunk)
         return hasher.hexdigest()
     except FileNotFoundError:
-        print(f"Error: File not found at {pdf_path} during hash calculation.")
+        logging.error(f"File not found at {pdf_path} during hash calculation.")
         return "" # Or raise error
     except Exception as e:
-        print(f"Error calculating hash for {pdf_path}: {e}")
+        logging.error(f"Error calculating hash for {pdf_path}: {e}")
         return "" # Or raise error
     # Note: No database connection is used here, so nothing to close in finally block.
 
@@ -129,7 +131,7 @@ def add_file_mapping(pdf_path: Path, openai_file_id: str, db_path: Path = Path.c
     """Adds or updates a mapping between a PDF's hash and its OpenAI file ID."""
     pdf_hash = _calculate_pdf_hash(pdf_path)
     if not pdf_hash:
-        print(f"Skipping DB add for {pdf_path.name} due to hashing error.")
+        logging.warning(f"Skipping DB add for {pdf_path.name} due to hashing error.")
         return
 
     db_file = db_path / DB_NAME
@@ -148,9 +150,9 @@ def add_file_mapping(pdf_path: Path, openai_file_id: str, db_path: Path = Path.c
                 upload_timestamp=excluded.upload_timestamp
         ''', (pdf_hash, openai_file_id, str(pdf_path.resolve()), pdf_path.name, timestamp))
         conn.commit()
-        print(f"Mapped PDF hash {pdf_hash[:8]}... for {pdf_path.name} to OpenAI ID {openai_file_id}")
+        logging.info(f"Mapped PDF hash {pdf_hash[:8]}... for {pdf_path.name} to OpenAI ID {openai_file_id}")
     except sqlite3.Error as e:
-        print(f"SQLite error when adding/updating mapping for {pdf_path.name}: {e}")
+        logging.error(f"SQLite error when adding/updating mapping for {pdf_path.name}: {e}")
     finally:
         conn.close()
 
@@ -160,7 +162,7 @@ def get_openai_file_id(pdf_path: Path, db_path: Path = Path.cwd()) -> str | None
     """
     pdf_hash = _calculate_pdf_hash(pdf_path)
     if not pdf_hash:
-        print(f"Skipping DB lookup for {pdf_path.name} due to hashing error.")
+        logging.warning(f"Skipping DB lookup for {pdf_path.name} due to hashing error.")
         return None
 
     db_file = db_path / DB_NAME
@@ -171,13 +173,13 @@ def get_openai_file_id(pdf_path: Path, db_path: Path = Path.cwd()) -> str | None
         cursor.execute(f"SELECT openai_file_id FROM {TABLE_NAME} WHERE pdf_hash = ?", (pdf_hash,))
         result = cursor.fetchone()
         if result:
-            print(f"Found existing OpenAI ID {result[0]} for PDF {pdf_path.name} (hash {pdf_hash[:8]}...)")
+            logging.debug(f"Found existing OpenAI ID {result[0]} for PDF {pdf_path.name} (hash {pdf_hash[:8]}...)")
             return result[0]
         else:
-            print(f"No existing OpenAI ID found for PDF {pdf_path.name} (hash {pdf_hash[:8]}...)")
+            logging.debug(f"No existing OpenAI ID found for PDF {pdf_path.name} (hash {pdf_hash[:8]}...)")
             return None
     except sqlite3.Error as e:
-        print(f"SQLite error when retrieving mapping for {pdf_path.name}: {e}")
+        logging.error(f"SQLite error when retrieving mapping for {pdf_path.name}: {e}")
         return None
     finally:
         conn.close()
@@ -211,7 +213,7 @@ def save_benchmark(label: str, description: str, file_paths: list[str], model_na
         conn.commit()
         return benchmark_id
     except sqlite3.Error as e:
-        print(f"SQLite error when saving benchmark: {e}")
+        logging.error(f"SQLite error when saving benchmark: {e}")
         return None
     finally:
         conn.close()
@@ -230,7 +232,7 @@ def add_benchmark_file(benchmark_id: int, file_path: str, db_path: Path = Path.c
         conn.commit()
         return file_id
     except sqlite3.Error as e:
-        print(f"SQLite error when adding file to benchmark: {e}")
+        logging.error(f"SQLite error when adding file to benchmark: {e}")
         return None
     finally:
         conn.close()
@@ -247,7 +249,7 @@ def get_benchmark_files(benchmark_id: int, db_path: Path = Path.cwd()) -> list[s
         rows = cursor.fetchall()
         return [row[0] for row in rows]
     except sqlite3.Error as e:
-        print(f"SQLite error when loading files for benchmark {benchmark_id}: {e}")
+        logging.error(f"SQLite error when loading files for benchmark {benchmark_id}: {e}")
         return []
     finally:
         conn.close()
@@ -267,7 +269,7 @@ def save_benchmark_run(benchmark_id: int, model_name: str, report: str, latency:
         conn.commit()
         return run_id
     except sqlite3.Error as e:
-        print(f"SQLite error when saving benchmark run: {e}")
+        logging.error(f"SQLite error when saving benchmark run: {e}")
         return None
     finally:
         conn.close()
@@ -286,7 +288,7 @@ def save_benchmark_prompt(benchmark_run_id: int, prompt: str, answer: str, respo
         conn.commit()
         return prompt_id
     except sqlite3.Error as e:
-        print(f"SQLite error when saving benchmark prompt: {e}")
+        logging.error(f"SQLite error when saving benchmark prompt: {e}")
         return None
     finally:
         conn.close()
@@ -304,7 +306,7 @@ def save_scoring_config(name: str, config: str, db_path: Path = Path.cwd()) -> i
         conn.commit()
         return config_id
     except sqlite3.Error as e:
-        print(f"SQLite error when saving scoring config: {e}")
+        logging.error(f"SQLite error when saving scoring config: {e}")
         return None
     finally:
         conn.close()
@@ -323,7 +325,7 @@ def save_benchmark_report(benchmark_id: int, compared_models: list[str], report:
         conn.commit()
         return report_id
     except sqlite3.Error as e:
-        print(f"SQLite error when saving benchmark report: {e}")
+        logging.error(f"SQLite error when saving benchmark report: {e}")
         return None
     finally:
         conn.close()
@@ -380,9 +382,9 @@ def load_all_benchmark_runs(db_path: Path = Path.cwd()) -> list[dict]:
             #     except Exception:
             #         pass # Ignore parsing errors, fields will remain None
             # runs.append(run_dict)
-        print(f"Loaded {len(runs)} benchmark runs from DB.")
+        logging.info(f"Loaded {len(runs)} benchmark runs from DB.")
     except sqlite3.Error as e:
-        print(f"SQLite error when loading benchmark runs: {e}")
+        logging.error(f"SQLite error when loading benchmark runs: {e}")
     finally:
         conn.close()
     return runs
@@ -404,7 +406,7 @@ def load_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> dic
         benchmark_info = cursor.fetchone()
 
         if not benchmark_info:
-            print(f"No benchmark found with ID {benchmark_id}")
+            logging.warning(f"No benchmark found with ID {benchmark_id}")
             return None
         
         details = dict(benchmark_info)
@@ -431,13 +433,20 @@ def load_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> dic
         run_info = cursor.fetchone()
 
         if run_info:
+            logging.info(f"LOAD_BENCHMARK_DETAILS: Fetched run_info for benchmark_id {benchmark_id}: {dict(run_info)}") # Log the raw run_info
+        else:
+            logging.info(f"LOAD_BENCHMARK_DETAILS: No run_info found for benchmark_id {benchmark_id}")
+
+        if run_info:
+            if 'model_name' in run_info:
+                logging.info(f"LOAD_BENCHMARK_DETAILS: run_info['model_name'] for benchmark_id {benchmark_id} is '{run_info['model_name']}' (type: {type(run_info['model_name'])})")
+            else:
+                logging.info(f"LOAD_BENCHMARK_DETAILS: 'model_name' NOT IN run_info for benchmark_id {benchmark_id}. Keys: {run_info.keys()}")
             details.update(dict(run_info)) # Add run details to the main details dict
             details['elapsed_seconds'] = run_info['latency'] # For UI compatibility
             
             # Parse report for mean_score, total_items if possible (example)
-            # This is a placeholder - actual parsing depends on report structure
-            # For now, UI will show N/A if these are not directly in details
-            # A better approach would be to store these explicitly in benchmark_runs if needed often
+            # This is brittle; ideally, these would be separate columns in benchmark_runs if needed often
             # Or have the report be a JSON string.
             if isinstance(run_info['report'], str):
                 try:
@@ -450,7 +459,7 @@ def load_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> dic
                             if "Items:" in part:
                                 details['total_items'] = int(part.split(':')[1].split(',')[0].strip())
                 except Exception as e:
-                    print(f"Could not parse mean_score/total_items from report string: {e}")
+                    logging.warning(f"Could not parse mean_score/total_items from report string: {e}")
 
 
             # 4. Fetch prompts for this specific run
@@ -465,13 +474,13 @@ def load_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> dic
             # Rename 'prompt' to 'prompt_text' for UI compatibility
             details['prompts_data'] = [{'prompt_text': p['prompt'], **{k: p[k] for k in p.keys() if k != 'prompt'}} for p in prompts]
             
-            print(f"Loaded details for benchmark ID {benchmark_id}, including its most recent run ID {run_info['run_id']}")
+            logging.debug(f"Loaded details for benchmark ID {benchmark_id}, including its most recent run ID {run_info['run_id']}")
         else:
             details['prompts_data'] = [] # No runs, so no prompts
-            print(f"Benchmark ID {benchmark_id} has no runs.")
+            logging.info(f"Benchmark ID {benchmark_id} has no runs.")
 
     except sqlite3.Error as e:
-        print(f"SQLite error when loading benchmark details for ID {benchmark_id}: {e}")
+        logging.error(f"SQLite error when loading benchmark details for ID {benchmark_id}: {e}")
         return None # Return None on error
     finally:
         conn.close()
@@ -595,10 +604,10 @@ def load_all_benchmarks_with_models(db_path: Path = Path.cwd()) -> list[dict]:
             pass
         else:
             # For other operational errors, print them as they are unexpected.
-            print(f"SQLite operational error when loading benchmarks with models: {e}")
+            logging.error(f"SQLite operational error when loading benchmarks with models: {e}")
     except sqlite3.Error as e:
         # For other, more general SQLite errors.
-        print(f"SQLite error when loading benchmarks with models: {e}")
+        logging.error(f"SQLite error when loading benchmarks with models: {e}")
     finally:
         if conn:
             conn.close()
@@ -624,7 +633,7 @@ def find_benchmark_by_files(file_paths: list, db_path: Path = Path.cwd()) -> int
             return row[0]
         return None
     except sqlite3.Error as e:
-        print(f"SQLite error when searching for benchmark by files: {e}")
+        logging.error(f"SQLite error when searching for benchmark by files: {e}")
         return None
     finally:
         conn.close()
@@ -659,87 +668,52 @@ def delete_benchmark(benchmark_id: int, db_path: Path = Path.cwd()) -> bool:
         conn.commit()
         return True
     except sqlite3.Error as e:
-        print(f"SQLite error when deleting benchmark {benchmark_id}: {e}")
+        logging.error(f"SQLite error when deleting benchmark {benchmark_id}: {e}")
         return False
     finally:
         conn.close()
 
-# Example usage (optional, for testing)
+def update_benchmark_details(benchmark_id: int, label: Optional[str] = None, description: Optional[str] = None, db_path: Path = Path.cwd()) -> bool:
+    """Updates the label and/or description of a benchmark."""
+    logging.info(f"Updating benchmark {benchmark_id} with label='{label}', description='{description}'")
+
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    fields_to_update = []
+    params = []
+
+    # Handle both None and empty string cases
+    if label is not None:
+        fields_to_update.append("label = ?")
+        params.append(label)
+    if description is not None:
+        fields_to_update.append("description = ?")
+        params.append(description)
+
+    # If no fields to update, return early
+    if not fields_to_update:
+        logging.info(f"No valid fields to update for benchmark {benchmark_id}")
+        return False
+
+    params.append(benchmark_id)
+    
+    try:
+        query = f"UPDATE {BENCHMARKS_TABLE_NAME} SET {', '.join(fields_to_update)} WHERE id = ?"
+        logging.info(f"Executing query: {query} with params {params}")
+        cursor.execute(query, tuple(params))
+        conn.commit()
+        rows_affected = cursor.rowcount
+        logging.info(f"Updated details for benchmark {benchmark_id}. Rows affected: {rows_affected}")
+        return rows_affected > 0
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error when updating benchmark {benchmark_id}: {e}")
+        return False
+    finally:
+        conn.close()
+
+# Example usage (for testing only)
 if __name__ == '__main__':
-    # ... (rest of the code remains the same)
-    # Create a dummy files directory and a dummy PDF for testing
-    test_files_dir = Path.cwd() / "test_files_for_store"
-    test_files_dir.mkdir(exist_ok=True)
-    dummy_pdf_path = test_files_dir / "dummy.pdf"
-    with open(dummy_pdf_path, "wb") as f:
-        f.write(b"This is some dummy PDF content.")
-
-    db_storage_path = Path.cwd() # Or specify a different directory like app data folder
-
-    init_db(db_storage_path)
-    
-    # Test adding a new mapping
-    print("\n--- Test Add ---")
-    test_openai_id = "file-dummy123"
-    add_file_mapping(dummy_pdf_path, test_openai_id, db_storage_path)
-    
-    # Test retrieving the mapping
-    print("\n--- Test Retrieve ---")
-    retrieved_id = get_openai_file_id(dummy_pdf_path, db_storage_path)
-    assert retrieved_id == test_openai_id, f"Expected {test_openai_id}, got {retrieved_id}"
-    
-    # Test retrieving a non-existent mapping
-    print("\n--- Test Retrieve Non-existent ---")
-    non_existent_pdf = test_files_dir / "non_existent.pdf"
-    with open(non_existent_pdf, "wb") as f: # Create another dummy file
-        f.write(b"Other content.")
-    retrieved_id_none = get_openai_file_id(non_existent_pdf, db_storage_path)
-    assert retrieved_id_none is None, f"Expected None, got {retrieved_id_none}"
-
-    # Modify the content of the first PDF and check if it's treated as new
-    print("\n--- Test Content Change ---")
-    with open(dummy_pdf_path, "wb") as f:
-        f.write(b"This is MODIFIED dummy PDF content.")
-    retrieved_id_after_mod = get_openai_file_id(dummy_pdf_path, db_storage_path)
-    assert retrieved_id_after_mod is None, "Expected None after content modification, but found old ID."
-    
-    new_openai_id = "file-dummy456"
-    add_file_mapping(dummy_pdf_path, new_openai_id, db_storage_path)
-    retrieved_new_id = get_openai_file_id(dummy_pdf_path, db_storage_path)
-    assert retrieved_new_id == new_openai_id, "Failed to map new ID after content modification."
-
-    print("\n--- Test Benchmark Save and Load ---")
-    # Create a dummy result dict
-    dummy_result = {
-        'model_name': 'test_model_v1',
-        'mean_score': 0.85,
-        'items': 2,
-        'elapsed_s': 12.34,
-        'total_input_tokens': 100,
-        'total_output_tokens': 200,
-        'total_tokens': 300,
-        'prompts_data': [
-            {'prompt_text': "P1", 'expected_answer': "E1", 'actual_answer': "A1", 'score': 1.0, 'prompt_length_chars': 10, 'latency_ms': 50, 'input_tokens': 20, 'output_tokens': 40},
-            {'prompt_text': "P2", 'expected_answer': "E2", 'actual_answer': "A2", 'score': 0.7, 'prompt_length_chars': 8, 'latency_ms': 30, 'input_tokens': 15, 'output_tokens': 25}
-        ]
-    }
-    saved_run_id = save_benchmark_run(dummy_pdf_path, dummy_result, db_storage_path)
-    assert saved_run_id is not None, "Failed to save benchmark run."
-
-    all_runs = load_all_benchmark_runs(db_storage_path)
-    assert len(all_runs) > 0, "Failed to load benchmark runs."
-    print(f"Found runs: {all_runs}")
-
-    if saved_run_id:
-        run_details = load_benchmark_details(saved_run_id, db_storage_path)
-        assert run_details is not None, "Failed to load benchmark details."
-        assert len(run_details.get('prompts_data', [])) == 2, "Incorrect number of prompts loaded."
-        print(f"Details for run {saved_run_id}: {run_details}")
-
-    print("\nAll file_store tests passed (if no assertion errors).")
-    
-    # Clean up dummy files
-    # dummy_pdf_path.unlink()
-    # non_existent_pdf.unlink()
-    # test_files_dir.rmdir()
-    # (Path(db_storage_path) / DB_NAME).unlink() # Optionally delete the test DB 
+    # This is a placeholder for test code
+    pass

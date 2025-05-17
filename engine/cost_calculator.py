@@ -39,14 +39,57 @@ MODEL_COSTS = {
     "default": {"input": 2.00, "cached": 0.50, "output": 8.00, "search_cost": 0.05},
 }
 
-# Web search context size costs (applies to both OpenAI and Google)
-SEARCH_CONTEXT_COSTS: Dict[SearchContext, float] = {
+# Web search context size costs (applies to OpenAI only)
+OPENAI_SEARCH_CONTEXT_COSTS: Dict[SearchContext, float] = {
     "low": 0.03,    # $30/1k searches
     "medium": 0.035,  # $35/1k searches (default)
     "high": 0.05,   # $50/1k searches
 }
 
-# OpenAI DALL-E models (per image)
+""" gemini web search cost info included in this comment
+
+Gemini Developer API Pricing
+
+
+The Gemini API "free tier" is offered through the API service with lower rate limits for testing purposes. Google AI Studio usage is completely free in all available countries. The Gemini API "paid tier" comes with higher rate limits, additional features, and different data handling.
+
+Upgrade to the Paid Tier
+Gemini 2.5 Flash Preview
+Try it in Google AI Studio
+
+Our first hybrid reasoning model which supports a 1M token context window and has thinking budgets.
+
+Preview models may change before becoming stable and have more restrictive rate limits.
+
+Free Tier	Paid Tier, per 1M tokens in USD
+Input price	Free of charge	$0.15 (text / image / video)
+$1.00 (audio)
+Output price	Free of charge	Non-thinking: $0.60
+Thinking: $3.50
+Context caching price	Not available	$0.0375 (text / image / video)
+$0.25 (audio)
+$1.00 / 1,000,000 tokens per hour
+Grounding with Google Search	Free of charge, up to 500 RPD	1,500 RPD (free), then $35 / 1,000 requests
+Used to improve our products	Yes	No
+Gemini 2.5 Pro Preview
+Try it in Google AI Studio
+
+Our state-of-the-art multipurpose model, which excels at coding and complex reasoning tasks.
+
+Preview models may change before becoming stable and have more restrictive rate limits.
+
+Free Tier	Paid Tier, per 1M tokens in USD
+Input price	Not available	$1.25, prompts <= 200k tokens
+$2.50, prompts > 200k tokens
+Output price (including thinking tokens)	Not available	$10.00, prompts <= 200k tokens
+$15.00, prompts > 200k
+Context caching price	Not available	$0.31, prompts <= 200k tokens
+$0.625, prompts > 200k
+$4.50 / 1,000,000 tokens per hour
+Grounding with Google Search	Not available	1,500 RPD (free), then $35 / 1,000 requests
+
+"""
+
 OPENAI_IMAGE_COSTS = {
     "1024x1024": {
         "standard": 0.04,    # $0.04 per image
@@ -75,16 +118,16 @@ def calculate_image_cost(
     Calculate the cost of image generation.
     
     Args:
-        model_name: The name of the model (e.g., 'dall-e-3', 'imagen-3')
+        model_name: The name of the model (e.g., 'gpt-image-1', 'imagen-3')
         num_images: Number of images to generate (default: 1)
         size: Image size (e.g., '1024x1024', '1024x1792')
-        quality: Image quality ('standard' or 'hd' for DALL-E)
+        quality: Image quality ('standard' or 'hd' for GPT-Image-1)
         
     Returns:
         Dictionary containing cost breakdown
     """
-    if model_name.startswith('dall-e'):
-        # OpenAI DALL-E models
+    if model_name.startswith('gpt-image-1'):
+        # OpenAI GPT-Image-1 models
         if size not in OPENAI_IMAGE_COSTS:
             size = "1024x1024"  # Default to square format
         if quality not in OPENAI_IMAGE_COSTS[size]:
@@ -94,7 +137,7 @@ def calculate_image_cost(
         total_cost = num_images * cost_per_image
         
         return {
-            'provider': 'openai',
+            'provider': 'openai',   
             'model': model_name,
             'num_images': num_images,
             'size': size,
@@ -158,15 +201,60 @@ def calculate_cost(
     cached_input_cost = (cached_input_tokens / 1_000_000) * cached_rate
     output_cost = (output_tokens / 1_000_000) * model_rates['output']
     
-    # Calculate search costs if any queries were made
-    search_cost = 0.0
+    # Calculate search cost
+    search_cost_total = 0.0
+    search_details = {} # To store details about how search cost was calculated
+
     if search_queries > 0:
-        search_cost_per_query = model_rates.get('search_cost', 
-                                              SEARCH_CONTEXT_COSTS.get(search_context, 0.035))
-        search_cost = search_queries * search_cost_per_query
-    
-    # Calculate image generation costs if any
-    image_cost = 0.0
+        provider = get_model_provider(model_name)
+        search_rate_per_query = 0.0
+        
+        if provider == 'openai':
+            # For OpenAI, use OPENAI_SEARCH_CONTEXT_COSTS based on search_context
+            actual_search_context = search_context if search_context in OPENAI_SEARCH_CONTEXT_COSTS else "medium"
+            search_rate_per_query = OPENAI_SEARCH_CONTEXT_COSTS[actual_search_context]
+            
+            search_details = {
+                'type': 'openai_web_search',
+                'queries': search_queries,
+                'context_used': actual_search_context,
+                'rate_per_query': search_rate_per_query
+            }
+            
+        elif provider == 'google':
+            # For Google (Gemini), prioritize 'search_grounding' cost
+            if 'search_grounding' in model_rates:
+                search_rate_per_query = model_rates['search_grounding']
+            elif 'search_cost' in model_rates: # Fallback to generic search_cost for Google
+                search_rate_per_query = model_rates['search_cost']
+            else:
+                search_rate_per_query = 0.035 # Default Google search cost ($35/1k requests)
+            
+            search_details = {
+                'type': 'google_search_grounding',
+                'queries': search_queries,
+                'rate_per_query': search_rate_per_query
+            }
+            
+        else: # For 'unknown' provider or if a model has a generic 'search_cost'
+            if 'search_cost' in model_rates:
+                search_rate_per_query = model_rates['search_cost']
+                search_details = {
+                    'type': 'generic_search',
+                    'queries': search_queries,
+                    'rate_per_query': search_rate_per_query
+                }
+            else:
+                search_details = {
+                    'type': 'search_not_costed',
+                    'queries': search_queries,
+                    'reason': 'No search cost defined for model/provider'
+                }
+        
+        search_cost_total = search_queries * search_rate_per_query
+
+    # Calculate image generation cost
+    image_cost_total = 0.0
     image_breakdown = None
     if image_generation and isinstance(image_generation, dict):
         image_result = calculate_image_cost(
@@ -175,39 +263,34 @@ def calculate_cost(
             size=image_generation.get('size', '1024x1024'),
             quality=image_generation.get('quality', 'standard')
         )
-        image_cost = image_result.get('total_cost', 0.0)
+        image_cost_total = image_result.get('total_cost', 0.0)
         image_breakdown = image_result
     
-    total_cost = standard_input_cost + cached_input_cost + output_cost + search_cost + image_cost
+    total_cost = standard_input_cost + cached_input_cost + output_cost + search_cost_total + image_cost_total
     
     # Prepare result dictionary
-    result: Dict[str, Union[float, int, str, dict]] = {
-        'standard_input_cost': standard_input_cost,
-        'cached_input_cost': cached_input_cost,
-        'output_cost': output_cost,
-        'total_cost': total_cost,
+    cost_breakdown = {
+        'model_name': model_name,
+        'provider': get_model_provider(model_name),
+        'standard_input_tokens': standard_input_tokens,
+        'cached_input_tokens': cached_input_tokens,
+        'output_tokens': output_tokens,
+        'standard_input_cost': round(standard_input_cost, 5),
+        'cached_input_cost': round(cached_input_cost, 5),
+        'output_cost': round(output_cost, 5),
     }
     
-    # Only include these fields if they're non-zero/used
     if search_queries > 0:
-        result.update({
-            'search_cost': search_cost,
-            'search_queries': search_queries,
-            'search_context': search_context
-        })
-    
+        cost_breakdown['search_cost'] = round(search_cost_total, 5)
+        cost_breakdown['search_details'] = search_details # Updated to provide more detail
+        
     if image_breakdown:
-        result.update({
-            'image_generation_cost': image_cost,
-            'image_generation': image_breakdown
-        })
+        cost_breakdown['image_generation_cost'] = round(image_cost_total, 5)
+        cost_breakdown['image_generation'] = image_breakdown
     
-    # Round all float values for cleaner output
-    for key, value in result.items():
-        if isinstance(value, float):
-            result[key] = round(value, 8)
+    cost_breakdown['total_cost'] = round(total_cost, 5)
     
-    return result
+    return cost_breakdown
 
 def get_model_provider(model_name: str) -> str:
     """
@@ -219,7 +302,7 @@ def get_model_provider(model_name: str) -> str:
     Returns:
         Provider name ('openai', 'google', or 'unknown')
     """
-    if any(name in model_name for name in ['gpt', 'dall-e']):
+    if 'gpt' in model_name:
         return 'openai'
     elif any(name in model_name for name in ['gemini', 'imagen']):
         return 'google'

@@ -19,14 +19,34 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from engine.file_store import load_benchmark_details
 from engine.cost_calculator import calculate_cost
 
-# Set up logging to a file
+# Set up logging to both file and stderr
 log_file = Path(__file__).parent / 'logs' / 'get_benchmark_details.log'
 os.makedirs(os.path.dirname(log_file), exist_ok=True)
-logging.basicConfig(
-    filename=log_file,
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+
+# Configure root logger
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Create file handler
+file_handler = logging.FileHandler(log_file)
+file_handler.setLevel(logging.INFO)
+
+# Create console handler
+console_handler = logging.StreamHandler(sys.stderr)
+console_handler.setLevel(logging.ERROR)  # Only show errors on stderr
+
+# Create formatter and add it to the handlers
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+file_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
+
+# Remove any existing handlers
+for handler in logger.handlers[:]:
+    logger.removeHandler(handler)
+
+# Add the handlers to the logger
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 
 # Script directory for database path
 SCRIPT_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -79,7 +99,7 @@ def calculate_benchmark_cost(benchmark_data: Dict[str, Any]) -> Dict[str, Any]:
         return cost_breakdown
         
     except Exception as e:
-        logging.error(f"Error calculating benchmark cost: {e}", exc_info=True)
+        logger.error(f"Error calculating benchmark cost: {e}", exc_info=True)
         return {'error': str(e)}
 
 
@@ -139,7 +159,7 @@ def get_benchmark_details(benchmark_id: Union[str, int]) -> Dict[str, Any]:
     Returns:
         Dictionary with benchmark details and cost breakdown
     """
-    logging.info(f"Fetching details for benchmark ID: {benchmark_id}")
+    logger.info(f"Fetching details for benchmark ID: {benchmark_id}")
     
     try:
         # Convert benchmark_id to string if it's an integer
@@ -163,7 +183,7 @@ def get_benchmark_details(benchmark_id: Union[str, int]) -> Dict[str, Any]:
                 dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
                 formatted_timestamp = dt.strftime("%Y-%m-%d %H:%M:%S")
             except Exception as e:
-                logging.warning(f"Failed to parse timestamp {timestamp}: {e}")
+                logger.warning(f"Failed to parse timestamp {timestamp}: {e}")
         
         # Process prompts if available
         prompts_data = benchmark_details.get('prompts', [])
@@ -194,11 +214,22 @@ def get_benchmark_details(benchmark_id: Union[str, int]) -> Dict[str, Any]:
         # Get file paths if available
         file_paths = benchmark_details.get('file_paths', [])
         
+        # Determine the actual status based on data
+        status = benchmark_details.get('status')
+        if status is None:
+            # If no explicit status, determine based on data
+            if len(formatted_prompts) > 0 and mean_score is not None:
+                status = 'completed'
+            elif 'run_id' in benchmark_details:
+                status = 'running'  # Has a run, but no results yet
+            else:
+                status = 'pending'  # No run started yet
+        
         # Format the response
         formatted_details = {
             "id": benchmark_id,
             "timestamp": formatted_timestamp,
-            "status": benchmark_details.get('status', 'completed'),
+            "status": status,
             "model": model_name,
             "models": list(model_scores.keys()) or [model_name],
             "model_scores": model_scores,
@@ -232,20 +263,23 @@ def get_benchmark_details(benchmark_id: Union[str, int]) -> Dict[str, Any]:
         if 'error' not in cost_breakdown:
             formatted_details['cost_breakdown'] = cost_breakdown
         else:
-            logging.warning(f"Could not calculate cost breakdown: {cost_breakdown.get('error')}")
+            logger.warning(f"Could not calculate cost breakdown: {cost_breakdown.get('error')}")
         
         return formatted_details
 
     except Exception as e:
         error_msg = f"Error retrieving benchmark details: {e}"
-        logging.error(error_msg, exc_info=True)
+        logger.error(error_msg, exc_info=True)
         return {"error": str(e), "status": "error"}
 
 
-if __name__ == "__main__":
+def main():
     if len(sys.argv) < 2:
-        print("Usage: python get_benchmark_details.py <benchmark_id>")
-        sys.exit(1)
+        error_msg = "Missing benchmark_id"
+        logger.error(error_msg)
+        print(json.dumps({"error": error_msg, "status": "error"}), file=sys.stderr)
+        print("Usage: python get_benchmark_details.py <benchmark_id>", file=sys.stderr)
+        return 1
     
     try:
         # Parse benchmark_id as int if possible, otherwise keep as string
@@ -253,10 +287,32 @@ if __name__ == "__main__":
             benchmark_id = int(sys.argv[1])
         except ValueError:
             benchmark_id = sys.argv[1]
-            
+        
+        logger.info(f"Fetching details for benchmark ID: {benchmark_id}")
         details = get_benchmark_details(benchmark_id)
-        print(json.dumps(details, indent=2))
+        
+        if details is None:
+            error_msg = f"Benchmark with ID {benchmark_id} not found"
+            logger.error(error_msg)
+            print(json.dumps({"error": error_msg, "status": "not_found"}), file=sys.stderr)
+            return 1
+            
+        # Ensure we have a clean JSON output
+        try:
+            json_output = json.dumps(details)
+            print(json_output)
+            return 0
+        except (TypeError, ValueError) as e:
+            error_msg = f"Error encoding data to JSON: {e}"
+            logger.error(error_msg, exc_info=True)
+            print(json.dumps({"error": error_msg, "status": "error"}), file=sys.stderr)
+            return 1
+            
     except Exception as e:
-        error_response = {"error": str(e), "status": "error"}
-        logging.error(f"Unhandled error: {e}", exc_info=True)
-        print(json.dumps(error_response, indent=2))
+        error_msg = f"Unhandled error: {e}"
+        logger.error(error_msg, exc_info=True)
+        print(json.dumps({"error": error_msg, "status": "error"}), file=sys.stderr)
+        return 1
+
+if __name__ == "__main__":
+    sys.exit(main())

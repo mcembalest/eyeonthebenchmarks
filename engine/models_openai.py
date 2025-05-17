@@ -24,7 +24,7 @@ AVAILABLE_MODELS = [
     "gpt-4.1",
     "gpt-4.1-mini",
     "gpt-4.1-nano",
-    "dall-e-3"
+    "gpt-image-1"
 ]
 
 def openai_upload(pdf_path: Path) -> str:
@@ -66,18 +66,18 @@ def estimate_cost(
     Estimate the cost of using this model.
     
     Args:
-        model_name: The model to use (e.g., "gpt-4o", "dall-e-3")
+        model_name: The model to use
         input_tokens: Number of input tokens (for text models)
         output_tokens: Number of output tokens (for text models)
         search_queries: Number of web search queries
         images: Number of images to generate (for image models)
         image_size: Size of generated images (for image models)
-        image_quality: Quality of generated images (standard/hd for DALL-E)
+        image_quality: Quality of generated images
         
     Returns:
         Dictionary with cost breakdown
     """
-    if model_name.startswith('dall-e'):
+    if model_name.startswith('gpt-image'):
         # For image generation
         return calculate_cost(
             model_name=model_name,
@@ -120,7 +120,11 @@ def openai_ask(file_id: str, prompt_text: str, model_name: str = "gpt-4o-mini") 
             - output_tokens (int): Tokens used in the output.
     """
     try:
+        import os
+        api_key = os.environ.get('OPENAI_API_KEY')
+        print(f"API Key present: {api_key is not None}, first few chars: {api_key[:5]}... (if available)")
         print(f"Asking model {model_name} about file {file_id} with prompt: '{prompt_text[:50]}...'")
+        logging.info(f"Making OpenAI API call to model {model_name} for file {file_id}")
 
         api_input = [
             {
@@ -138,10 +142,17 @@ def openai_ask(file_id: str, prompt_text: str, model_name: str = "gpt-4o-mini") 
             }
         ]
         
-        response = client.responses.create( # Original call
-            model=model_name, 
-            input=api_input
-        )
+        print(f"About to make API call with model {model_name}")
+        try:
+            response = client.responses.create( # Original call
+                model=model_name, 
+                input=api_input
+            )
+            print(f"API call successful, got response: {response}")
+        except Exception as e:
+            print(f"Error during OpenAI API call: {e}")
+            logging.error(f"Exception during OpenAI API call: {e}", exc_info=True)
+            raise
         
         answer = None
         standard_input_tokens = 0
