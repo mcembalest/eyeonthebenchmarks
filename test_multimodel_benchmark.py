@@ -65,18 +65,38 @@ class MultiModelTestUIBridge(AppUIBridge):
     def notify_benchmark_progress(self, job_id, job_data):
         self.progress_updates.append({"job_id": job_id, "data": job_data})
         
-        # Track model statuses
+        # First check direct model status updates (used by Google model)
+        model_name = job_data.get("model_name")
+        status = job_data.get("status")
+        
+        if model_name and status:
+            logging.info(f"Direct model update - {model_name}: {status}")
+            
+            # Store status
+            self.model_statuses[model_name] = status
+            
+            # Track completion
+            if status == "complete":
+                logging.info(f"Model {model_name} COMPLETED")
+                self.completed_models.add(model_name)
+            elif status == "error":
+                logging.info(f"Model {model_name} ERRORED")
+                self.errored_models.add(model_name)
+        
+        # Also check models_details for OpenAI model status
         models_details = job_data.get("models_details", {})
         for model_name, details in models_details.items():
             status = details.get("status")
-            if status not in self.model_statuses.get(model_name, []):
-                logging.info(f"Model {model_name} status: {status}")
+            if status != self.model_statuses.get(model_name):
+                logging.info(f"Model details update - {model_name}: {status}")
                 
             self.model_statuses[model_name] = status
             
-            if status == "completed":
+            if status == "completed" or status == "complete":
+                logging.info(f"Model {model_name} COMPLETED")
                 self.completed_models.add(model_name)
             elif status == "error":
+                logging.info(f"Model {model_name} ERRORED")
                 self.errored_models.add(model_name)
     
     def notify_data_change(self, change_type, data):
