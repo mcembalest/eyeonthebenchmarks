@@ -500,72 +500,120 @@ def load_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> dic
         details['pdf_path'] = details['file_paths'][0] if details['file_paths'] else None
 
 
-        # 3. Fetch the most recent benchmark run for this benchmark
+        # 3. Fetch all benchmark runs for this benchmark, grouped by model
         cursor.execute(f'''
-            SELECT id AS run_id, model_name, report, latency, created_at AS run_timestamp, 
-                   total_standard_input_tokens, total_cached_input_tokens, total_output_tokens, total_tokens
-            FROM {BENCHMARK_RUNS_TABLE_NAME}
-            WHERE benchmark_id = ?
-            ORDER BY created_at DESC 
-            LIMIT 1
-        ''', (benchmark_id,))
-        run_info = cursor.fetchone()
+            SELECT r.id AS run_id, r.model_name, r.report, r.latency, r.created_at AS run_timestamp, 
+                   r.total_standard_input_tokens, r.total_cached_input_tokens, r.total_output_tokens, r.total_tokens
+            FROM {BENCHMARK_RUNS_TABLE_NAME} r
+            INNER JOIN (
+                SELECT model_name, MAX(created_at) as max_date
+                FROM {BENCHMARK_RUNS_TABLE_NAME} 
+                WHERE benchmark_id = ?
+                GROUP BY model_name
+            ) latest ON r.model_name = latest.model_name AND r.created_at = latest.max_date
+            WHERE r.benchmark_id = ?
+            ORDER BY r.created_at DESC
+        ''', (benchmark_id, benchmark_id))
+        run_infos = cursor.fetchall()
 
-        if run_info:
-            logging.info(f"LOAD_BENCHMARK_DETAILS: Fetched run_info for benchmark_id {benchmark_id}: {dict(run_info)}") # Log the raw run_info
+        if run_infos:
+            logging.info(f"LOAD_BENCHMARK_DETAILS: Fetched {len(run_infos)} run_infos for benchmark_id {benchmark_id}")
         else:
-            logging.info(f"LOAD_BENCHMARK_DETAILS: No run_info found for benchmark_id {benchmark_id}")
+            logging.info(f"LOAD_BENCHMARK_DETAILS: No run_infos found for benchmark_id {benchmark_id}")
 
-        if run_info:
-            if 'model_name' in run_info:
-                logging.info(f"LOAD_BENCHMARK_DETAILS: run_info['model_name'] for benchmark_id {benchmark_id} is '{run_info['model_name']}' (type: {type(run_info['model_name'])})")
-            else:
-                logging.info(f"LOAD_BENCHMARK_DETAILS: 'model_name' NOT IN run_info for benchmark_id {benchmark_id}. Keys: {run_info.keys()}")
-            details.update(dict(run_info)) # Add run details to the main details dict
-            details['elapsed_seconds'] = run_info['latency'] # For UI compatibility
+        # Process results for multiple models
+        if run_infos:
+            # Store all model names
+            model_names = []
+            model_results = []
             
-            # Provide fields for UI rendering
-            details['models'] = [run_info['model_name']]
-            details['files'] = details.get('file_paths', [])
-            details['results'] = [{
-                'model': run_info['model_name'],
-                'status': 'completed',
-                'score': details.get('mean_score'),
-                'duration': details.get('elapsed_seconds'),
-            }]
+            # Track the most recent run for generic details
+            most_recent_run = dict(run_infos[0]) if run_infos else None
             
-            # Parse report for mean_score, total_items if possible (example)
-            # This is brittle; ideally, these would be separate columns in benchmark_runs if needed often
-            # Or have the report be a JSON string.
-            if isinstance(run_info['report'], str):
-                try:
-                    # Example: "Mean score: 0.85, Items: 10, Time: 5.2s"
-                    if "Mean score:" in run_info['report'] and "Items:" in run_info['report']:
-                        parts = run_info['report'].split(',')
-                        for part in parts:
-                            if "Mean score:" in part:
-                                details['mean_score'] = float(part.split(':')[1].strip())
-                            if "Items:" in part:
-                                details['total_items'] = int(part.split(':')[1].split(',')[0].strip())
-                except Exception as e:
-                    logging.warning(f"Could not parse mean_score/total_items from report string: {e}")
-
-
-            # 4. Fetch prompts for this specific run
-            cursor.execute(f'''
-                SELECT prompt, answer AS expected_answer, response AS actual_answer, score, 
-                       latency AS prompt_latency, standard_input_tokens, cached_input_tokens, output_tokens
-                FROM {BENCHMARK_PROMPTS_TABLE_NAME}
-                WHERE benchmark_run_id = ?
-                ORDER BY id ASC
-            ''', (run_info['run_id'],))
-            prompts = cursor.fetchall()
-            # Rename 'prompt' to 'prompt_text' for UI compatibility
-            details['prompts_data'] = [{'prompt_text': p['prompt'], **{k: p[k] for k in p.keys() if k != 'prompt'}} for p in prompts]
+            # Process each run by model
+            for run_info in run_infos:
+                run_info_dict = dict(run_info)
+                model_name = run_info_dict['model_name']
+                model_names.append(model_name)
+                
+                # Create a result entry for this model
+                model_result = {
+                    'model': model_name,
+                    'status': 'completed',
+                    'run_id': run_info_dict['run_id'],
+                    'latency': run_info_dict['latency'],
+                    'report': run_info_dict['report'],
+                    'duration': run_info_dict['latency'],
+                    'total_standard_input_tokens': run_info_dict['total_standard_input_tokens'],
+                    'total_cached_input_tokens': run_info_dict['total_cached_input_tokens'],
+                    'total_output_tokens': run_info_dict['total_output_tokens'],
+                    'total_tokens': run_info_dict['total_tokens']
+                }
+                
+                # Extract mean score from report
+                if isinstance(run_info_dict['report'], str):
+                    try:
+                        if "Mean score:" in run_info_dict['report']:
+                            parts = run_info_dict['report'].split(',')
+                            for part in parts:
+                                if "Mean score:" in part:
+                                    model_result['score'] = float(part.split(':')[1].strip())
+                    except Exception as e:
+                        logging.warning(f"Could not parse mean_score from report for {model_name}: {e}")
+                
+                model_results.append(model_result)
             
-            logging.debug(f"Loaded details for benchmark ID {benchmark_id}, including its most recent run ID {run_info['run_id']}")
+            # Use the most recent run for UI compatibility, but include all models
+            if most_recent_run:
+                details['models'] = model_names
+                details['files'] = details.get('file_paths', [])
+                details['results'] = model_results
+            
+            # 4. Fetch prompts for each run
+            all_prompts_data = []
+            prompts_by_model = {}
+            
+            for run_info in run_infos:
+                run_info_dict = dict(run_info)
+                model_name = run_info_dict['model_name']
+                run_id = run_info_dict['run_id']
+                
+                cursor.execute(f'''
+                    SELECT prompt, answer AS expected_answer, response AS actual_answer, score, 
+                           latency AS prompt_latency, standard_input_tokens, cached_input_tokens, output_tokens
+                    FROM {BENCHMARK_PROMPTS_TABLE_NAME}
+                    WHERE benchmark_run_id = ?
+                    ORDER BY id ASC
+                ''', (run_id,))
+                prompts = cursor.fetchall()
+                
+                # Store the prompts with a model identifier
+                processed_prompts = []
+                for p in prompts:
+                    prompt_dict = dict(p)
+                    # Add model name to each prompt for UI reference
+                    prompt_dict['model_name'] = model_name
+                    prompt_dict['prompt_text'] = prompt_dict['prompt']
+                    del prompt_dict['prompt']  # Remove original key after copying
+                    processed_prompts.append(prompt_dict)
+                
+                # Store by model
+                prompts_by_model[model_name] = processed_prompts
+                
+                # Add to the full list
+                all_prompts_data.extend(processed_prompts)
+            
+            # Include both the combined prompt data and model-specific versions
+            details['prompts_data'] = all_prompts_data
+            details['prompts_by_model'] = prompts_by_model
+            
+            logging.debug(f"Loaded details for benchmark ID {benchmark_id} with {len(model_names)} models")
         else:
-            details['prompts_data'] = [] # No runs, so no prompts
+            # No runs available
+            details['models'] = []
+            details['results'] = []
+            details['prompts_data'] = [] 
+            details['prompts_by_model'] = {}
             logging.info(f"Benchmark ID {benchmark_id} has no runs.")
 
     except sqlite3.Error as e:
