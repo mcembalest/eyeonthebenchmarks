@@ -18,4 +18,4 @@ Coming soon!
 
 Financial analysts, and other non-coding working professionals need a basic desktop application to test multiple AI model providers on large batches of their own questions. Currently no easy application for this exists.
 
-Doing this requires writing code, which is not a viable option for a lot of professionals who otherwise would have better ideas than AI researchers themselves about how to rigorously test AI models at their ablity to use the internet and actual business PDFs to answer tough questions.
+Doing this requires writing code, which is not a viable option for a lot of professionals. Eye on the Benchmarks exists for such professionals who have ideas about how to test AI models at using actual business PDFs and optional access to live sources on the internet to answer tough questions.
