@@ -125,7 +125,7 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
         prompts: List of prompt dictionaries. Expected keys: 'prompt_text' and 'expected_answer'
                 (will also accept 'prompt' and 'expected' for backwards compatibility)
         pdf_path: Path to the PDF file
-        model_name: Name of the model to use (e.g., "gpt-4o-mini", "gemini-2.5-flash")
+        model_name: Name of the model to use 
         
     Returns:
         Dictionary with benchmark results

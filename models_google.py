@@ -1,9 +1,12 @@
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, Union
 import os
+import pathlib
+from pathlib import Path
 from dotenv import load_dotenv
 from google import genai  # Google Generative AI Python SDK
 import time
+import logging
 
 # Load environment variables from .env file
 load_dotenv()
@@ -21,9 +24,9 @@ from cost_calculator import calculate_cost, calculate_image_cost
 
 # Available Google models for benchmarking
 AVAILABLE_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "imagen-3",
+    "gemini-2.5-flash-preview-04-17",
+    "gemini-2.5-pro-preview-05-06",
+    "imagen-3.0-generate-002",
 ]
 
 def google_upload(pdf_path: Path) -> str:
@@ -34,21 +37,84 @@ def google_upload(pdf_path: Path) -> str:
         pdf_path: Path to the PDF file
         
     Returns:
-        file_id: The name (ID) of the uploaded file
-    """
+        str: File ID for the uploaded PDF
+        
+    Raises:
+        Exception: If upload fails
+    """    
     try:
         # Upload file to Google
-        uploaded_file = client.files.upload(file=str(pdf_path))
+        uploaded_file = client.files.upload(
+            file=pdf_path,
+            config=dict(mime_type='application/pdf')
+        )
         
         # Get the file name (which serves as the ID)
         file_id = uploaded_file.name
         
-        print(f"Successfully uploaded {pdf_path.name} to Google. File ID: {file_id}")
+        logging.info(f"Successfully uploaded {pdf_path.name} to Google. File ID: {file_id}")
         return file_id
     
     except Exception as e:
-        print(f"Error uploading {pdf_path} to Google: {e}")
-        raise
+        logging.error(f"Error uploading {pdf_path} to Google: {e}")
+        raise Exception(f"Failed to upload PDF to Google: {str(e)}")
+
+def google_ask(file_id: str, prompt_text: str, model_name: str = "gemini-2.5-flash-preview-04-17") -> Dict[str, Any]:
+    """
+    Ask a question about a PDF that's been uploaded to Google Generative AI.
+    
+    Args:
+        file_id: The file ID returned from google_upload
+        prompt_text: The prompt/question to ask
+        model_name: The Google model to use
+        
+    Returns:
+        Dict with response text and token usage statistics
+        
+    Raises:
+        Exception: If there's an error with the request
+    """
+    start_time = time.time()
+    
+    try:
+        logging.info(f"Sending prompt to Google using model {model_name}")
+        
+        # Get file reference by ID
+        file_ref = client.get_file(file_id)
+        
+        # Generate content with the file and prompt
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[file_ref, prompt_text]
+        )
+        
+        # Record completion time
+        completion_time = time.time() - start_time
+        
+        # Extract response text
+        answer_text = response.text
+        
+        # Get token counts if available
+        token_counts = {
+            'input': getattr(response, 'usage', {}).get('prompt_tokens', 0),
+            'output': getattr(response, 'usage', {}).get('completion_tokens', 0)
+        }
+        
+        # Format response
+        result = {
+            'text': answer_text,
+            'tokens': token_counts,
+            'latency': round(completion_time, 2),
+            'model': model_name
+        }
+        
+        logging.info(f"Google response received in {result['latency']}s")
+        return result
+        
+    except Exception as e:
+        logging.error(f"Error getting response from Google: {e}")
+        raise Exception(f"Failed to get response from Google: {str(e)}")
+
 
 def estimate_cost(
     model_name: str,
@@ -100,14 +166,14 @@ def estimate_cost(
         )
 
 
-def google_ask(file_id: str, prompt_text: str, model_name: str = "gemini-2.5-flash") -> Tuple[str, int, int, int]:
+def google_ask(file_id: str, prompt_text: str, model_name: str) -> Tuple[str, int, int, int]:
     """
     Ask a question about a PDF file using Google's Generative AI models.
     
     Args:
         file_id: ID (name) of the uploaded file (obtained via google_upload).
         prompt_text: The question to ask the model.
-        model_name: The model to use (e.g., "gemini-2.5-flash", "gemini-2.5-pro").
+        model_name: The model to use 
         
     Returns:
         A tuple containing:

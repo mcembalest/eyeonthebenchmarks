@@ -148,10 +148,31 @@ function setupIpcHandlers() {
         return [];
       }
 
+      // Split CSV line into fields respecting quoted commas
+      const parseCsvLine = (line) => {
+        const result = [];
+        let current = '';
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i];
+          if (char === '"') {
+            inQuotes = !inQuotes;
+            continue;
+          }
+          if (char === ',' && !inQuotes) {
+            result.push(current);
+            current = '';
+          } else {
+            current += char;
+          }
+        }
+        result.push(current);
+        return result.map(v => v.trim());
+      };
+
       // Robust header detection (prompt, expected, expected_answer, ground_truth)
-      const headerLine = lines[0].toLowerCase();
-      // Remove potential BOM character from the first header before splitting
-      const headers = headerLine.replace(/^\uFEFF/, '').split(',').map(h => h.trim().replace(/^"|"$/g, '')); // remove outer quotes from headers
+      const headerLineRaw = lines[0].replace(/^\uFEFF/, '');
+      const headers = parseCsvLine(headerLineRaw).map(h => h.toLowerCase());
 
       let promptIndex = headers.findIndex(h => h === 'prompt' || h === 'prompt_text' || h === 'question');
       let expectedIndex = headers.findIndex(h => ['expected', 'expected_answer', 'ground_truth', 'answer'].includes(h));
@@ -173,7 +194,7 @@ function setupIpcHandlers() {
         const line = lines[i].trim();
         if (line === '') continue; // Skip empty lines
         
-        const values = line.split(',').map(v => v.trim().replace(/^"|"$/g, '')); // Basic CSV split, remove quotes
+        const values = parseCsvLine(line);
         
         if (values.length > Math.max(promptIndex, expectedIndex)) {
           const promptText = values[promptIndex];

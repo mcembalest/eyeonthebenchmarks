@@ -294,6 +294,7 @@ async function loadBenchmarks() {
       <div class="error">
         <h3>Error loading benchmarks</h3>
         <p>${error.message || 'Unknown error occurred'}</p>
+        <hr>
         <button onclick="loadBenchmarks()" class="btn btn-sm btn-outline-secondary mt-2">
           <i class="fas fa-sync-alt me-1"></i> Retry
         </button>
@@ -361,10 +362,9 @@ function renderBenchmarks(benchmarks) {
       : 'No models';
     
     // Check if benchmark is in progress
-    // Determine proper status text and class - default to 'in-progress' if not explicitly 'completed'
-    // This ensures new benchmarks show as 'in progress' instead of immediately showing as 'complete'
     const benchmarkStatus = benchmark.status || 'complete';
-    const isInProgress = benchmarkStatus === 'running' || benchmarkStatus === 'pending';
+    // Treat 'progress' as in-progress too
+    const isInProgress = benchmarkStatus === 'running' || benchmarkStatus === 'pending' || benchmarkStatus === 'progress';
     const statusClass = isInProgress ? 'status-in-progress' : 'status-complete';
     const statusText = isInProgress ? 'In Progress' : 'Complete';
     
@@ -922,6 +922,11 @@ window.electronAPI.onBenchmarkProgress(data => {
             viewLogsBtn.textContent = 'View Details';
             viewLogsBtn.className = 'view-btn';
           }
+        } else if (data.status === 'progress') {
+          // Show ongoing progress status
+          statusBadge.textContent = 'In Progress';
+          statusBadge.className = 'status-badge status-in-progress';
+          benchmarkCard.dataset.status = 'in-progress';
         }
       }
     }
@@ -1129,13 +1134,13 @@ async function initPage() {
   }
   
   // Add default prompt rows
-  const promptsTable = document.getElementById('promptsTable');
+  const promptsTableBody = document.getElementById('promptsTable').querySelector('tbody');
   const defaultPrompts = [
     {prompt: "what year did this piece get written", expected: "2025"},
   ];
   
   defaultPrompts.forEach(item => {
-    const row = promptsTable.insertRow();
+    const row = promptsTableBody.insertRow();
     const promptCell = row.insertCell(0);
     const expectedCell = row.insertCell(1);
     promptCell.textContent = item.prompt;
@@ -1147,7 +1152,7 @@ async function initPage() {
   });
   
   // Add extra empty row for new entries
-  const emptyRow = promptsTable.insertRow();
+  const emptyRow = promptsTableBody.insertRow();
   const emptyPromptCell = emptyRow.insertCell(0);
   const emptyExpectedCell = emptyRow.insertCell(1);
   emptyPromptCell.contentEditable = 'true';

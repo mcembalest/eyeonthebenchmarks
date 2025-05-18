@@ -1,3 +1,4 @@
+prompt,expected
 "Post-election, by how many percentage points did 'Magnificent 7' stocks initially underperform the S&P 500 before surpassing it?","~5%"
 "What approximate forward P/E did S&P 500 ex-Mag 7 reach in 2025, and how did this compare to Mag 7's P/E?","~20; Mag 7 ~30"
 "If 'Reciprocal & VAT, 40% China' tariffs were enacted, what peak average US import tariff rate is shown?","~22%"

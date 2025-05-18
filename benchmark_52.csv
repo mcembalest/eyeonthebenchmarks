@@ -1,0 +1,73 @@
+prompt_text,expected_answer,actual_answer,score,latency,standard_input_tokens,cached_input_tokens,output_tokens
+"Post-election, by how many percentage points did 'Magnificent 7' stocks initially underperform the S&P 500 before surpassing it?",~5%,"Looking at the chart titled ""US vs global equity total returns"" on page 1, we see the indexed performance starting from January 2025, with a zero base at the start of the year.
+
+- After Trump's election (marked on the chart), the ""Magnificent 7"" stocks initially underperformed the S&P 500.
+- The difference in performance between the S&P 500 and the ""Magnificent 7"" widened to about 5 percentage points at the lowest point of underperformance (roughly early February).
+- After this period, the ""Magnificent 7"" stocks then surpassed the S&P 500 returns by reaching approximately 20-25% gains, while the broader S&P 500 was closer to around 10-15% gains.
+
+**Answer:**  
+The ""Magnificent 7"" stocks initially underperformed the S&P 500 by about **5 percentage points** before surpassing it later in the period shown.",0,9022.0,12978,0,194
+"What approximate forward P/E did S&P 500 ex-Mag 7 reach in 2025, and how did this compare to Mag 7's P/E?",~20; Mag 7 ~30,"In 2025, the forward P/E ratio for the S&P 500 excluding the Magnificent 7 (Mag 7) reached approximately 15. In contrast, the Mag 7's forward P/E ratio was significantly higher, around 40. This shows that the Mag 7 stocks were trading at roughly 2.5 to 3 times the valuation of the rest of the S&P 500 in terms of forward P/E.",0,6219.0,12983,0,91
+"If 'Reciprocal & VAT, 40% China' tariffs were enacted, what peak average US import tariff rate is shown?",~22%,"If the 'Reciprocal & VAT, 40% China' tariffs were enacted, the peak average US import tariff rate shown is approximately 23%. This can be seen on the chart titled ""Average tariff rate on all US imports"" on page 2, where the arrow labeled ""Reciprocal & VAT, 40% China"" points to about the 23% mark on the vertical axis.",0,5733.0,12976,0,83
+"Following McKinley tariffs, by roughly how many seats did GOP House representation fall?",100 seats,"Following the McKinley tariffs enacted on October 1, 1890, the GOP lost roughly 100 seats in the House of Representatives in the November 4, 1890 midterm elections.",1,5227.0,12966,0,42
+What is Canada's approximate 2024 percentage share of the US total trade deficit per the chart?,~2%,"According to the chart on page 3, Canada's approximate share of the US total trade deficit in 2024 is around 5%.",0,5684.0,12968,11418,28
+What is the projected 10-year cost of the TCJA extension in the budget reconciliation scenario?,$4.1 trillion,The projected 10-year cost of the TCJA (Tax Cuts and Jobs Act) extension in the budget reconciliation scenario is $4.1 trillion.,1,4859.0,12968,0,31
+"In the 2018 steel tariff aftermath, what was the ppt difference between import price change and domestic production change?",20.8%,"In the 2018 steel tariff aftermath:
+
+- Import prices increased by 22.7%
+- Domestic steel production increased by 1.9%
+
+The percentage point (ppt) difference between the import price change and the domestic production change is:
+
+22.7% - 1.9% = 20.8 percentage points.",0,6452.0,12972,11418,68
+What is the sum (in billions) of the three listed components of proposed Medicaid cuts in the budget bill?,$711 billion,"The three listed components of proposed Medicaid cuts in the budget bill are:
+
+- Disenrollment: $299 billion
+- State programs: $200 billion
+- Program cuts: $212 billion
+
+The sum of these three components is:
+299 + 200 + 212 = 711 billion dollars
+
+So, the sum of the proposed Medicaid cuts is $711 billion.",1,5735.0,12971,0,75
+"From Jan 2025 to late Feb 2025, what was the S&P 500's approximate percentage decline per chart?",-10%,"From the chart on page 1, the S&P 500's approximate percentage change from January 2025 to late February 2025 shows a decline of about 10%. The index starts near 0% at the beginning of January and falls to around -10% by late February.",1,6449.0,12975,11418,60
+What historical event serves as a 'time capsule' for negative electoral results of popular-at-enactment tariffs?,1890 midterm elections,"The historical event serving as a 'time capsule' for negative electoral results of popular-at-enactment tariffs is the aftermath of the McKinley Tariffs enacted in 1890. Although the tariffs were very popular when enacted, they caused an almost immediate inflation spike, which made voters very unhappy. As a result, the GOP lost 100 seats in the 1890 midterm elections, marking the third largest loss in the history of the U.S. House of Representatives going back to the Civil War.",1,6572.0,12971,11418,103
+"What key economic activity shows a US trade surplus with Canada, ex-energy?",Autos,"The key economic activity that shows a US trade surplus with Canada, excluding energy, is autos (automobile sector).",1,5408.0,12964,11418,24
+"If US forces in Europe (95k) are cut by 2/3, approximately how many troops remain?","31,667","If US forces in Europe are cut by 2/3, that means only 1/3 of the troops remain.
+
+Starting number of troops: 95,000
+
+1/3 of 95,000 = 95,000 ÷ 3 ≈ 31,667 troops
+
+Approximately 31,667 US troops would remain in Europe.",1,7278.0,12972,11418,73
+"Which is higher: 2025 Magnificent 7 forward P/E, or peak average US import tariff under a 'Reciprocal' scenario (no VAT/China)?",Mag 7 P/E,"From the provided data:
+
+- The 2025 forward P/E ratio for the Magnificent 7 is about 40 (from page 1, chart ""US equity valuations Forward P/E ratio"").
+
+- The peak average US import tariff under a 'Reciprocal' scenario without VAT/China, seen on page 2 chart ""Average tariff rate on all US imports"", is approximately 15%.
+
+Comparing the two values:
+
+- Magnificent 7 forward P/E (around 40) is significantly higher than the peak average US import tariff under the 'Reciprocal' scenario (around 15%).
+
+Therefore, the 2025 Magnificent 7 forward P/E is higher.",0,7170.0,12984,11418,139
+The administration's CHIPs bill attack contrasts with US reliance on which region for semiconductor exports?,Asia,The administration's attack on the CHIPs bill contrasts with the US's massive reliance on Asian semiconductor exports.,1,4504.0,12967,11418,22
+What was the estimated consumer cost per new job from 2018 'safeguard' washing machine tariffs?,"$817,000","The estimated consumer cost per new job created by the 2018 ""safeguard"" washing machine tariffs was $817,000.",1,6660.0,12972,11418,29
+What is the approximate deficit share difference between China (largest) and Mexico (second largest) for the US in 2024?,~14%,"From the chart on page 3 titled ""Contribution to the US trade deficit by country, Share of 2024 total US deficit, percent,"" the approximate shares are:
+
+- China: About 27%
+- Mexico: About 10%
+
+The deficit share difference between China and Mexico is approximately 27% - 10% = 17%.",0,7270.0,12975,11418,70
+"In the 'NATO values' chart, which has the lowest score: Hungary, Poland, or United States?",Hungary,"In the ""NATO values"" chart, Hungary has the lowest score compared to Poland and the United States.",1,6550.0,12972,11418,23
+"If TCJA extension costs $4.1T and spending cuts total $1.44T, what is the subtotal impact on the deficit (increase)?",$2.66 trillion,"The TCJA extension costs $4.1 trillion (which increases the deficit), and spending cuts total $1.44 trillion (which decreases the deficit).
+
+To find the subtotal impact on the deficit (increase):
+
+Subtotal impact = TCJA extension cost - Spending cuts  
+= $4.1 trillion - $1.44 trillion  
+= $2.66 trillion increase in the deficit.
+
+So, the subtotal impact on the deficit is an increase of approximately $2.66 trillion.",1,6580.0,12980,11418,97
+Which plotted US inflation expectation survey showed the highest level in early 2025?,NY Fed 3yr consumers,"The plotted US inflation expectation survey that showed the highest level in early 2025 is the ""UMich 5-10yr households"" survey, as seen on page 4. It is visibly higher than the other surveys (NY Fed 3yr consumers, NY Fed 5yr consumers, and Philly Fed 5yr professionals) during that period.",1,5642.0,12965,11418,73
+What is the lowest average tariff rate shown on the 'Average tariff rate' chart after 1975 but before 2025 scenarios?,~1-2%,The lowest average tariff rate shown on the 'Average tariff rate on all US imports' chart after 1975 but before the 2025 scenarios is approximately 1.5% around the early 2010s.,0,4979.0,12976,11418,45
