@@ -2,343 +2,39 @@
 
 ## Cost Calculation Implementation
 
-### Cost Calculation Features
-- [x] Implemented centralized `cost_calculator.py` module
-- [x] Added support for both OpenAI and Google models
-- [x] Implemented separate pricing for standard and cached input tokens
-- [x] Added support for image generation costs
-- [x] Added support for web search costs
-- [x] Implemented cost estimation methods in model classes
-- [x] Updated model classes to track token usage
-- [x] Integrated cost calculation with benchmark results
+### Completed
+- [x] Centralized `cost_calculator.py` module
+- [x] Support for OpenAI and Google Gemini models
+- [x] Pricing for standard and cached input tokens
+- [x] Image and web search cost support
+- [x] Cost estimation integrated in benchmark runs
 
-### Model Support
-- [x] OpenAI models (GPT-4o, GPT-4.1, etc.)
-- [x] Google Gemini models (gemini-2.5-flash, gemini-2.5-pro)
-- [x] Image generation model (GPT-Image-1)
+### Remaining
+- [ ] Robust error handling for API rate limits
+- [ ] Caching layer for cost calculations
+- [ ] Unit tests for cost calculation functions
+- [ ] Support additional providers (Anthropic, etc.)
 
-### Remaining Tasks
-- [ ] Add more robust error handling for API rate limits
-- [ ] Implement caching for cost calculations
-- [ ] Add unit tests for cost calculation functions
-- [ ] Add support for additional model providers (Anthropic, etc.)
+## Benchmark CSV Export
 
-## [COMPLETED] Qt to Electron Migration
+### Completed
+- [x] Dynamic CSV export in `AppLogic.handle_export_benchmark_csv`
+- [x] Automatic database schema discovery for prompt export
+- [x] Safe directory creation when exporting to current directory
 
-### Migration Overview
-The application has been successfully migrated from Qt to Electron. The implementation includes:
-- Node.js and Electron-based architecture
-- Main process for system interactions and Python integration
-- Renderer process for UI components
-- IPC communication between processes
+### Remaining
+- [ ] Frontend integration for CSV download button
+- [ ] Provide download link in Electron UI
+- [ ] Unit tests for CSV export functionality
 
-#### Main Process Implementation
-The main process has been successfully implemented with:
-- Window management
-- IPC handlers for UI interactions
-- Python script execution bridge
-- File dialog functionality
-- Benchmark listing and execution
+## Migration to Electron
 
-#### Preload Script Implementation
-The preload script has been implemented to provide a secure bridge between the renderer and main processes, exposing only the necessary API functions:
-- File dialog operations
-- Benchmark listing and execution
-- Navigation controls
-- Event listeners for progress updates
-
-#### HTML/CSS Implementation
-The HTML structure has been implemented with the following features:
-- Clean, modern UI design
-- Grid and table views for benchmark display
-- Dedicated pages for benchmark creation, running, and results viewing
-- Modal windows for additional interactions
-
-```html
-    <div id="composerContent" class="page">
-      <!-- Benchmark composer content will go here -->
-      <div class="composer-container">
-        <div class="prompts-section">
-          <h2>Test Prompts</h2>
-          <button id="importCsvBtn">Import from CSV</button>
-          <table id="promptsTable">
-            <thead>
-              <tr>
-                <th>Prompt</th>
-                <th>Expected</th>
-              </tr>
-            </thead>
-            <tbody>
-              <!-- Default rows will be added by JavaScript -->
-            </tbody>
-          </table>
-        </div>
-        
-        <div class="settings-section">
-          <div class="model-selection">
-            <h3>Select Model(s)</h3>
-            <div id="modelList" class="model-list">
-              <!-- Model options will be added by JavaScript -->
-            </div>
-          </div>
-          
-          <div class="pdf-selection">
-            <h3>Select PDF</h3>
-            <button id="selectPdfBtn">Select PDF</button>
-            <span id="selectedPdfLabel">No PDF selected</span>
-          </div>
-        </div>
-        
-        <div class="actions">
-          <button id="runBtn" class="primary">Run Benchmark ▸</button>
-          <button id="returnHomeBtn">Return to Home</button>
-        </div>
-      </div>
-    </div>
-    
-    <div id="consoleContent" class="page">
-      <!-- Console output will go here -->
-      <div id="consoleLog" class="console-log"></div>
-      <div class="console-actions">
-        <button id="exportCsvBtn">Export to CSV</button>
-        <button id="consoleReturnBtn">Return to Home</button>
-      </div>
-    </div>
-  </div>
-  
-  <script src="renderer.js"></script>
-</body>
-</html>
-```
-
-#### Renderer Logic Implementation
-The renderer logic has been successfully implemented in src/renderer/renderer.js with the following functionality:
-- Page navigation system
-- Benchmark loading and display
-- Form handling for benchmark creation
-- Event listeners for user interactions
-
-  }
-}
-
-```javascript
-// Render benchmarks in grid and table views
-function renderBenchmarks(benchmarks) {
-  const gridContainer = document.getElementById('benchmarksGrid');
-  const tableBody = document.getElementById('benchmarksTable').querySelector('tbody');
-  
-  // Clear existing content
-  gridContainer.innerHTML = '';
-  tableBody.innerHTML = '';
-  
-  if (benchmarks.length === 0) {
-    gridContainer.innerHTML = '<div class="empty">No benchmarks found</div>';
-    return;
-  }
-  
-  // Populate grid view
-  benchmarks.forEach(benchmark => {
-    const card = document.createElement('div');
-    card.className = 'benchmark-card';
-    card.innerHTML = `
-      <h3>${benchmark.label}</h3>
-      <p>Date: ${benchmark.timestamp}</p>
-      <p>Models: ${benchmark.models.join(', ')}</p>
-      <button class="view-btn" data-id="${benchmark.id}">View Details</button>
-    `;
-    
-    card.querySelector('.view-btn').addEventListener('click', () => {
-      viewBenchmarkDetails(benchmark.id);
-    });
-    
-    gridContainer.appendChild(card);
-  });
-  
-  // Populate table view
-  benchmarks.forEach(benchmark => {
-    const row = document.createElement('tr');
-    row.innerHTML = `
-      <td><span class="status-indicator"></span></td>
-      <td>${benchmark.label}</td>
-      <td>${benchmark.timestamp}</td>
-      <td>${benchmark.models.join(', ')}</td>
-      <td>${benchmark.files.join(', ')}</td>
-    `;
-    
-    row.addEventListener('click', () => {
-      viewBenchmarkDetails(benchmark.id);
-    });
-    
-    tableBody.appendChild(row);
-  });
-}
-
-// View benchmark details
-function viewBenchmarkDetails(benchmarkId) {
-  window.electronAPI.getBenchmarkDetails(benchmarkId)
-    .then(details => {
-      // Display benchmark details in console view
-      const consoleLog = document.getElementById('consoleLog');
-      consoleLog.innerHTML = `
-        <h2>Benchmark Details (ID: ${details.id})</h2>
-        <p>Run at: ${details.timestamp}</p>
-        <p>PDF: ${details.pdf_path}</p>
-        <p>Model: ${details.model_name || 'N/A'}</p>
-        <p>Mean Score: ${details.mean_score || 'N/A'}</p>
-        <p>Total Items: ${details.total_items || 'N/A'}</p>
-        <p>Elapsed Time: ${details.elapsed_seconds || 'N/A'}s</p>
-        
-        <h3>Detailed Results</h3>
-      `;
-      
-      if (details.prompts_data && details.prompts_data.length > 0) {
-        details.prompts_data.forEach((prompt, index) => {
-          consoleLog.innerHTML += `
-            <div class="prompt-result">
-              <p><strong>Prompt ${index + 1}:</strong> ${prompt.prompt_text}</p>
-              <p><strong>Expected:</strong> ${prompt.expected_answer}</p>
-              <p><strong>Answer:</strong> ${prompt.actual_answer}</p>
-              <p><strong>Score:</strong> ${prompt.score}</p>
-            </div>
-          `;
-        });
-      } else {
-        consoleLog.innerHTML += '<p>No detailed prompt data available for this run.</p>';
-      }
-      
-      navigateTo('consoleContent');
-    })
-    .catch(error => {
-      alert(`Error loading benchmark details: ${error}`);
-    });
-}
-
-// Listen for progress updates
-window.electronAPI.onBenchmarkProgress(data => {
-  // Update progress indicators
-  console.log('Benchmark progress:', data);
-});
-
-// Listen for completion updates
-window.electronAPI.onBenchmarkComplete(data => {
-  // Update UI when benchmark completes
-  console.log('Benchmark complete:', data);
-  loadBenchmarks(); // Refresh benchmark list
-});
-
-// Initialize page
-function initPage() {
-  // Add default prompt rows
-  const promptsTable = document.getElementById('promptsTable');
-  
-  // ... (rest of the code remains the same)
-}
-```
-
-#### Renderer Components 
-The renderer components have been fully implemented, including:
-
-##### Benchmark Composer
-- Table for prompt creation and management
-- PDF selection functionality
-- Model selection checkboxes
-- Action buttons for running and canceling
-
-##### Console View
-- Real-time logging of benchmark progress
-- Export to CSV functionality
-- Navigation controls
-
-##### Styling
-- Clean, modern styling with consistent color scheme
-- Responsive layouts for all components
-- Interactive elements with hover effects
-- Grid and table views for benchmark display
-
-#### Bridging Strategy for Python App Integration
-- ✅ Implemented Python-to-JS bridge using python-shell
-- ✅ Created helper scripts to facilitate communication between Electron and Python
-- ✅ Implemented benchmark data file generation with load_benchmarks.sh script
-- ✅ Added error handling and logging for Python script execution
-
-#### Integration Testing
-- ✅ Tested running the Electron app with the existing Python codebase
-- ✅ Verified basic functionality: listing benchmarks, creating new benchmark, viewing results
-- ✅ Fixed immediate issues with file paths and data passing
-
-#### Packaging and Distribution
-- ✅ Added electron-builder configuration
-- ⏳ Create installers for different platforms (future work)
-- ⏳ Test distribution packages (future work)
-
-### Project Setup and Architecture
-- ✅ Created Electron project structure
-  - ✅ Set up package.json with required dependencies
-  - ✅ Configured electron-builder for packaging
-  - ✅ Created main.js for the main process
-  - ✅ Established preload.js for secure IPC communication
-  - ✅ Set up folder structure for renderer process HTML/CSS/JS files
-
-### Core Architecture Components
-- ✅ Created bridge between Electron and Python codebase
-  - ✅ Implemented IPC between main and renderer processes
-  - ✅ Added proper handling for async operations
-  - ✅ Created necessary bridge methods for communication
-- ✅ Adapted core application logic to work with Electron
-  - ✅ Ensured benchmark worker functions correctly in Node.js environment
-  - ✅ Maintained UI-agnostic design of core business logic
-- ✅ Replaced Qt event handling with Electron/JavaScript alternatives
-  - ✅ Implemented appropriate alternatives for timers and event handling
-
-### UI Component Migration
-- Implemented HomePage 
-  - Created HTML/CSS/JS for grid and table views of benchmarks
-  - Implemented card-based and table-based views with toggle functionality
-  - Added refresh button and functionality
-  - Migrated QTableWidget functionality to HTML tables with similar styling
-- Implemented ComposerPage
-  - Created form for benchmark creation with equivalent functionality
-  - Added prompt management with add/remove capabilities
-  - Implemented PDF file picker
-  - Added model selection
-- Implemented RunConsoleWidget
-  - Created console output display for benchmark runs
-  - Implemented auto-scrolling for new log entries
-  - Added export to CSV and return to home buttons
-
-### File and Dialog Operations
-- ✅ Created Electron equivalents for all Qt dialog operations
-  - ✅ Replaced QFileDialog with Electron's dialog module
-  - ✅ Implemented PDF file selection dialog
-  - ✅ Implemented CSV import/export dialogs
-- ✅ Ensured all file path handling works correctly in Electron environment
-  - ✅ Adapted Path objects to work with Node.js path handling
-  - ✅ Handled file permissions properly on all platforms
-
-### Styling and Visual Components
-- ✅ Converted Qt stylesheet to CSS styling
-  - ✅ Implemented modern web styling approach
-  - ✅ Ported all CSS stylesheets from APP_STYLESHEET to web equivalents
-  - ✅ Recreated CardSection styling and other custom widget styles
-- ✅ Added responsive design elements not present in original Qt app
-
-### Platform Integration
-- [ ] Replace macOS dock icon code (NSApplication) with Electron's app.dock API
-- [ ] Handle platform-specific behaviors and ensure consistent experience
-- [ ] Implement proper window management (minimize, maximize, close)
-
-### Threading and Performance
-- [ ] Replace threading approach from Qt to Node.js/Electron patterns
-  - [ ] Replace QThread with worker_threads in Node.js or equivalent
-  - [ ] Ensure proper IPC communication for worker threads
-- [ ] Handle UI updates from background operations correctly
-  - [ ] Replace QTimer.singleShot(0, lambda:...) patterns with appropriate alternatives
-
-### Testing and Deployment
-- [ ] Implement testing strategy for Electron app
-- [ ] Create build and packaging scripts
-- [ ] Test application on all target platforms (macOS, Windows, Linux)
-- [ ] Create installer packages for distribution
+### Completed
+- [x] Node.js and Electron architecture
+- [x] Main process with IPC and Python bridge
+- [x] Preload script exposing secure API
+- [x] Renderer process and UI components
+- [x] IPC handlers and event listeners for progress updates
 
 ## Core Focus & Application Goals
 - [HIGH PRIORITY] Ensure overall benchmark creation and deployment process is extremely frictionless, especially for non-AI users.
@@ -453,7 +149,6 @@ The repository currently contains several redundant and overlapping Python files
 | `app.py` | Qt-specific application logic | Useful parts incorporated into Electron bridge scripts |
 | `old_qt (archived)/*` | Legacy Qt UI files | Already replaced by Electron interface |
 | `test_script.py` | Likely just for testing | Remove if not needed for automated tests |
-
 
 ### Implementation Plan
 
