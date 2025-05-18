@@ -256,42 +256,121 @@ def get_benchmark_files(benchmark_id: int, db_path: Path = Path.cwd()) -> list[s
 
 def save_benchmark_run(benchmark_id: int, model_name: str, report: str, latency: float, total_standard_input_tokens: int, total_cached_input_tokens: int, total_output_tokens: int, total_tokens: int, db_path: Path = Path.cwd()) -> int | None:
     """Saves a benchmark run and returns its ID."""
-    db_file = db_path / DB_NAME
-    conn = sqlite3.connect(db_file)
-    cursor = conn.cursor()
+    # Validate inputs - ensure integer values are actually integers, not None
+    if benchmark_id is None or not isinstance(benchmark_id, int):
+        logging.error(f"Invalid benchmark_id provided: {benchmark_id}")
+        return None
+        
+    # Ensure token counts are valid integers, not None
+    std_tokens = int(total_standard_input_tokens) if total_standard_input_tokens is not None else 0
+    cached_tokens = int(total_cached_input_tokens) if total_cached_input_tokens is not None else 0
+    output_tokens = int(total_output_tokens) if total_output_tokens is not None else 0
+    total_token_count = int(total_tokens) if total_tokens is not None else 0
+    
+    # Convert latency to float if it's not None, otherwise use 0.0
+    latency_val = float(latency) if latency is not None else 0.0
+    
+    # Serialize report if it's a dictionary, ensure it's a string otherwise
+    report_json = json.dumps(report) if isinstance(report, (dict, list)) else str(report)
+    
+    # Get current timestamp
     created_at_ts = datetime.datetime.now().isoformat()
+    
+    db_file = db_path / DB_NAME
+    conn = None
     try:
+        conn = sqlite3.connect(db_file)
+        # Begin transaction explicitly
+        conn.execute("BEGIN TRANSACTION")
+        cursor = conn.cursor()
+        
+        # Use parameterized query for security
         cursor.execute(f'''
-            INSERT INTO {BENCHMARK_RUNS_TABLE_NAME} (benchmark_id, model_name, report, latency, created_at, total_standard_input_tokens, total_cached_input_tokens, total_output_tokens, total_tokens)
+            INSERT INTO {BENCHMARK_RUNS_TABLE_NAME} 
+            (benchmark_id, model_name, report, latency, created_at, 
+             total_standard_input_tokens, total_cached_input_tokens, 
+             total_output_tokens, total_tokens)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (benchmark_id, model_name, json.dumps(report), latency, created_at_ts, total_standard_input_tokens, total_cached_input_tokens, total_output_tokens, total_tokens))
+        ''', (benchmark_id, model_name, report_json, latency_val, created_at_ts, 
+              std_tokens, cached_tokens, output_tokens, total_token_count))
+        
+        # Get the last inserted ID (the run_id)
         run_id = cursor.lastrowid
+        
+        # Commit transaction
         conn.commit()
+        logging.info(f"Successfully saved benchmark run with ID {run_id}")
         return run_id
+        
     except sqlite3.Error as e:
         logging.error(f"SQLite error when saving benchmark run: {e}")
+        # Rollback if there was an error
+        if conn:
+            conn.rollback()
         return None
+        
     finally:
-        conn.close()
+        # Always close the connection
+        if conn:
+            conn.close()
 
-def save_benchmark_prompt(benchmark_run_id: int, prompt: str, answer: str, response: str, score: str, latency: float, standard_input_tokens: int, cached_input_tokens: int, output_tokens: int, scoring_config_id: int | None = None, db_path: Path = Path.cwd()):
+def save_benchmark_prompt(benchmark_run_id: int, prompt: str, answer: str, response: str, score: str, latency: float, standard_input_tokens: int, cached_input_tokens: int, output_tokens: int, scoring_config_id: int | None = None, db_path: Path = Path.cwd()) -> int | None:
     """Saves a prompt result for a benchmark run."""
+    # Validate inputs
+    if benchmark_run_id is None or not isinstance(benchmark_run_id, int):
+        logging.error(f"Invalid benchmark_run_id provided: {benchmark_run_id}")
+        return None
+        
+    # Ensure token counts are valid integers, not None
+    std_tokens = int(standard_input_tokens) if standard_input_tokens is not None else 0
+    cached_tokens = int(cached_input_tokens) if cached_input_tokens is not None else 0
+    output_tokens = int(output_tokens) if output_tokens is not None else 0
+    
+    # Convert latency to float if it's not None, otherwise use 0.0
+    latency_val = float(latency) if latency is not None else 0.0
+    
+    # Ensure text fields are strings, not None
+    prompt_text = str(prompt) if prompt is not None else ""
+    answer_text = str(answer) if answer is not None else ""
+    response_text = str(response) if response is not None else ""
+    score_text = str(score) if score is not None else ""
+    
     db_file = db_path / DB_NAME
-    conn = sqlite3.connect(db_file)
-    cursor = conn.cursor()
+    conn = None
     try:
+        conn = sqlite3.connect(db_file)
+        # Begin transaction explicitly
+        conn.execute("BEGIN TRANSACTION")
+        cursor = conn.cursor()
+        
+        # Use parameterized query for security
         cursor.execute(f'''
-            INSERT INTO {BENCHMARK_PROMPTS_TABLE_NAME} (benchmark_run_id, prompt, answer, response, score, latency, standard_input_tokens, cached_input_tokens, output_tokens, scoring_config_id)
+            INSERT INTO {BENCHMARK_PROMPTS_TABLE_NAME} 
+            (benchmark_run_id, prompt, answer, response, score, latency, 
+             standard_input_tokens, cached_input_tokens, output_tokens, scoring_config_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (benchmark_run_id, prompt, answer, response, score, latency, standard_input_tokens, cached_input_tokens, output_tokens, scoring_config_id))
+        ''', (benchmark_run_id, prompt_text, answer_text, response_text, score_text, 
+              latency_val, std_tokens, cached_tokens, output_tokens, scoring_config_id))
+        
+        # Get the last inserted ID
         prompt_id = cursor.lastrowid
+        
+        # Commit transaction
         conn.commit()
+        logging.info(f"Successfully saved benchmark prompt {prompt_id} for run {benchmark_run_id}")
         return prompt_id
+        
     except sqlite3.Error as e:
         logging.error(f"SQLite error when saving benchmark prompt: {e}")
+        # Rollback if there was an error
+        if conn:
+            conn.rollback()
         return None
+        
     finally:
-        conn.close()
+        # Always close the connection
+        if conn:
+            conn.close()
 
 def save_scoring_config(name: str, config: str, db_path: Path = Path.cwd()) -> int | None:
     db_file = db_path / DB_NAME
@@ -444,6 +523,16 @@ def load_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> dic
                 logging.info(f"LOAD_BENCHMARK_DETAILS: 'model_name' NOT IN run_info for benchmark_id {benchmark_id}. Keys: {run_info.keys()}")
             details.update(dict(run_info)) # Add run details to the main details dict
             details['elapsed_seconds'] = run_info['latency'] # For UI compatibility
+            
+            # Provide fields for UI rendering
+            details['models'] = [run_info['model_name']]
+            details['files'] = details.get('file_paths', [])
+            details['results'] = [{
+                'model': run_info['model_name'],
+                'status': 'completed',
+                'score': details.get('mean_score'),
+                'duration': details.get('elapsed_seconds'),
+            }]
             
             # Parse report for mean_score, total_items if possible (example)
             # This is brittle; ideally, these would be separate columns in benchmark_runs if needed often
@@ -712,6 +801,74 @@ def update_benchmark_details(benchmark_id: int, label: Optional[str] = None, des
         return False
     finally:
         conn.close()
+
+def update_benchmark_model(benchmark_id: int, model_name: str, db_path: Path = Path.cwd()):
+    """
+    Updates a benchmark with a model name that is being used in an active run.
+    This ensures the model is visible in the UI even before completion.
+    
+    Args:
+        benchmark_id: ID of the benchmark
+        model_name: Name of the model to add
+        db_path: Directory containing the database
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Type validation
+    if not isinstance(benchmark_id, int) or not isinstance(model_name, str):
+        logging.error(f"Invalid parameter types: benchmark_id={type(benchmark_id)}, model_name={type(model_name)}")
+        return False
+        
+    db_file = db_path / DB_NAME
+    conn = None
+    
+    try:
+        conn = sqlite3.connect(db_file)
+        conn.execute("BEGIN TRANSACTION")
+        cursor = conn.cursor()
+        
+        # First check if this benchmark exists
+        cursor.execute(f"SELECT id FROM {BENCHMARKS_TABLE_NAME} WHERE id = ?", (benchmark_id,))
+        if not cursor.fetchone():
+            logging.warning(f"Benchmark with ID {benchmark_id} not found")
+            return False
+        
+        # Create a new run entry with all required fields according to schema
+        created_at_ts = datetime.datetime.now().isoformat()
+        logging.info(f"Creating benchmark run for benchmark_id={benchmark_id}, model={model_name}")
+        
+        # Insert into benchmark_runs with all required fields
+        cursor.execute(f'''
+            INSERT INTO {BENCHMARK_RUNS_TABLE_NAME} 
+            (benchmark_id, model_name, report, latency, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (benchmark_id, model_name, "Initializing", 0.0, created_at_ts))
+        
+        # Get the benchmark_run_id for the newly created run
+        benchmark_run_id = cursor.lastrowid
+        logging.info(f"Created benchmark run with ID {benchmark_run_id}")
+        
+        # Insert a placeholder entry into benchmark_prompts with all required fields
+        cursor.execute(f'''
+            INSERT INTO {BENCHMARK_PROMPTS_TABLE_NAME} 
+            (benchmark_run_id, prompt, answer, response, score, latency)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (benchmark_run_id, "model_registration", "", "", "N/A", 0.0))
+        
+        # Commit transaction
+        conn.commit()
+        logging.info(f"Successfully registered model {model_name} for benchmark {benchmark_id}")
+        return True
+        
+    except sqlite3.Error as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Database error in update_benchmark_model: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
 
 # Example usage (for testing only)
 if __name__ == '__main__':

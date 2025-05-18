@@ -6,11 +6,11 @@ import os # For os.path.getsize
 import logging
 
 # Import model functions
-from engine.models_openai import openai_upload, openai_ask
-from engine.models_google import google_upload, google_ask
+from models_openai import openai_upload, openai_ask
+from models_google import google_upload, google_ask
 
 # Import file store functions
-from engine.file_store import get_openai_file_id, add_file_mapping
+from file_store import get_openai_file_id, add_file_mapping
 
 # Placeholder helper functions (to be implemented or moved)
 def extract_text_and_page_count(pdf_path: Path) -> tuple[str, int]:
@@ -99,11 +99,23 @@ def emit_progress(data: dict):
     Data is a dictionary, e.g.:
     {'message': str} or {'current': int, 'total': int, 'message': str}
     """
-    if _emit_progress_callback:
-        _emit_progress_callback(data)
-    else:
-        # Fallback to print if no callback is set (e.g., for direct script use/testing)
-        print(data.get('message', str(data)))
+    try:
+        # Only log the message, not the full data structure
+        message = data.get('message', '')
+        if message:
+            logging.info(f"Progress: {message}")
+        
+        if _emit_progress_callback:
+            # Call the progress callback without excessive logging
+            _emit_progress_callback(data)
+        else:
+            # Fallback to print if no callback is set (e.g., for direct script use/testing)
+            print(data.get('message', str(data)))
+    except Exception as e:
+        # Even if progress reporting fails, log it but don't crash the benchmark
+        error_msg = f"Error during progress reporting: {e}"
+        logging.error(error_msg)
+        print(error_msg)  # Fallback to print for critical errors
 
 def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini") -> dict:
     """
@@ -122,6 +134,8 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
     prompts: [{"prompt": str, "expected": str}, ...]
     Returns: {"mean_score": float, "items": int, "elapsed_s": float, "model": str}
     """
+    # Ensure pdf_path is a Path object in case a string was passed
+    pdf_path = Path(pdf_path)
     t0 = perf_counter()
     total_prompts = len(prompts) if prompts else 0
 

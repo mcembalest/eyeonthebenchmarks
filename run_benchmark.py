@@ -12,8 +12,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# Import the modules from the engine directory
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "engine"))
 from file_store import (
     save_benchmark, 
     save_benchmark_run, 

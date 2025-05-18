@@ -6,38 +6,109 @@
   background-color: #fff;
   border-left: 4px solid #2f855a;
   border-radius: 4px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-  padding: 12px 16px;
-  max-width: 300px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 14px 20px;
+  max-width: 320px;
   transform: translateY(100px);
   opacity: 0;
-  transition: opacity 0.3s, transform 0.3s;
+  transition: all 0.3s cubic-bezier(0.68, -0.55, 0.27, 1.55);
   z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  animation: slideIn 0.3s forwards;
 }
 
-.notification.show {
-  transform: translateY(0);
-  opacity: 1;
+@keyframes slideIn {
+  from {
+    transform: translateY(100px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.notification.success {
+  border-left-color: #38a169;
+  background-color: #f0fff4;
+}
+
+.notification.error {
+  border-left-color: #e53e3e;
+  background-color: #fff5f5;
+}
+
+.notification.warning {
+  border-left-color: #dd6b20;
+  background-color: #fffaf0;
 }
 
 .notification p {
-  margin: 0 0 4px 0;
+  margin: 0;
   font-size: 14px;
   color: #2d3748;
+  line-height: 1.4;
 }
 
-.notification p:last-child {
-  margin-bottom: 0;
+.notification .icon {
+  font-size: 20px;
+  flex-shrink: 0;
 }
 
-.notification a {
-  color: #2b6cb0;
-  text-decoration: none;
-  font-weight: 500;
+.notification.success .icon {
+  color: #38a169;
 }
 
-.notification a:hover {
-  text-decoration: underline;
+.notification.error .icon {
+  color: #e53e3e;
+}
+
+.notification.warning .icon {
+  color: #dd6b20;
+}
+
+.notification-content {
+  flex: 1;
+}
+
+.notification-close {
+  background: none;
+  border: none;
+  color: #a0aec0;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.notification-close:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+  color: #718096;
+}
+
+/* Fade out animation for removal */
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+}
+
+.notification.hide {
+  animation: fadeOut 0.3s forwards;
 }
 
 /* Base styles */

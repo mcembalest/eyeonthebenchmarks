@@ -62,7 +62,7 @@ class QtUIBridgeImpl(AppUIBridge):
         # Only refresh active benchmarks data for the home page to minimize visual disruption
         if self._current_page == 'home':
             # Get the latest active benchmarks data without refreshing the entire page
-            from engine.file_store import get_active_benchmarks
+            from file_store import get_active_benchmarks
             active_benchmarks = get_active_benchmarks()
             if hasattr(self.main_window, 'home'):
                 QTimer.singleShot(0, lambda: self.main_window.home.update_active_benchmarks_display(active_benchmarks))

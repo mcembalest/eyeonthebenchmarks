@@ -1,0 +1,2 @@
+prompt_text,expected_answer,actual_answer,score,latency,standard_input_tokens,cached_input_tokens,output_tokens
+what year did this piece get written,2025,This piece was written in the year 2025.,1,4269.0,14891,0,12

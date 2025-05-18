@@ -17,7 +17,7 @@ if not api_key:
 client = genai.Client(api_key=api_key)
 
 # Import cost calculator
-from .cost_calculator import calculate_cost, calculate_image_cost
+from cost_calculator import calculate_cost, calculate_image_cost
 
 # Available Google models for benchmarking
 AVAILABLE_MODELS = [

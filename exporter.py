@@ -9,7 +9,7 @@ import csv
 import os
 from pathlib import Path
 import datetime
-from engine.file_store import load_benchmark_details, load_all_benchmarks_with_models
+from file_store import load_benchmark_details, load_all_benchmarks_with_models
 
 def export_benchmark_to_csv(benchmark_id: int, output_dir: Path = None) -> str:
     """

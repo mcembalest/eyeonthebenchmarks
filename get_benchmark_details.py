@@ -16,8 +16,8 @@ from typing import Dict, Any, List, Optional, Union
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import modules
-from engine.file_store import load_benchmark_details
-from engine.cost_calculator import calculate_cost
+from file_store import load_benchmark_details
+from cost_calculator import calculate_cost
 
 # Set up logging to both file and stderr
 log_file = Path(__file__).parent / 'logs' / 'get_benchmark_details.log'

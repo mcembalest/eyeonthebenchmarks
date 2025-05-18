@@ -170,9 +170,9 @@ def calculate_image_cost(
 
 def calculate_cost(
     model_name: str,
-    standard_input_tokens: int,
-    cached_input_tokens: int,
-    output_tokens: int, 
+    standard_input_tokens: int | None,
+    cached_input_tokens: int | None,
+    output_tokens: int | None, 
     search_queries: int = 0, 
     search_context: SearchContext = "medium",
     image_generation: Optional[dict] = None
@@ -195,19 +195,27 @@ def calculate_cost(
     # Get cost rates for the model, or use default if not found
     model_rates = MODEL_COSTS.get(model_name, MODEL_COSTS['default'])
     
-    # Calculate token costs
+    # Calculate token costs with proper handling of None values
     cached_rate = model_rates.get('cached', model_rates['input'] * 0.5)
-    standard_input_cost = (standard_input_tokens / 1_000_000) * model_rates['input']
-    cached_input_cost = (cached_input_tokens / 1_000_000) * cached_rate
-    output_cost = (output_tokens / 1_000_000) * model_rates['output']
     
-    # Calculate search cost
+    # Ensure token counts are valid numbers, not None
+    std_tokens = 0 if standard_input_tokens is None else standard_input_tokens
+    cached_tokens = 0 if cached_input_tokens is None else cached_input_tokens
+    out_tokens = 0 if output_tokens is None else output_tokens
+    
+    # Calculate costs with validated token counts
+    standard_input_cost = (std_tokens / 1_000_000) * model_rates['input']
+    cached_input_cost = (cached_tokens / 1_000_000) * cached_rate
+    output_cost = (out_tokens / 1_000_000) * model_rates['output']
+    
+    # Calculate search cost with proper handling for None values
     search_cost_total = 0.0
-    search_details = {} # To store details about how search cost was calculated
-
-    if search_queries > 0:
+    # Ensure search_queries is a valid number, not None
+    query_count = 0 if search_queries is None else search_queries
+    
+    if query_count > 0:
         provider = get_model_provider(model_name)
-        search_rate_per_query = 0.0
+        search_cost_rate = 0.0
         
         if provider == 'openai':
             # For OpenAI, use OPENAI_SEARCH_CONTEXT_COSTS based on search_context
@@ -216,7 +224,7 @@ def calculate_cost(
             
             search_details = {
                 'type': 'openai_web_search',
-                'queries': search_queries,
+                'queries': query_count,
                 'context_used': actual_search_context,
                 'rate_per_query': search_rate_per_query
             }
@@ -232,7 +240,7 @@ def calculate_cost(
             
             search_details = {
                 'type': 'google_search_grounding',
-                'queries': search_queries,
+                'queries': query_count,
                 'rate_per_query': search_rate_per_query
             }
             
@@ -241,17 +249,17 @@ def calculate_cost(
                 search_rate_per_query = model_rates['search_cost']
                 search_details = {
                     'type': 'generic_search',
-                    'queries': search_queries,
+                    'queries': query_count,
                     'rate_per_query': search_rate_per_query
                 }
             else:
                 search_details = {
                     'type': 'search_not_costed',
-                    'queries': search_queries,
+                    'queries': query_count,
                     'reason': 'No search cost defined for model/provider'
                 }
         
-        search_cost_total = search_queries * search_rate_per_query
+        search_cost_total = query_count * search_rate_per_query
 
     # Calculate image generation cost
     image_cost_total = 0.0

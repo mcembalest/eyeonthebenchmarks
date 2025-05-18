@@ -17,8 +17,8 @@ from ui_styles import APP_STYLESHEET
 # Import database functions - these will be called by the app logic,
 # but UI elements might need to trigger them or display their results.
 # Actual database interaction logic should ideally be in app.py.
-from engine.file_store import load_all_benchmark_runs, load_benchmark_details, load_all_benchmarks_with_models, delete_benchmark
-from engine.models_openai import AVAILABLE_MODELS
+from file_store import load_all_benchmark_runs, load_benchmark_details, load_all_benchmarks_with_models, delete_benchmark
+from models_openai import AVAILABLE_MODELS
 
 # --- Progress signal for real-time updates --------------------------------
 class RunConsoleWidget(QWidget):
@@ -625,8 +625,6 @@ class ComposerPage(QWidget):
         self.table.setColumnWidth(1, 220)
         default_rows = [
             ("what year did this piece get written", "2025"),
-            ("what is happening faster, decarbonization or electrification", "decarbonization"),
-            ("whats the meaning of the title of this piece", "heliocentrism means the solar and green transition is further away than it appears to optimists, they imagine exponential growth of solar despite the necessity of other energies like natural gas and the fact that energy transitions are linear not exponential"),
         ]
         for r, (p, e) in enumerate(default_rows):
             self.table.setItem(r, 0, QTableWidgetItem(p))
@@ -910,7 +908,7 @@ class MainWindow(QMainWindow):
             # And 'scores' is a list of scores
             
             # We need 'expected' answers. The 'prompts' list in the result from run_benchmark
-            # (which is `engine.runner.run_benchmark`) contains dicts like `{'prompt': str, 'expected': str}`.
+            # (which is `runner.run_benchmark`) contains dicts like `{'prompt': str, 'expected': str}`.
             # Let's iterate assuming this structure for `result['prompts']`
 
             self.console.update_log("\n----- DETAILED RESULTS -----")

@@ -3,20 +3,20 @@ import os
 import sys
 import logging
 
-# Add parent directory to path to allow absolute imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add current directory to path to ensure imports work
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 def import_models():
     """Import model lists from provider modules with error handling"""
     models = {}
     has_imports = False
 
-    from engine.models_openai import AVAILABLE_MODELS as OPENAI_MODELS
+    from models_openai import AVAILABLE_MODELS as OPENAI_MODELS
     models["openai"] = OPENAI_MODELS
     has_imports = True
     logging.info(f"Found {len(OPENAI_MODELS)} OpenAI models")
     
-    from engine.models_google import AVAILABLE_MODELS as GOOGLE_MODELS
+    from models_google import AVAILABLE_MODELS as GOOGLE_MODELS
     models["google"] = GOOGLE_MODELS
     has_imports = True
     logging.info(f"Found {len(GOOGLE_MODELS)} Google models")

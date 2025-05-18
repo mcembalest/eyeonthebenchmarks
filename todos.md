@@ -399,7 +399,7 @@ The renderer components have been fully implemented, including:
 The benchmark execution now uses real OpenAI API calls with token counting and cost calculation. The following tasks represent the current state and future enhancements:
 
 ### API Integration
-- [x] Integrate OpenAI models directly via `engine/models_openai.py`
+- [x] Integrate OpenAI models directly via `models_openai.py`
   - [x] Implement proper API key handling via environment variables
   - [x] Add token counting for OpenAI models (standard and cached tokens)
 - [x] Create additional model-specific API clients for other providers
@@ -437,9 +437,9 @@ The repository currently contains several redundant and overlapping Python files
 
 | File | Purpose | Status |
 |------|---------|--------|
-| `engine/file_store.py` | Core database functionality | KEEP - Central database management module |
-| `engine/models_openai.py` | OpenAI API integration | KEEP - Primary API client for OpenAI models |
-| `engine/exporter.py` | CSV export functionality | KEEP - Handles benchmark data export |
+| `file_store.py` | Core database functionality | KEEP - Central database management module |
+| `models_openai.py` | OpenAI API integration | KEEP - Primary API client for OpenAI models |
+| `exporter.py` | CSV export functionality | KEEP - Handles benchmark data export |
 | `run_benchmark.py` | Electron UI bridge for running benchmarks | KEEP - Recently updated to use real models |
 | `list_benchmarks.py` | Electron UI bridge for listing benchmarks | KEEP - Required for Electron integration |
 | `get_benchmark_details.py` | Electron UI bridge for benchmark details | KEEP - Required for Electron integration |
@@ -454,33 +454,11 @@ The repository currently contains several redundant and overlapping Python files
 | `old_qt (archived)/*` | Legacy Qt UI files | Already replaced by Electron interface |
 | `test_script.py` | Likely just for testing | Remove if not needed for automated tests |
 
-### Recommended Codebase Structure
-
-```
-/eyeonthebenchmarks
-  /engine/                   # Core functionality
-    /__init__.py            # Package initialization
-    /file_store.py          # Database management
-    /models_openai.py       # OpenAI API client
-    /exporter.py            # Export functionality
-  /src/                     # Electron app
-    /main/                  # Main process
-    /renderer/              # Renderer process
-    /preload/               # Preload scripts
-  # Bridge scripts for Electron
-  run_benchmark.py          # Execute benchmarks
-  list_benchmarks.py        # List benchmarks
-  get_benchmark_details.py  # Get benchmark details
-  export_benchmark.py       # Export benchmark data
-  # Config files
-  load_benchmarks.sh        # Script to refresh benchmark data
-  package.json              # Electron dependencies
-```
 
 ### Implementation Plan
 
 1. **Consolidate Core Functionality**
-   - [x] Verify all needed functionality from `engine/runner.py` is in `run_benchmark.py`
+   - [x] Verify all needed functionality from `/runner.py` is in `run_benchmark.py`
    - [x] Ensure `file_store.py` is used consistently across all scripts instead of direct SQL queries
    - [x] Extract any useful logic from `app.py` into the appropriate bridge scripts
 
@@ -528,15 +506,15 @@ The repository currently contains several redundant and overlapping Python files
 - [HIGH PRIORITY] Allow flexible context configuration.
 - [x] Support specific PDF as context (currently `[done]`)
 - [ ] Support a directory of files as context (models to access multiple sources simultaneously)
-    - [ ] Modify `engine.runner.run_benchmark` to accept a list of file paths or a directory path.
-    - [ ] Update PDF pre-flight checks in `engine.runner.run_benchmark` for multiple files.
-    - [ ] Adapt `engine.file_store` and `engine.models_openai.openai_upload` for lists of files / multiple OpenAI file IDs.
+    - [ ] Modify `runner.run_benchmark` to accept a list of file paths or a directory path.
+    - [ ] Update PDF pre-flight checks in `runner.run_benchmark` for multiple files.
+    - [ ] Adapt `file_store` and `models_openai.openai_upload` for lists of files / multiple OpenAI file IDs.
     - [ ] Investigate how OpenAI `responses` API handles multiple `file_id`s; update `openai_ask`.
     - [ ] UI: Allow selection of a directory or multiple files in ComposerPage.
 - [ ] Support internet search as context
     - [ ] Allow configurable internet search modes (e.g., open loop/extensive research vs. quick lookup)
-    - [ ] Design mechanism in `engine.runner.run_benchmark` to enable/configure internet search.
-    - [ ] In `engine.models_openai`, determine strategy for internet search with `responses` API (direct instruction or pre-fetch results).
+    - [ ] Design mechanism in `runner.run_benchmark` to enable/configure internet search.
+    - [ ] In `models_openai`, determine strategy for internet search with `responses` API (direct instruction or pre-fetch results).
     - [ ] UI: Add options in ComposerPage to enable and configure internet search modes.
 - [ ] Explore "deep research" capabilities (note: official APIs might be limited)
 - [ ] UI: Clearly display PDF/context limitations (file size, page count, token limits from `runner.py`) to the user during the benchmark setup phase in `ComposerPage`.
