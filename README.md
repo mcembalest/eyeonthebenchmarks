@@ -8,7 +8,7 @@ Eye on the Benchmarks is an application for setting up AI benchmarks, letting th
 
 ### MacOS
 
-Download the installer [here](https://github.com/maxcembalest/eyeonthebenchmarks/releases)
+Download the installer [here](https://github.com/mcembalest/eyeonthebenchmarks/releases)
 
 ### Windows
 
