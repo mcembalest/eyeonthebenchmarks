@@ -134,17 +134,59 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
     prompts: [{"prompt": str, "expected": str}, ...]
     Returns: {"mean_score": float, "items": int, "elapsed_s": float, "model": str}
     """
-    # Ensure pdf_path is a Path object in case a string was passed
-    pdf_path = Path(pdf_path)
     t0 = perf_counter()
     total_prompts = len(prompts) if prompts else 0
+    pdf_text = ""
+    page_count = 0
 
-    # 0. quick file/token/size/page guard (remains largely the same)
-    try:
-        if not pdf_path.exists(): # Check for file existence first
-            # This specific error will be caught by the generic Exception handler below
-            # if we simply raise FileNotFoundError here.
-            # To give a specific error message like before:
+    # Initialize file_id
+    file_id = None
+    
+    # Handle PDF if provided
+    if pdf_path and str(pdf_path).strip():
+        # Ensure pdf_path is a Path object in case a string was passed
+        pdf_path = Path(pdf_path)
+        
+        # Check file existence and extract text
+        try:
+            if not pdf_path.exists():
+                emit_progress({"message": f"Error: PDF file not found at {pdf_path}"})
+                return {
+                    "items": 0,
+                    "mean_score": 0.0,
+                "elapsed_s": round(perf_counter() - t0, 2),
+                "model": model_name,
+                "error": "PDF not found"
+            }
+
+            file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
+            if file_size_mb > 32: # 32MB limit
+                emit_progress({"message": f"Error: PDF file size ({file_size_mb:.2f}MB) exceeds 32MB limit."})
+                return {
+                    "items": 0, "mean_score": 0.0, "elapsed_s": round(perf_counter() - t0, 2),
+                    "model": model_name, "error": "PDF too large (size > 32MB)"
+                }
+
+            # Use the modified extraction function
+            pdf_text, page_count = extract_text_and_page_count(pdf_path)
+
+            if page_count > 100: # 100 pages limit
+                emit_progress({"message": f"Error: PDF page count ({page_count}) exceeds 100 pages limit."})
+                return {
+                    "items": 0, "mean_score": 0.0, "elapsed_s": round(perf_counter() - t0, 2),
+                    "model": model_name, "error": "PDF too large (pages > 100)"
+                }
+            
+            if token_estimate(pdf_text) > 100_000: # As per your spec
+                emit_progress({"message": "Error: PDF estimated tokens exceed 100,000."})
+                return {
+                    "items": 0,
+                    "mean_score": 0.0,
+                    "elapsed_s": round(perf_counter() - t0, 2),
+                    "model": model_name,
+                    "error": "PDF too large (tokens > 100k)"
+                }
+        except FileNotFoundError: # This is now redundant due to the check above, but kept for safety.
             emit_progress({"message": f"Error: PDF file not found at {pdf_path}"})
             return {
                 "items": 0,
@@ -153,109 +195,76 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
                 "model": model_name,
                 "error": "PDF not found"
             }
-
-        file_size_mb = os.path.getsize(pdf_path) / (1024 * 1024)
-        if file_size_mb > 32: # 32MB limit
-            emit_progress({"message": f"Error: PDF file size ({file_size_mb:.2f}MB) exceeds 32MB limit."})
-            return {
-                "items": 0, "mean_score": 0.0, "elapsed_s": round(perf_counter() - t0, 2),
-                "model": model_name, "error": "PDF too large (size > 32MB)"
-            }
-
-        # Use the modified extraction function
-        text, page_count = extract_text_and_page_count(pdf_path)
-
-        if page_count > 100: # 100 pages limit
-            emit_progress({"message": f"Error: PDF page count ({page_count}) exceeds 100 pages limit."})
-            return {
-                "items": 0, "mean_score": 0.0, "elapsed_s": round(perf_counter() - t0, 2),
-                "model": model_name, "error": "PDF too large (pages > 100)"
-            }
-        
-        if token_estimate(text) > 100_000: # As per your spec
-            emit_progress({"message": "Error: PDF estimated tokens exceed 100,000."})
+        except Exception as e: # Catch other extraction or pre-processing errors
+            emit_progress({"message": f"Error during PDF pre-processing: {e}"})
             return {
                 "items": 0,
                 "mean_score": 0.0,
                 "elapsed_s": round(perf_counter() - t0, 2),
                 "model": model_name,
-                "error": "PDF too large (tokens > 100k)"
-            }
-    except FileNotFoundError: # This is now redundant due to the check above, but kept for safety.
-        emit_progress({"message": f"Error: PDF file not found at {pdf_path}"})
-        return {
-            "items": 0,
-            "mean_score": 0.0,
-            "elapsed_s": round(perf_counter() - t0, 2),
-            "model": model_name,
-            "error": "PDF not found"
-        }
-    except Exception as e: # Catch other extraction or pre-processing errors
-        emit_progress({"message": f"Error during PDF pre-processing: {e}"})
-        return {
-            "items": 0,
-            "mean_score": 0.0,
-            "elapsed_s": round(perf_counter() - t0, 2),
-            "model": model_name,
             "error": f"PDF processing failed: {e}"
         }
 
-    # 1. Determine provider (OpenAI or Google) and upload the file
+    # 1. Determine provider (OpenAI or Google) and upload the file if provided
     file_id = None
     is_google_model = model_name.startswith("gemini-") or model_name == "imagen-3"
     
-    try:
-        if is_google_model:
-            # For Google models
-            emit_progress({"message": f"Preparing to use Google model: {model_name}"})
-            try:
-                # Google doesn't have file ID caching yet, so always upload
-                emit_progress({"message": f"Uploading PDF to Google: {pdf_path.name}"})
-                file_id = google_upload(pdf_path)
-                emit_progress({"message": f"PDF uploaded successfully to Google. File ID: {file_id}"})
-            except Exception as e:
-                emit_progress({"message": f"Error during Google file upload: {e}"})
-                return {
-                    "items": 0,
-                    "mean_score": 0.0,
-                    "elapsed_s": round(perf_counter() - t0, 2),
-                    "model_name": model_name,
-                    "error": f"Google file upload failed: {e}"
-                }
-        else:
-            # For OpenAI models
-            emit_progress({"message": f"Preparing to use OpenAI model: {model_name}"})
-            try:
-                # Check if this PDF (by content hash) is already in our store
-                file_id = get_openai_file_id(pdf_path)
-                
-                if not file_id:
-                    emit_progress({"message": f"No existing OpenAI file ID found for {pdf_path.name}. Uploading..."})
-                    # If not found, upload it
-                    file_id = openai_upload(pdf_path)
-                    # And save the new mapping to our local store
-                    add_file_mapping(pdf_path, file_id)
-                    emit_progress({"message": f"PDF uploaded successfully to OpenAI. File ID: {file_id} (and mapped locally)"})
-                else:
-                    emit_progress({"message": f"Using existing OpenAI file ID: {file_id} for {pdf_path.name}"})
-            except Exception as e:
-                emit_progress({"message": f"Error during OpenAI file handling (check/upload/map): {e}"})
-                return {
-                    "items": 0,
-                    "mean_score": 0.0,
-                    "elapsed_s": round(perf_counter() - t0, 2),
-                    "model_name": model_name,
-                    "error": f"OpenAI file operation failed: {e}"
-                }
-    except Exception as e:
-        emit_progress({"message": f"Unexpected error during file preparation: {e}"})
-        return {
-            "items": 0,
-            "mean_score": 0.0,
-            "elapsed_s": round(perf_counter() - t0, 2),
-            "model_name": model_name,
-            "error": f"File preparation failed: {e}"
-        }
+    # Only attempt file upload if a PDF was provided
+    if pdf_path and pdf_text:
+        try:
+            if is_google_model:
+                # For Google models
+                emit_progress({"message": f"Preparing to use Google model: {model_name}"})
+                try:
+                    # Google doesn't have file ID caching yet, so always upload
+                    emit_progress({"message": f"Uploading PDF to Google: {pdf_path.name}"})
+                    file_id = google_upload(pdf_path)
+                    emit_progress({"message": f"PDF uploaded successfully to Google. File ID: {file_id}"})
+                except Exception as e:
+                    emit_progress({"message": f"Error during Google file upload: {e}"})
+                    return {
+                        "items": 0,
+                        "mean_score": 0.0,
+                        "elapsed_s": round(perf_counter() - t0, 2),
+                        "model_name": model_name,
+                        "error": f"Google file upload failed: {e}"
+                    }
+            else:
+                # For OpenAI models
+                emit_progress({"message": f"Preparing to use OpenAI model: {model_name}"})
+                try:
+                    # Check if this PDF (by content hash) is already in our store
+                    file_id = get_openai_file_id(pdf_path)
+                    
+                    if not file_id:
+                        emit_progress({"message": f"No existing OpenAI file ID found for {pdf_path.name}. Uploading..."})
+                        # If not found, upload it
+                        file_id = openai_upload(pdf_path)
+                        # And save the new mapping to our local store
+                        add_file_mapping(pdf_path, file_id)
+                        emit_progress({"message": f"PDF uploaded successfully to OpenAI. File ID: {file_id} (and mapped locally)"})
+                    else:
+                        emit_progress({"message": f"Using existing OpenAI file ID: {file_id} for {pdf_path.name}"})
+                except Exception as e:
+                    emit_progress({"message": f"Error during OpenAI file handling (check/upload/map): {e}"})
+                    return {
+                        "items": 0,
+                        "mean_score": 0.0,
+                        "elapsed_s": round(perf_counter() - t0, 2),
+                        "model_name": model_name,
+                        "error": f"OpenAI file operation failed: {e}"
+                    }
+        except Exception as e:
+            emit_progress({"message": f"Error during file upload: {e}"})
+            return {
+                "items": 0,
+                "mean_score": 0.0,
+                "elapsed_s": round(perf_counter() - t0, 2),
+                "model_name": model_name,
+                "error": f"File upload failed: {e}"
+            }
+    else:
+        emit_progress({"message": "No PDF provided - running benchmark without document context"})
 
     # 2. ask questions
     try:
@@ -289,10 +298,18 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
                 prompt_t0 = perf_counter()
                 if is_google_model:
                     # Use Google API for Google models
-                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = google_ask(file_id, prompt_text, model_name)
+                    if file_id:
+                        ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = google_ask(file_id, prompt_text, model_name)
+                    else:
+                        # Run without PDF context
+                        ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = google_ask(None, prompt_text, model_name)
                 else:
                     # Use OpenAI API for OpenAI models
-                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = openai_ask(file_id, prompt_text, model_name)
+                    if file_id:
+                        ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = openai_ask(file_id, prompt_text, model_name)
+                    else:
+                        # Run without PDF context
+                        ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = openai_ask(None, prompt_text, model_name)
                 prompt_t1 = perf_counter()
                 individual_latency_ms = round((prompt_t1 - prompt_t0) * 1000)
 

@@ -85,10 +85,10 @@ async def list_benchmarks():
     # Get basic benchmark data
     benchmarks = load_all_benchmarks_with_models(db_path=Path(__file__).parent)
     
-    # Unless specified, all benchmarks are considered complete
+    # If status is not specified, default to in-progress
     for benchmark in benchmarks:
         if 'status' not in benchmark:
-            benchmark['status'] = 'complete'
+            benchmark['status'] = 'in-progress'
     
     # Try to get active benchmarks info if available
     try:
@@ -102,8 +102,8 @@ async def list_benchmarks():
                 # Check if this benchmark is in the active_benchmarks list
                 for job_id, job_info in active_benchmarks.items():
                     if job_info.get('benchmark_id') == benchmark_id:
-                        # This benchmark is active, mark it as in progress
-                        benchmark['status'] = 'progress'
+                        # This benchmark is active, mark it as in-progress
+                        benchmark['status'] = 'in-progress'
                         break
     except Exception as e:
         print(f"Warning: Could not get active benchmarks info: {e}")

@@ -79,13 +79,19 @@ def google_ask(file_id: str, prompt_text: str, model_name: str = "gemini-2.5-fla
     try:
         logging.info(f"Sending prompt to Google using model {model_name}")
         
-        # Get file reference by ID
-        file_ref = client.get_file(file_id)
-        
-        # Generate content with the file and prompt
+        # Generate content with or without file reference
+        if file_id:
+            # Get file reference by ID and include it in the request
+            file_ref = client.get_file(file_id)
+            contents = [file_ref, prompt_text]
+        else:
+            # No PDF context - just use the prompt
+            contents = [prompt_text]
+            
+        # Generate content
         response = client.models.generate_content(
             model=model_name,
-            contents=[file_ref, prompt_text]
+            contents=contents
         )
         
         # Record completion time
@@ -166,7 +172,7 @@ def estimate_cost(
         )
 
 
-def google_ask(file_id: str, prompt_text: str, model_name: str) -> Tuple[str, int, int, int]:
+def google_ask(file_id: Optional[str], prompt_text: str, model_name: str) -> Tuple[str, int, int, int]:
     """
     Ask a question about a PDF file using Google's Generative AI models.
     
@@ -185,11 +191,11 @@ def google_ask(file_id: str, prompt_text: str, model_name: str) -> Tuple[str, in
     try:
         print(f"Asking model {model_name} about file {file_id} with prompt: '{prompt_text[:50]}...'")
 
-        # Get the file object using the file_id
-        file_obj = client.files.get(name=file_id)
-        
-        # Create the content list with the file and prompt
-        contents = [prompt_text, file_obj]
+        # Create the content list with prompt and file (if provided)
+        contents = [prompt_text]
+        if file_id:
+            file_obj = client.files.get(name=file_id)
+            contents.append(file_obj)
         
         # Track request start time for performance monitoring
         start_time = time.time()

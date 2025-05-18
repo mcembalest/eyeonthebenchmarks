@@ -144,10 +144,7 @@ runBtn.addEventListener('click', () => {
     return;
   }
   
-  if (!selectedPdfPath) {
-    alert('Please select a PDF file.');
-    return;
-  }
+  // PDF is now optional - no validation needed
   
   if (selectedModels.length === 0) {
     alert('Please select at least one model.');
@@ -359,23 +356,17 @@ function renderBenchmarks(benchmarks) {
       ? modelNames.join(', ')
       : 'No models';
     
-    // CRITICAL FIX: Force all newly created benchmarks to show as 'In Progress'
-    // This ensures benchmarks never prematurely show as complete
-    // A benchmark is only complete when ALL models have finished and the backend explicitly marks it complete
-    let benchmarkStatus = benchmark.status || 'running';
+    // Use the status directly from the backend
+    let benchmarkStatus = benchmark.status || 'in-progress';
     
-    // Safety check: If a benchmark has just been created, ALWAYS show it as running
-    const timestampDate = new Date(benchmark.timestamp);
-    const currentTime = new Date();
-    const benchmarkAgeInSeconds = (currentTime - timestampDate) / 1000;
-    
-    // Force running status for recently created benchmarks (created in the last 2 minutes)
-    if (benchmarkAgeInSeconds < 120) {
-      console.log(`Benchmark ${benchmark.id} is new (${benchmarkAgeInSeconds.toFixed(1)}s old), forcing 'running' status`);
-      benchmarkStatus = 'running';
+    // Normalize status values
+    if (benchmarkStatus === 'running' || benchmarkStatus === 'progress') {
+      benchmarkStatus = 'in-progress';
+    } else if (benchmark.all_models_complete) {
+      benchmarkStatus = 'complete';
     }
     
-    // ALWAYS treat any status other than explicit 'complete' as in-progress
+    // A benchmark is only complete when all models are complete
     const isInProgress = benchmarkStatus !== 'complete';
     const statusClass = isInProgress ? 'status-in-progress' : 'status-complete';
     const statusText = isInProgress ? 'In Progress' : 'Complete';
@@ -547,22 +538,20 @@ function renderBenchmarks(benchmarks) {
   
   // Populate table view
   benchmarks.forEach(benchmark => {
-    // Apply the same status logic used for grid view to ensure consistency
-    let benchmarkStatus = benchmark.status || 'running';
+    // Use the same status determination logic as grid view
+    let benchmarkStatus = benchmark.status || 'in-progress';
     
-    // Force running status for recently created benchmarks (like in grid view)
-    const timestampDate = new Date(benchmark.timestamp);
-    const currentTime = new Date();
-    const benchmarkAgeInSeconds = (currentTime - timestampDate) / 1000;
-    
-    if (benchmarkAgeInSeconds < 120) {
-      console.log(`Table view: Benchmark ${benchmark.id} is new (${benchmarkAgeInSeconds.toFixed(1)}s old), forcing 'running' status`);
-      benchmarkStatus = 'running';
+    // Normalize status values
+    if (benchmarkStatus === 'running' || benchmarkStatus === 'progress') {
+      benchmarkStatus = 'in-progress';
+    } else if (benchmark.all_models_complete) {
+      benchmarkStatus = 'complete';
     }
     
-    // ALWAYS treat any status other than explicit 'complete' as in-progress
+    // A benchmark is only complete when all models are complete
     const isInProgress = benchmarkStatus !== 'complete';
     const statusClass = isInProgress ? 'in-progress' : 'complete';
+    const statusText = isInProgress ? 'In Progress' : 'Complete';
     
     console.log(`Table view: Benchmark ${benchmark.id} (${benchmark.label}) status: ${benchmarkStatus}, isInProgress: ${isInProgress}`);
     
@@ -985,100 +974,164 @@ window.electronAPI.onBenchmarkProgress(data => {
 });
 
 // Listen for completion updates
-window.electronAPI.onBenchmarkComplete(data => {
-  // Update UI when benchmark completes
-  console.log('Benchmark complete event received:', data);
+// Sound effect initialization
+const WOOHOO_SOUND_PATH = 'renderer/assets/homer-woohoo.mp3';
+console.log('Sound effect path configured as:', WOOHOO_SOUND_PATH);
+
+// Initialize sound effect
+let woohooSound = null;
+let soundInitPromise = null;
+
+function initializeSound() {
+  if (soundInitPromise) return soundInitPromise;
   
-  // CRITICAL FIX: Check if this is a FINAL completion notification (all models done)
-  // The backend should only send this event when ALL models are complete
-  const isAllModelsComplete = data.all_models_complete === true || data.final_completion === true;
-  
-  // Log whether this is a final completion or just a model completion
-  console.log(`Benchmark ${data.benchmark_id} completion event - Is final completion:`, 
-              isAllModelsComplete ? 'YES - All models done' : 'NO - Individual model completion');
-  
-  // Show completion message in the console for model-specific completions
-  const consoleLog = document.getElementById('consoleLog');
-  const consoleContent = document.getElementById('consoleContent');
-  
-  if (consoleLog && consoleContent && consoleContent.classList.contains('active')) {
-    const completionDiv = document.createElement('div');
-    completionDiv.className = 'completion-message';
-    
-    // Show different message depending on if all models are complete
-    if (isAllModelsComplete) {
-      completionDiv.innerHTML = `
-        <p style="font-weight: 600; color: #2f855a; margin-bottom: 8px;">✅ Benchmark Complete!</p>
-        <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
-        <p>Total Items: <strong>${data.items || '0'}</strong></p>
-        <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
-      `;
-    } else {
-      // Individual model completion message
-      completionDiv.innerHTML = `
-        <p style="font-weight: 600; color: #4299e1; margin-bottom: 8px;">✓ Model ${data.model_name} Complete!</p>
-        <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
-        <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
-        <p><small>Waiting for other models to complete...</small></p>
-      `;
-    }
-    
-    consoleLog.appendChild(completionDiv);
-    consoleLog.scrollTop = consoleLog.scrollHeight;
-  }
-  
-  // CRITICAL FIX: Only update the benchmark card status if ALL models are complete
-  // This prevents premature completion status when only one model is done
-  if (data.benchmark_id && isAllModelsComplete) {
-    const benchmarkCard = document.querySelector(`.benchmark-card[data-benchmark-id="${data.benchmark_id}"]`);
-    if (benchmarkCard) {
-      benchmarkCard.dataset.status = 'complete';
-      
-      const statusBadge = benchmarkCard.querySelector('.status-badge');
-      if (statusBadge) {
-        statusBadge.textContent = 'Complete';
-        statusBadge.className = 'status-badge status-complete';
-        console.log(`Updated benchmark ${data.benchmark_id} status to Complete - ALL MODELS DONE`);
-      }
-      
-      // Replace View Logs button with View Details if it exists
-      const viewLogsBtn = benchmarkCard.querySelector('.view-logs-btn');
-      if (viewLogsBtn) {
-        viewLogsBtn.textContent = 'View Details';
-        viewLogsBtn.className = 'view-btn';
-      }
-    }
-  } else if (data.benchmark_id) {
-    console.log(`Model ${data.model_name} completed for benchmark ${data.benchmark_id}, but benchmark remains In Progress until all models complete`);
-  }
-  
-  // Show a notification if the console isn't open AND this is a final completion
-  // CRITICAL FIX: Only show completion notification when ALL models are complete
-  if ((!consoleContent || !consoleContent.classList.contains('active')) && isAllModelsComplete) {
-    const notification = document.createElement('div');
-    notification.className = 'notification';
-    notification.innerHTML = `
-      <p>✅ Benchmark completed successfully!</p>
-      <p><small>Click <a href="#" class="view-benchmark-link" data-id="${data.benchmark_id}">here</a> to view results</small></p>
-    `;
-    
-    // Add click handler for the view link
-    notification.querySelector('.view-benchmark-link').addEventListener('click', (e) => {
-      e.preventDefault();
-      viewBenchmarkDetails(data.benchmark_id);
-      notification.remove();
+  soundInitPromise = window.electronAPI.playSound(WOOHOO_SOUND_PATH, false)
+    .then(fullPath => {
+      console.log('✅ Sound file verified at:', fullPath);
+      woohooSound = new Audio(`file://${fullPath}`);
+      woohooSound.volume = 1.0;
+      console.log('Sound effect initialized successfully');
+      return woohooSound;
+    })
+    .catch(error => {
+      console.error('Error initializing sound:', error);
+      soundInitPromise = null; // Allow retry on next attempt
+      throw error;
     });
     
-    // Auto-remove notification after 10 seconds
-    setTimeout(() => {
-      if (notification.parentNode) {
-        notification.style.opacity = '0';
-        setTimeout(() => notification.remove(), 300);
+  return soundInitPromise;
+}
+
+function playWoohooSound() {
+  // Always try to initialize sound first
+  return initializeSound()
+    .then(sound => {
+      // Reset the sound to start
+      sound.currentTime = 0;
+      // Play and catch any autoplay errors
+      return sound.play().catch(error => {
+        console.error('Error playing sound:', error);
+        // If autoplay was blocked or browser audio failed, try using afplay directly
+        console.log('Browser audio failed, falling back to afplay...');
+        return window.electronAPI.playSound(WOOHOO_SOUND_PATH);
+      });
+    })
+    .catch(error => {
+      console.error('Could not initialize sound, trying afplay directly:', error);
+      // If initialization failed, try afplay as last resort
+      return window.electronAPI.playSound(WOOHOO_SOUND_PATH);
+    });
+}
+
+// Keep track of benchmark statuses
+const benchmarkStatuses = new Map();
+
+// Track when benchmarks start running
+window.electronAPI.onBenchmarkProgress(data => {
+  console.log('Progress event received:', data);
+  
+  if (data.benchmark_id) {
+    // Track status changes
+    if (data.status === 'running' || data.message?.includes('Starting benchmark')) {
+      console.log(`Marking benchmark ${data.benchmark_id} as in-progress (status: ${data.status}, message: ${data.message})`);
+      benchmarkStatuses.set(data.benchmark_id, 'in-progress');
+    }
+    
+    // Update UI for progress
+    const benchmarkCard = document.querySelector(`[data-benchmark-id="${data.benchmark_id}"]`);
+    if (benchmarkCard) {
+      const statusBadge = benchmarkCard.querySelector('.status-badge');
+      if (statusBadge) {
+        if (data.status === 'running' || data.status === 'progress' || data.message?.includes('Starting benchmark')) {
+          statusBadge.textContent = 'In Progress';
+          statusBadge.className = 'status-badge status-in-progress';
+          benchmarkCard.dataset.status = 'in-progress';
+        }
       }
-    }, 10000);
-    
-    document.body.appendChild(notification);
-    
+    }
+  }
+});
+
+window.electronAPI.onBenchmarkComplete(data => {
+  console.log('Benchmark complete event received:', data);
+  
+  if (!data || !data.benchmark_id) {
+    console.error('Invalid benchmark completion data:', data);
+    return;
+  }
+  
+  // Check if this is a transition from in-progress to complete
+  const previousStatus = benchmarkStatuses.get(data.benchmark_id);
+  console.log(`Checking status transition for benchmark ${data.benchmark_id}:`, {
+    previousStatus,
+    currentStatus: 'complete',
+    data
+  });
+  
+  // Only play sound if this is a real transition from in-progress to complete
+  if (previousStatus === 'in-progress') {
+    console.log(`Playing sound for benchmark ${data.benchmark_id} completing (was ${previousStatus})`);
+    // Make sure we have the audio element ready
+    const woohooSound = document.getElementById('woohoo-sound');
+    if (woohooSound) {
+      console.log('Found audio element, playing sound...');
+      woohooSound.currentTime = 0;
+      woohooSound.play().catch(err => {
+        console.error('Error playing sound:', err);
+      });
+    } else {
+      console.error('Audio element not found!');
+    }
+  } else {
+    console.log(`Skipping sound for benchmark ${data.benchmark_id} - no status transition (was ${previousStatus})`);
+  }
+  
+  // Update stored status
+  benchmarkStatuses.set(data.benchmark_id, 'complete');
+
+  // Update progress display and status
+  const benchmarkElement = document.querySelector(`[data-benchmark-id="${data.benchmark_id}"]`);
+  if (benchmarkElement) {
+    // Update the progress text
+    const progressElement = benchmarkElement.querySelector('.benchmark-progress');
+    if (progressElement) {
+      progressElement.textContent = `Complete - Score: ${data.mean_score.toFixed(2)}`;
+    }
+
+    // Update the status badge
+    const statusBadge = benchmarkElement.querySelector('.status-badge');
+    if (statusBadge) {
+      statusBadge.textContent = 'Complete';
+      statusBadge.className = 'status-badge status-complete';
+    }
+
+    // Update the benchmark card's status
+    benchmarkElement.dataset.status = 'complete';
+  }
+
+  // Add completion message to console
+  const completionDiv = document.createElement('div');
+  completionDiv.className = 'completion-message';
+  
+  if (data.all_models_complete) {
+    completionDiv.innerHTML = `
+      <p style="font-weight: 600; color: #48bb78; margin-bottom: 8px;">✅ All Models Complete!</p>
+      <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
+      <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
+    `;
+  } else {
+    completionDiv.innerHTML = `
+      <p style="font-weight: 600; color: #4299e1; margin-bottom: 8px;">✓ Model ${data.model_name} Complete!</p>
+      <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
+      <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
+      <p><small>Waiting for other models to complete...</small></p>
+    `;
+  }
+  
+  const consoleLog = document.getElementById('consoleLog');
+  if (consoleLog) {
+    consoleLog.appendChild(completionDiv);
+    consoleLog.scrollTop = consoleLog.scrollHeight;
     // Auto-hide notification after 3 seconds
     setTimeout(() => {
       notification.classList.add('show');

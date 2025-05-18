@@ -136,7 +136,7 @@ def estimate_cost(
         )
 
 
-def openai_ask(file_id: str, prompt_text: str, model_name: str = "gpt-4o-mini") -> Tuple[str, int, int, int]:
+def openai_ask(file_id: Optional[str], prompt_text: str, model_name: str = "gpt-4o-mini") -> Tuple[str, int, int, int]:
     """
     Send a query to an OpenAI model with a file attachment.
     
@@ -182,19 +182,21 @@ def openai_ask(file_id: str, prompt_text: str, model_name: str = "gpt-4o-mini") 
         logging.info(f"File ID: {file_id}, Model: {model_name}")
 
         # Format the API input for Responses API
+        content = []
+        if file_id:
+            content.append({
+                "type": "input_file",
+                "file_id": file_id,
+            })
+        content.append({
+            "type": "input_text",
+            "text": prompt_text,
+        })
+        
         api_input = [
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "input_file",
-                        "file_id": file_id,
-                    },
-                    {
-                        "type": "input_text",
-                        "text": prompt_text,
-                    },
-                ]
+                "content": content
             }
         ]
         

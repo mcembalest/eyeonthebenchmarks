@@ -4,6 +4,7 @@ const path = require('path');
 const electron = require('electron');
 const http = require('http');
 const { spawn } = require('child_process');
+const { shell } = require('electron');
 const apiHost = '127.0.0.1';
 const apiPort = 8000;
 const apiBase = `http://${apiHost}:${apiPort}`;
@@ -22,7 +23,7 @@ const dialog = electron.dialog;
 let mainWindow = null;
 
 // Get the backend executable path and command
-const isDev = !app.isPackaged;
+const isDev = app ? !app.isPackaged : true;
 const getBackendCommand = () => {
   if (isDev) {
     return {
@@ -143,7 +144,25 @@ const createWindow = () => {
 if (app) {
   // Create window when app is ready
   // Start the backend process
-const startBackend = () => {
+const checkBackendRunning = () => {
+  return new Promise((resolve) => {
+    const testRequest = http.get(`${apiBase}/models`, (res) => {
+      resolve(res.statusCode === 200);
+    });
+    testRequest.on('error', () => {
+      resolve(false);
+    });
+  });
+};
+
+const startBackend = async () => {
+  // Check if backend is already running
+  const isRunning = await checkBackendRunning();
+  if (isRunning) {
+    console.log('Backend is already running, skipping startup');
+    return;
+  }
+
   const { command, args } = getBackendCommand();
   console.log('Starting backend with:', command, args);
   
@@ -161,6 +180,23 @@ const startBackend = () => {
     console.log('Backend process exited with code', code);
     backendProcess = null;
   });
+
+  // Wait for backend to be ready with retries
+  const maxRetries = 10;
+  const retryDelay = 1000; // 1 second
+  
+  for (let i = 0; i < maxRetries; i++) {
+    const isReady = await checkBackendRunning();
+    if (isReady) {
+      console.log('Backend is ready');
+      return;
+    }
+    console.log(`Backend not ready, retrying (${i + 1}/${maxRetries})...`);
+    await new Promise(resolve => setTimeout(resolve, retryDelay));
+  }
+  
+  console.error('Backend failed to start after maximum retries');
+  throw new Error('Backend failed to start');
 };
 
 // Clean up the backend process
@@ -173,8 +209,8 @@ app.on('will-quit', () => {
 
 app.whenReady().then(async () => {
   // Start the backend before creating the window
-  startBackend(); 
-    createWindow();
+  await startBackend(); 
+  createWindow();
 
     // Connect to backend WebSocket for real-time events
     const ws = new WebSocket(`ws://${apiHost}:${apiPort}/ws`);
@@ -182,8 +218,19 @@ app.whenReady().then(async () => {
     ws.on('message', data => {
       try {
         const msg = JSON.parse(data);
-        if (mainWindow && mainWindow.webContents) {
-          mainWindow.webContents.send(msg.event, msg);
+        if (mainWindow && mainWindow.webContents && msg.ui_bridge_event) {
+          // Extract the event name from ui_bridge_event and send only the data
+          console.log('Forwarding UI bridge event:', msg.ui_bridge_event, 'with data:', msg.data);
+          
+          // Special handling for benchmark progress events
+          if (msg.ui_bridge_event === 'benchmark-progress') {
+            // Make sure we properly identify the initial 'running' status
+            if (msg.data.status === 'running' || msg.data.message?.includes('Starting benchmark')) {
+              msg.data.status = 'running';
+            }
+          }
+          
+          mainWindow.webContents.send(msg.ui_bridge_event, msg.data);
         }
       } catch (e) {
         console.error('Error parsing WS message:', e);
@@ -210,7 +257,55 @@ app.whenReady().then(async () => {
 }
 
 // Set up all IPC handlers in one function
-function setupIpcHandlers() {
+const setupIpcHandlers = () => {
+  // Handle playing sound effects
+  ipcMain.handle('play-sound', async (event, soundPath, shouldPlay = true) => {
+    console.log('Received request to play sound:', soundPath, 'shouldPlay:', shouldPlay);
+    
+    // Try multiple paths to find the sound file
+    const possiblePaths = [
+      // Production path (inside asar)
+      path.join(app.getAppPath(), 'src', soundPath),
+      // Development path (relative to main.js)
+      path.join(__dirname, '..', soundPath),
+      // Absolute path (if already resolved)
+      soundPath
+    ];
+    
+    let foundPath = null;
+    
+    // First find the file
+    for (const fullPath of possiblePaths) {
+      try {
+        await fs.access(fullPath);
+        console.log('Sound file found at:', fullPath);
+        foundPath = fullPath;
+        break;
+      } catch (error) {
+        console.log('Sound file not found at:', fullPath);
+        continue;
+      }
+    }
+    
+    if (!foundPath) {
+      throw new Error('Sound file not found in any location');
+    }
+    
+    if (shouldPlay) {
+      console.log('Playing sound effect...');
+      // Play the sound using afplay on macOS
+      if (process.platform === 'darwin') {
+        const { spawn } = require('child_process');
+        spawn('afplay', [foundPath]);
+      }
+      // TODO: Add support for other platforms here
+    } else {
+      console.log('Skipping sound playback - shouldPlay is false');
+    }
+    
+    return foundPath;
+  });
+
   if (!ipcMain) return;
   
   // Basic IPC handlers for UI bridge

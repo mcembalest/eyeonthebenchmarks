@@ -45,7 +45,7 @@ def run_direct_benchmark(job_id, benchmark_id, prompts, pdf_path, model_name):
     Run a benchmark directly without complex importing
     """
     t0 = time.time()
-    pdf_path_obj = Path(pdf_path)
+    pdf_path_obj = Path(pdf_path) if pdf_path else None
     
     try:
         # Add the current directory to sys.path
@@ -54,21 +54,24 @@ def run_direct_benchmark(job_id, benchmark_id, prompts, pdf_path, model_name):
         print(f"Added {project_root} to Python path")
         sys.stdout.flush()
         
-        # Verify the PDF exists and is readable
-        if not pdf_path_obj.exists():
-            error_msg = f"PDF file not found: {pdf_path}"
-            print(f"ERROR: {error_msg}")
-            sys.stdout.flush()
-            emit_progress({
-                "job_id": job_id,
-                "benchmark_id": benchmark_id,
-                "model_name": model_name,
-                "status": "error",
-                "message": error_msg
-            })
-            return {"success": False, "error": error_msg}
-            
-        print(f"PDF file found: {pdf_path} (Size: {pdf_path_obj.stat().st_size / 1024:.1f} KB)")
+        # Verify the PDF exists and is readable if provided
+        if pdf_path_obj:
+            if not pdf_path_obj.exists():
+                error_msg = f"PDF file not found: {pdf_path}"
+                print(f"ERROR: {error_msg}")
+                sys.stdout.flush()
+                emit_progress({
+                    "job_id": job_id,
+                    "benchmark_id": benchmark_id,
+                    "model_name": model_name,
+                    "status": "error",
+                    "message": error_msg
+                })
+                return {"success": False, "error": error_msg}
+                
+            print(f"PDF file found: {pdf_path} (Size: {pdf_path_obj.stat().st_size / 1024:.1f} KB)")
+        else:
+            print("No PDF file provided - running benchmark without document context")
         
         # Load environment variables
         from dotenv import load_dotenv
@@ -164,7 +167,10 @@ def run_direct_benchmark(job_id, benchmark_id, prompts, pdf_path, model_name):
         set_emit_progress_callback(progress_callback)
         
         # Log start of benchmark
-        print(f"Starting benchmark with model {model_name} on {pdf_path}")
+        if pdf_path_obj:
+            print(f"Starting benchmark with model {model_name} on {pdf_path}")
+        else:
+            print(f"Starting benchmark with model {model_name} without document context")
         print(f"Number of prompts: {len(prompts)}")
         sys.stdout.flush()
         

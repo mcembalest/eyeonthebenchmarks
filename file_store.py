@@ -37,9 +37,16 @@ def init_db(db_path: Path = Path.cwd()):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
             label TEXT,
-            description TEXT
+            description TEXT,
+            status TEXT DEFAULT 'in-progress'
         )
     ''')
+    
+    # Add status column if it doesn't exist (for backwards compatibility)
+    cursor.execute(f"PRAGMA table_info({BENCHMARKS_TABLE_NAME})")
+    columns = [col[1] for col in cursor.fetchall()]
+    if 'status' not in columns:
+        cursor.execute(f"ALTER TABLE {BENCHMARKS_TABLE_NAME} ADD COLUMN status TEXT DEFAULT 'in-progress'")
 
     cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS benchmark_files (
@@ -631,14 +638,20 @@ def load_all_benchmarks_with_models(db_path: Path = Path.cwd()) -> list[dict]:
     cursor = conn.cursor()
     benchmarks = []
     try:
-        cursor.execute(f'''
-            SELECT id, timestamp, label, description
+        cursor.execute(f"""
+            SELECT id, timestamp, label, description, status
             FROM {BENCHMARKS_TABLE_NAME}
             ORDER BY timestamp DESC
-        ''')
+        """)
         rows = cursor.fetchall()
         for row in rows:
-            benchmark = dict(row)
+            benchmark = {
+                'id': row[0],
+                'timestamp': row[1],
+                'label': row[2],
+                'description': row[3],
+                'status': row[4] or 'in-progress'  # Default to in-progress if NULL
+            }
             
             # Get model names
             cursor.execute(f'''
@@ -913,6 +926,59 @@ def update_benchmark_model(benchmark_id: int, model_name: str, db_path: Path = P
         if conn:
             conn.rollback()
         logging.error(f"Database error in update_benchmark_model: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+def update_benchmark_status(benchmark_id: int, status: str, db_path: Path = Path.cwd()):
+    """
+    Updates the status of a benchmark.
+    
+    Args:
+        benchmark_id: ID of the benchmark
+        status: New status ('in-progress' or 'complete')
+        db_path: Directory containing the database
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not isinstance(benchmark_id, int) or not isinstance(status, str):
+        logging.error(f"Invalid parameter types: benchmark_id={type(benchmark_id)}, status={type(status)}")
+        return False
+        
+    if status not in ['in-progress', 'complete']:
+        logging.error(f"Invalid status value: {status}")
+        return False
+        
+    db_file = db_path / DB_NAME
+    conn = None
+    
+    try:
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        
+        # Update the benchmark status
+        cursor.execute(f"""
+            UPDATE {BENCHMARKS_TABLE_NAME}
+            SET status = ?
+            WHERE id = ?
+        """, (status, benchmark_id))
+        
+        # Check if any rows were affected
+        if cursor.rowcount == 0:
+            logging.warning(f"No benchmark found with ID {benchmark_id}")
+            conn.rollback()
+            return False
+            
+        conn.commit()
+        logging.info(f"Successfully updated status to {status} for benchmark {benchmark_id}")
+        return True
+        
+    except sqlite3.Error as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Database error in update_benchmark_status: {e}")
         return False
     finally:
         if conn:

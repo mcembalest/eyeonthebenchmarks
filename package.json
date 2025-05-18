@@ -24,11 +24,7 @@
     "productName": "Eye on the Benchmarks",
     "mac": {
       "target": "dmg",
-      "icon": "src/renderer/assets/icon.png",
-      "hardenRuntime": true,
-      "gatekeeperAssess": false,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "icon": "src/renderer/assets/icon.png"
     },
     "files": [
       "dist/api",

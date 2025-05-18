@@ -168,20 +168,23 @@ class BenchmarkWorker(threading.Thread):
         # Basic validation
         print(f"   Starting basic validation checks...")
         sys.stdout.flush()
-        if not self.pdf_path or not os.path.exists(self.pdf_path):
-            error_msg = f"PDF file not found: {self.pdf_path}"
-            print(f"   ❌ ERROR: {error_msg}")
-            sys.stdout.flush()
-            
-            if self.on_finished:
-                self.on_finished({
-                    "error": error_msg,
-                    "status": "failed",
-                    "job_id": self.job_id,
-                    "benchmark_id": self.benchmark_id,
-                    "model_name": self.model_name
-                })
-            return
+        
+        # Only validate PDF path if one was provided
+        if self.pdf_path:
+            if not os.path.exists(self.pdf_path):
+                error_msg = f"PDF file not found: {self.pdf_path}"
+                print(f"   ❌ ERROR: {error_msg}")
+                sys.stdout.flush()
+                
+                if self.on_finished:
+                    self.on_finished({
+                        "error": error_msg,
+                        "status": "failed",
+                        "job_id": self.job_id,
+                        "benchmark_id": self.benchmark_id,
+                        "model_name": self.model_name
+                    })
+                return
                         
         if not self.model_name:
             error_msg = "Model name is required"
@@ -264,7 +267,7 @@ class BenchmarkWorker(threading.Thread):
             str(self.job_id),
             str(self.benchmark_id),
             prompts_file_path,  # Path to prompts JSON file
-            str(self.pdf_path),
+            str(self.pdf_path) if self.pdf_path else '',  # Empty string if no PDF
             self.model_name
         ]
     
@@ -570,24 +573,15 @@ class AppLogic:
                     "error_type": "validation_error"
                 }
         
-        # Convert to Path and validate
-        pdf_to_run = Path(pdfPath).resolve() if pdfPath else None
-            
-        if not pdf_to_run:
-            error_msg = "No PDF file selected"
-            logger.error(error_msg)
-            self.ui_bridge.show_message("error", "No PDF Selected", error_msg)
-            return {
-                "status": "error",
-                "message": error_msg,
-                "error_type": "validation_error"
-            }
-            
-        if not pdf_to_run.exists():
-            error_msg = f"PDF file not found: {pdf_to_run}"
-            logger.error(error_msg)
-            self.ui_bridge.show_message("error", "PDF not found", error_msg)
-            raise FileNotFoundError(error_msg)
+        # Convert to Path and validate if PDF is provided
+        pdf_to_run = None
+        if pdfPath and pdfPath.strip():  # Only process if pdfPath is not empty
+            pdf_to_run = Path(pdfPath).resolve()
+            if not pdf_to_run.exists():
+                error_msg = f"PDF file not found: {pdf_to_run}"
+                logger.error(error_msg)
+                self.ui_bridge.show_message("error", "PDF not found", error_msg)
+                raise FileNotFoundError(error_msg)
             
         if not modelNames:
             error_msg = "No models selected"
@@ -616,8 +610,8 @@ class AppLogic:
                 "message": "OpenAI API key is missing"
             }
         
-        # Convert string path to Path object
-        pdf_to_run = Path(pdfPath)
+        # Convert string path to Path object if provided
+        pdf_to_run = Path(pdfPath) if pdfPath and str(pdfPath).strip() else None
             
         # Validate inputs
         if not prompts:
@@ -627,11 +621,14 @@ class AppLogic:
                 "message": "No prompts provided"
             }
             
-        if not pdf_to_run:
-            self.ui_bridge.show_message("warning", "No PDF", "Please select a PDF file for the benchmark.")
+        # PDF is now optional, so we only validate if one was provided
+        if pdf_to_run and not pdf_to_run.exists():
+            error_msg = f"PDF file not found: {pdf_to_run}"
+            logger.error(error_msg)
+            self.ui_bridge.show_message("error", "PDF not found", error_msg)
             return {
                 "status": "error",
-                "message": "No PDF file selected"
+                "message": error_msg
             }
             
         if not modelNames:
@@ -641,15 +638,7 @@ class AppLogic:
                 "message": "No models selected"
             }
         
-        # Ensure PDF file exists
-        if not pdf_to_run.exists():
-            error_msg = f"PDF file not found: {pdf_to_run}"
-            logger.error(error_msg)
-            self.ui_bridge.show_message("error", "PDF not found", error_msg)
-            return {
-                "status": "error",
-                "message": error_msg
-            }
+        # PDF validation already done above
 
         # First create the benchmark in the database
         logger.info(f"Creating benchmark record with label: {label}, description: {description}")
@@ -671,7 +660,7 @@ class AppLogic:
         benchmark_id = save_benchmark(
             label=label,
             description=description or "",
-            file_paths=[str(pdf_to_run)],
+            file_paths=[str(pdf_to_run)] if pdf_to_run else [],
             db_path=db_dir
         )
         
@@ -684,7 +673,7 @@ class AppLogic:
         
         # Set the current benchmark ID
         self._current_benchmark_id = benchmark_id
-        self._current_benchmark_file_paths = [str(pdf_to_run)]
+        self._current_benchmark_file_paths = [str(pdf_to_run)] if pdf_to_run else []
         
         logger.info(f"Successfully created benchmark with ID: {benchmark_id}")
 
@@ -1007,6 +996,10 @@ class AppLogic:
             if job['completed_models'] >= job['total_models']:
                 job['status'] = 'complete'
                 logging.info(f"All models for job {job_id} are now complete!")
+                # Update benchmark status in database when all models are complete
+                from file_store import update_benchmark_status
+                update_benchmark_status(benchmark_id, 'complete')
+                
                 # Only notify about benchmark completion when ALL models have finished
                 # We'll save the notification until the end of this method for single-model benchmarks
                 if job['total_models'] > 1:
