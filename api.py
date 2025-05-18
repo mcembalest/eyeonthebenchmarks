@@ -3,7 +3,7 @@ from fastapi.responses import FileResponse
 import asyncio
 import json
 from pathlib import Path
-from file_store import load_benchmark_details
+from file_store import load_benchmark_details, load_all_benchmarks_with_models
 from available_models import get_available_models_as_list
 
 # Import your existing application logic and enums
@@ -82,7 +82,33 @@ async def launch_benchmark(payload: dict):
 # HTTP endpoint to list all benchmarks (including active)
 @app.get("/benchmarks/all")
 async def list_benchmarks():
-    return logic.list_benchmarks()
+    # Get basic benchmark data
+    benchmarks = load_all_benchmarks_with_models(db_path=Path(__file__).parent)
+    
+    # Unless specified, all benchmarks are considered complete
+    for benchmark in benchmarks:
+        if 'status' not in benchmark:
+            benchmark['status'] = 'complete'
+    
+    # Try to get active benchmarks info if available
+    try:
+        # Check if logic exists and has the get_active_benchmarks_info method
+        if hasattr(logic, 'get_active_benchmarks_info'):
+            active_benchmarks = logic.get_active_benchmarks_info()
+            
+            # Update status info in benchmark data
+            for benchmark in benchmarks:
+                benchmark_id = benchmark.get('id')
+                # Check if this benchmark is in the active_benchmarks list
+                for job_id, job_info in active_benchmarks.items():
+                    if job_info.get('benchmark_id') == benchmark_id:
+                        # This benchmark is active, mark it as in progress
+                        benchmark['status'] = 'progress'
+                        break
+    except Exception as e:
+        print(f"Warning: Could not get active benchmarks info: {e}")
+    
+    return benchmarks
 
 # HTTP endpoint to get benchmark details
 @app.get("/benchmarks/{benchmark_id}")

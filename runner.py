@@ -311,7 +311,7 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
                     "standard_input_tokens": standard_input_tokens_val,
                     "cached_input_tokens": cached_input_tokens_val,
                     "output_tokens": output_tokens_val,
-                    "actual_answer": ans, # Store full answer here for prompts_data later
+                    "model_answer": ans, # Store full answer here for prompts_data later
                     "expected_answer": expected_text,
                     "score": ok
                 })
@@ -331,7 +331,7 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
                     "standard_input_tokens": 0,
                     "cached_input_tokens": 0,
                     "output_tokens": 0,
-                    "actual_answer": f"ERROR: {str(e)}",
+                    "model_answer": f"ERROR: {str(e)}",
                     "expected_answer": expected_text,
                     "score": 0
                 })
@@ -348,7 +348,7 @@ def run_benchmark(prompts: list[dict], pdf_path: Path, model_name="gpt-4o-mini")
             {
                 "prompt_text": ipd["prompt_text"],
                 "expected_answer": ipd["expected_answer"],
-                "actual_answer": ipd["actual_answer"],
+                "model_answer": ipd["model_answer"],
                 "score": ipd["score"],
                 "standard_input_tokens": ipd["standard_input_tokens"],
                 "cached_input_tokens": ipd["cached_input_tokens"],

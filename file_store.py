@@ -579,7 +579,7 @@ def load_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> dic
                 run_id = run_info_dict['run_id']
                 
                 cursor.execute(f'''
-                    SELECT prompt, answer AS expected_answer, response AS actual_answer, score, 
+                    SELECT prompt, answer AS expected_answer, response AS model_answer, score, 
                            latency AS prompt_latency, standard_input_tokens, cached_input_tokens, output_tokens
                     FROM {BENCHMARK_PROMPTS_TABLE_NAME}
                     WHERE benchmark_run_id = ?

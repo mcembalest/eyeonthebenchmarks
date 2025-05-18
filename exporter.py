@@ -115,22 +115,19 @@ def export_benchmark_summary(benchmark: dict, filepath: Path) -> None:
 
 def export_benchmark_detailed(benchmark_id: int, model_names: list, filepath: Path) -> None:
     """Export detailed per-prompt results for all models in the benchmark."""
-    # Get detailed data for each model
-    model_data = {}
-    for model_name in model_names:
-        # Load detailed data with prompts for this benchmark and model
-        detailed = load_benchmark_details(benchmark_id)
-        if detailed and 'prompts_data' in detailed:
-            model_data[model_name] = detailed['prompts_data']
-    
-    # Bail if we don't have any prompt data
-    if not model_data or not any(model_data.values()):
+    # Get detailed data for the benchmark once
+    benchmark_data = load_benchmark_details(benchmark_id)
+    if not benchmark_data or 'prompts_by_model' not in benchmark_data:
         return
     
-    # Get list of prompts - assuming the first model has all prompts
-    # This may need to be updated if models can have different prompt sets
-    first_model = next(iter(model_data.values()))
-    prompts = [p.get('prompt_text', '') for p in first_model]
+    # Get all unique prompts across all models
+    all_prompts = set()
+    for model_name, prompts in benchmark_data['prompts_by_model'].items():
+        for prompt in prompts:
+            all_prompts.add((prompt.get('prompt_text', ''), prompt.get('expected_answer', '')))
+    
+    # Convert to list of (prompt, expected_answer) tuples and sort for consistent ordering
+    all_prompts = sorted(list(all_prompts), key=lambda x: x[0])
     
     with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
         # Create fields for CSV
@@ -149,33 +146,29 @@ def export_benchmark_detailed(benchmark_id: int, model_names: list, filepath: Pa
         writer.writeheader()
         
         # Write data for each prompt
-        for i, prompt in enumerate(prompts):
-            expected_answer = first_model[i].get('expected_answer', '') if i < len(first_model) else ''
+        for prompt_text, expected_answer in all_prompts:
             row = {
-                'Prompt': prompt,
+                'Prompt': prompt_text,
                 'Expected Answer': expected_answer
             }
             
             # Add data for each model
             for model in model_names:
-                if model in model_data and i < len(model_data[model]):
-                    prompt_data = model_data[model][i]
-                    
-                    # Extract metrics
-                    row[f"{model} - Actual Answer"] = prompt_data.get('actual_answer', 'N/A')
-                    row[f"{model} - Score"] = prompt_data.get('score', 'N/A')
-                    row[f"{model} - Standard Input Tokens"] = prompt_data.get('standard_input_tokens', 'N/A')
-                    row[f"{model} - Cached Input Tokens"] = prompt_data.get('cached_input_tokens', 'N/A')
-                    row[f"{model} - Output Tokens"] = prompt_data.get('output_tokens', 'N/A')
-                    row[f"{model} - Latency (ms)"] = prompt_data.get('latency_ms', 'N/A')
-                else:
-                    # Set N/A for models without data for this prompt
-                    row[f"{model} - Actual Answer"] = 'N/A'
-                    row[f"{model} - Score"] = 'N/A'
-                    row[f"{model} - Standard Input Tokens"] = 'N/A'
-                    row[f"{model} - Cached Input Tokens"] = 'N/A'
-                    row[f"{model} - Output Tokens"] = 'N/A'
-                    row[f"{model} - Latency (ms)"] = 'N/A'
+                model_prompts = benchmark_data['prompts_by_model'].get(model, [])
+                prompt_data = next(
+                    (p for p in model_prompts 
+                     if p.get('prompt_text') == prompt_text and 
+                        p.get('expected_answer') == expected_answer),
+                    {}
+                )
+                
+                # Extract metrics
+                row[f"{model} - Actual Answer"] = prompt_data.get('model_answer', 'N/A')
+                row[f"{model} - Score"] = prompt_data.get('score', 'N/A')
+                row[f"{model} - Standard Input Tokens"] = prompt_data.get('standard_input_tokens', 'N/A')
+                row[f"{model} - Cached Input Tokens"] = prompt_data.get('cached_input_tokens', 'N/A')
+                row[f"{model} - Output Tokens"] = prompt_data.get('output_tokens', 'N/A')
+                row[f"{model} - Latency (ms)"] = prompt_data.get('prompt_latency', 'N/A')
             
             writer.writerow(row)
 

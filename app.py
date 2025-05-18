@@ -755,7 +755,19 @@ class AppLogic:
         print("")
         sys.stdout.flush()
         
-        # Return success response with job and benchmark info
+        # Construct the benchmark item for optimistic UI update
+        launched_benchmark_item = {
+            'id': benchmark_id,
+            'label': label,
+            'description': description,
+            'model_names': modelNames, # This is the list of model names
+            'status': 'running', # Optimistically set to running
+            'timestamp': self.jobs[job_id]['start_time'], # Already in isoformat
+            'file_paths': [str(pdf_to_run)] # The PDF path used for the launch
+            # Add any other fields the frontend expects for a benchmark list item
+        }
+
+        # Return success response with job and benchmark info, including the item
         result = {
             "job_id": job_id,
             "benchmark_id": benchmark_id,
@@ -763,7 +775,8 @@ class AppLogic:
             "status": "success",
             "num_models": len(modelNames),
             "num_prompts": len(prompts),
-            "label": label
+            "label": label,
+            "launched_benchmark_item": launched_benchmark_item # Add the new item here
         }
         # Log the result for debugging purposes
         logging.info(f"Returning result: {result}")
@@ -790,52 +803,93 @@ class AppLogic:
         # Get the benchmark results from the database
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            # Get the most recent run for this benchmark
+            
+            # First check if the benchmark exists
             cursor.execute("""
-                SELECT id, model_name, created_at,
-                       total_standard_input_tokens, total_cached_input_tokens,
-                       total_output_tokens, total_tokens, latency, report
-                FROM benchmark_runs
-                WHERE benchmark_id = ?
-                ORDER BY created_at DESC LIMIT 1
+                SELECT id, label FROM benchmarks
+                WHERE id = ?
             """, (benchmark_id,))
-             
-            benchmark = cursor.fetchone()
-            if not benchmark:
+            
+            benchmark_info = cursor.fetchone()
+            if not benchmark_info:
                 error_msg = f"Benchmark with ID {benchmark_id} not found"
                 logging.error(error_msg)
                 raise ValueError(error_msg)
             
-            # Derive run ID for prompts
-            run_id = benchmark[0]
-            
-            # Get all prompt results dynamically to match DB schema
+            # Get all runs for this benchmark (different models)
             cursor.execute("""
-                SELECT * FROM benchmark_prompts
-                WHERE benchmark_run_id = ?
-                ORDER BY id
-            """, (run_id,))
-            rows = cursor.fetchall()
-            # Construct DataFrame using actual column names
-            cols = [desc[0] for desc in cursor.description]
-            df = pd.DataFrame(rows, columns=cols)
-            # Normalize prompt/answer columns to standard names
-            rename_map = {}
-            if 'prompt' in df.columns:
-                rename_map['prompt'] = 'prompt_text'
-            elif 'prompt_preview' in df.columns:
-                rename_map['prompt_preview'] = 'prompt_text'
-            if 'answer' in df.columns:
-                rename_map['answer'] = 'expected_answer'
-            elif 'answer_preview' in df.columns:
-                rename_map['answer_preview'] = 'expected_answer'
-            if 'response' in df.columns:
-                rename_map['response'] = 'actual_answer'
-            # Apply renaming
-            df.rename(columns=rename_map, inplace=True)
-            # Only keep relevant columns in order
-            cols_order = ['prompt_text', 'expected_answer', 'actual_answer', 'score', 'latency',
+                SELECT id, model_name, created_at
+                FROM benchmark_runs
+                WHERE benchmark_id = ?
+                ORDER BY model_name, created_at DESC
+            """, (benchmark_id,))
+            
+            runs = cursor.fetchall()
+            if not runs:
+                error_msg = f"No runs found for benchmark with ID {benchmark_id}"
+                logging.error(error_msg)
+                raise ValueError(error_msg)
+            
+            # Create a map of model_name -> newest run_id
+            run_ids_by_model = {}
+            for run_id, model_name, created_at in runs:
+                if model_name not in run_ids_by_model:
+                    run_ids_by_model[model_name] = run_id
+            
+            # Collect all prompt data into a single DataFrame
+            all_prompts_data = []
+            model_names = []
+            
+            for model_name, run_id in run_ids_by_model.items():
+                model_names.append(model_name)
+                
+                # Get prompt data for this run
+                cursor.execute("""
+                    SELECT * FROM benchmark_prompts
+                    WHERE benchmark_run_id = ?
+                    ORDER BY id
+                """, (run_id,))
+                
+                rows = cursor.fetchall()
+                cols = [desc[0] for desc in cursor.description]
+                
+                if rows:
+                    # Process each row to add model name and standardize column names
+                    for row in rows:
+                        row_dict = dict(zip(cols, row))
+                        
+                        # Add model name
+                        row_dict['model_name'] = model_name
+                        
+                        # Standardize column names
+                        if 'prompt' in row_dict:
+                            row_dict['prompt_text'] = row_dict.pop('prompt')
+                        elif 'prompt_preview' in row_dict:
+                            row_dict['prompt_text'] = row_dict.pop('prompt_preview')
+                            
+                        if 'answer' in row_dict:
+                            row_dict['expected_answer'] = row_dict.pop('answer')
+                        elif 'answer_preview' in row_dict:
+                            row_dict['expected_answer'] = row_dict.pop('answer_preview')
+                            
+                        if 'response' in row_dict:
+                            row_dict['model_answer'] = row_dict.pop('response')
+                            
+                        all_prompts_data.append(row_dict)
+            
+            # Convert to DataFrame
+            if not all_prompts_data:
+                error_msg = f"No prompt data found for benchmark with ID {benchmark_id}"
+                logging.error(error_msg)
+                raise ValueError(error_msg)
+                
+            df = pd.DataFrame(all_prompts_data)
+            
+            # Define column order with model_name first
+            cols_order = ['model_name', 'prompt_text', 'expected_answer', 'model_answer', 'score', 'latency',
                           'standard_input_tokens', 'cached_input_tokens', 'output_tokens']
+            
+            # Only keep relevant columns in order
             cols_to_export = [c for c in cols_order if c in df.columns]
             df = df[cols_to_export]
              
@@ -846,16 +900,16 @@ class AppLogic:
              
             # Save to CSV
             df.to_csv(filename, index=False)
-            logging.info(f"Successfully exported {len(df)} prompt results to {filename}")
+            logging.info(f"Successfully exported {len(df)} prompt results for {len(model_names)} models to {filename}")
              
             # Return summary info
             return {
                 'status': 'success',
                 'filename': filename,
                 'benchmark_id': benchmark_id,
-                'num_prompts': len(df),
-                'model_name': benchmark[1],
-                'created_at': benchmark[2]
+                'num_prompts': len(df) // len(model_names) if len(model_names) > 0 else 0,
+                'model_names': model_names,
+                'num_models': len(model_names)
             }
 
         return {
@@ -953,7 +1007,14 @@ class AppLogic:
             if job['completed_models'] >= job['total_models']:
                 job['status'] = 'complete'
                 logging.info(f"All models for job {job_id} are now complete!")
-                
+                # Only notify about benchmark completion when ALL models have finished
+                # We'll save the notification until the end of this method for single-model benchmarks
+                if job['total_models'] > 1:
+                    self._notify_benchmark_completion(job_id, result)
+            else:
+                # Job is still in progress with some models pending
+                logging.info(f"Job {job_id} is still in progress: {job['completed_models']}/{job['total_models']} models done")
+            
             # Update the UI with the progress - this is critical for the UI to show updates
             self.ui_bridge.notify_benchmark_progress(job_id, job)
             logging.info(f"Sent UI update notification for job {job_id}")
@@ -1008,7 +1069,7 @@ class AppLogic:
                 for p in prompts_data:
                     prompt = p.get('prompt_text', '')
                     answer = p.get('expected_answer', '')
-                    response = p.get('actual_answer', '')
+                    response = p.get('model_answer', '')
                     score = str(p.get('score', ''))
                     latency_val = p.get('latency_ms', 0.0)
                     
@@ -1036,7 +1097,10 @@ class AppLogic:
             self.ui_bridge.display_benchmark_summary_in_console(summary_result_for_console, f"Run {job_id} (DB ID: {run_id if 'run_id' in locals() else 'N/A'})")
             self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] completed.", 5000)
             
-            self._notify_benchmark_completion(job_id, result)
+            # Only notify about completion if this is a single-model benchmark
+            # or if this wasn't already handled by the all-models-complete condition above
+            if job['total_models'] == 1 or job['completed_models'] < job['total_models']:
+                self._notify_benchmark_completion(job_id, result)
             
         # Clean up regardless of success or failure
         if job_id in self.jobs:
@@ -1053,12 +1117,35 @@ class AppLogic:
             logger.info(f"Cleaned up worker for job {job_id}, model {model_name_for_run}")
 
     def _notify_benchmark_completion(self, job_id: int, result: Optional[dict], error: str = None) -> None:
-        self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_COMPLETED, {
+        # Determine if this is a final completion (all models done) or just a single model completion
+        all_models_complete = False
+        if job_id in self.jobs:
+            job = self.jobs[job_id]
+            all_models_complete = job.get('completed_models', 0) >= job.get('total_models', 0)
+            logging.info(f"Notifying benchmark completion for job {job_id}. All models complete: {all_models_complete}")
+        
+        # Include the additional flags in the completion notification
+        completion_data = {
             'job_id': job_id,
             'success': error is None,
             'error': error,
-            'result': result
-        })
+            'result': result,
+            # Add new flags for frontend to determine completion state
+            'all_models_complete': all_models_complete,
+            'final_completion': all_models_complete
+        }
+        
+        # If we have a benchmark_id in the result, include it in the notification
+        if result and 'benchmark_id' in result:
+            completion_data['benchmark_id'] = result['benchmark_id']
+        elif job_id in self.jobs and 'benchmark_id' in self.jobs[job_id]:
+            completion_data['benchmark_id'] = self.jobs[job_id]['benchmark_id']
+        
+        # If we have model_name in the result, include it in the notification
+        if result and 'model_name' in result:
+            completion_data['model_name'] = result['model_name']
+        
+        self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_COMPLETED, completion_data)
         
         self.ui_bridge.notify_active_benchmarks_updated(self.get_active_benchmarks_info())
         
@@ -1124,18 +1211,53 @@ class AppLogic:
         Returns:
             dict: A response with at least a 'success' field indicating whether the operation succeeded
         """
-        logger.info(f"Attempting to delete benchmark with ID: {benchmark_id}")
-        db_path = Path(__file__).parent 
-        success = delete_benchmark(benchmark_id, db_path=db_path)
-        if success:
-            logger.info(f"Successfully deleted benchmark ID: {benchmark_id}")
-            self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_LIST, None) 
-            self.ui_bridge.show_message("info", "Benchmark Deleted", f"Benchmark ID {benchmark_id} was successfully deleted.")
-            return {"success": True, "message": f"Benchmark ID {benchmark_id} was successfully deleted."}
-        else:
-            error_msg = f"Failed to delete benchmark ID: {benchmark_id} via file_store"
-            logger.error(error_msg)
-            self.ui_bridge.show_message("error", "Delete Failed", f"Could not delete benchmark ID {benchmark_id}.")
+        try:
+            logger.info(f"Attempting to delete benchmark with ID: {benchmark_id}")
+            db_path = Path(__file__).parent 
+            
+            # Keep track of deleted benchmark IDs to avoid reloading them during list operations
+            if not hasattr(self, '_deleted_benchmark_ids'):
+                self._deleted_benchmark_ids = set()
+                
+            # Record this benchmark as deleted
+            self._deleted_benchmark_ids.add(benchmark_id)
+            logging.info(f"Added benchmark ID {benchmark_id} to deleted benchmarks tracking list")
+            
+            # Perform the actual deletion
+            success = delete_benchmark(benchmark_id, db_path=db_path)
+            
+            if success:
+                logger.info(f"Successfully deleted benchmark ID: {benchmark_id}")
+                
+                # Remove this benchmark from any active jobs to prevent it from showing in updates
+                jobs_to_update = []
+                for job_id, job_data in self.jobs.items():
+                    if job_data.get('benchmark_id') == benchmark_id:
+                        job_data['status'] = 'deleted'  # Mark the job as deleted
+                        jobs_to_update.append(job_id)
+                        logger.info(f"Marked job {job_id} as deleted because its benchmark was deleted")
+                
+                # Notify UI of the deletion
+                self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_LIST, None)
+                
+                # Also send a specific deletion event that the frontend can use
+                self.ui_bridge.notify_data_change(
+                    DataChangeType.BENCHMARK_DELETED, 
+                    {"benchmark_id": benchmark_id, "deleted_at": datetime.now().isoformat()}
+                )
+                
+                self.ui_bridge.show_message("info", "Benchmark Deleted", f"Benchmark ID {benchmark_id} was successfully deleted.")
+                return {"success": True, "message": f"Benchmark ID {benchmark_id} was successfully deleted."}
+            else:
+                error_msg = f"Failed to delete benchmark ID: {benchmark_id} via file_store"
+                logger.error(error_msg)
+                self.ui_bridge.show_message("error", "Delete Failed", f"Could not delete benchmark ID {benchmark_id}.")
+                return {"success": False, "error": error_msg}
+        except Exception as e:
+            # Catch any exceptions and return a proper error response
+            error_msg = f"Error deleting benchmark ID {benchmark_id}: {str(e)}"
+            logger.exception(error_msg)  # This logs the full stack trace
+            self.ui_bridge.show_message("error", "Delete Failed", f"Error deleting benchmark ID {benchmark_id}: {str(e)}")
             return {"success": False, "error": error_msg}
 
     def handle_update_benchmark_details(self, benchmark_id: int, new_label: Optional[str] = None, new_description: Optional[str] = None) -> dict:
@@ -1172,30 +1294,96 @@ class AppLogic:
         
     def list_benchmarks(self) -> List[Dict[str, Any]]:
         """Get a list of all benchmarks from the database."""
-        # Get all benchmarks from the database
         db_path = Path(__file__).parent
-        benchmarks = load_all_benchmarks_with_models(db_path=db_path)
+        benchmarks_from_db = load_all_benchmarks_with_models(db_path=db_path)
         
-        # Add any active benchmarks that might not be in the database yet
-        active_benchmarks = self.get_active_benchmarks_info()
-        active_ids = set(active_benchmarks.keys())
+        # Initialize the deleted benchmarks tracking set if it doesn't exist
+        if not hasattr(self, '_deleted_benchmark_ids'):
+            self._deleted_benchmark_ids = set()
+            logging.info("Initialized empty deleted benchmarks tracking set")
         
-        # Combine database benchmarks with active benchmarks
+        # Get information about active jobs
+        active_jobs_info = self.get_active_benchmarks_info() # This is {job_id: job_data}
+        
+        # Extract the set of DATABASE benchmark_ids that are currently active
+        active_db_benchmark_ids = set()
+        for job_data in active_jobs_info.values():
+            if 'benchmark_id' in job_data:
+                active_db_benchmark_ids.add(job_data['benchmark_id'])
+
+        processed_benchmark_ids = set() # To avoid duplicates if a benchmark is in both lists
         result = []
-        for benchmark in benchmarks:
-            if benchmark['id'] not in active_ids:
-                result.append(benchmark)
-        
-        # Add active benchmarks
-        for job_id, job_info in active_benchmarks.items():
-            result.append({
-                'id': job_id,
-                'label': job_info.get('label', f'Benchmark {job_id}'),
-                'description': job_info.get('description', ''),
-                'models': job_info.get('models', []),
-                'status': 'running',
-                'timestamp': job_info.get('timestamp', datetime.now().isoformat())
-            })
+
+        # Skip any benchmarks that were previously deleted
+        filtered_benchmarks_from_db = [b for b in benchmarks_from_db if b['id'] not in self._deleted_benchmark_ids]
+        if len(benchmarks_from_db) != len(filtered_benchmarks_from_db):
+            skipped_ids = [b['id'] for b in benchmarks_from_db if b['id'] in self._deleted_benchmark_ids]
+            logging.info(f"Filtered out {len(benchmarks_from_db) - len(filtered_benchmarks_from_db)} deleted benchmarks: {skipped_ids}")
+            
+        # Add benchmarks from the database first, if they are not active or to ensure they appear
+        for benchmark_db_item in filtered_benchmarks_from_db:
+            db_item_id = benchmark_db_item['id']
+            
+            # Skip any benchmark in our deleted tracking set
+            if db_item_id in self._deleted_benchmark_ids:
+                logging.info(f"Skipping deleted benchmark ID {db_item_id} from results")
+                continue
+                
+            if db_item_id in active_db_benchmark_ids:
+                # This benchmark is active. Fetch its data from active_jobs_info.
+                # Find the job_id corresponding to this db_item_id
+                job_id_for_active_item = None
+                active_job_data = None
+                for j_id, j_data in active_jobs_info.items():
+                    if j_data.get('benchmark_id') == db_item_id:
+                        job_id_for_active_item = j_id
+                        active_job_data = j_data
+                        break
+                
+                if active_job_data:
+                    # Construct the benchmark entry from active job data
+                    # Ensure all necessary fields expected by the frontend are present
+                    result.append({
+                        'id': db_item_id, # Use the DB benchmark_id
+                        'label': active_job_data.get('label', benchmark_db_item.get('label', f'Benchmark {db_item_id}')),
+                        'description': active_job_data.get('description', benchmark_db_item.get('description', '')),
+                        'model_names': active_job_data.get('models_details', {}).keys(), # Or fetch from db_item if more reliable
+                        'status': 'running', # Mark as running
+                        'timestamp': benchmark_db_item.get('timestamp', active_job_data.get('start_time', datetime.now().isoformat())),
+                        # Include other fields like 'file_paths' if needed, usually from benchmark_db_item
+                        'file_paths': benchmark_db_item.get('file_paths', [])
+                    })
+                    processed_benchmark_ids.add(db_item_id)
+                else:
+                    # Should not happen if active_db_benchmark_ids is built correctly, but as a fallback:
+                    result.append(benchmark_db_item) # No status, frontend defaults to 'in-progress'
+                    processed_benchmark_ids.add(db_item_id)
+
+            else:
+                # Not an active job, add from DB (will default to 'in-progress' on frontend)
+                result.append(benchmark_db_item)
+                processed_benchmark_ids.add(db_item_id)
+                
+        # Ensure any truly new "active" benchmarks (not yet in DB, though unlikely with current flow) are appended
+        # This part might be redundant if save_benchmark is always called before workers start.
+        # However, it ensures any job in self.jobs (marked 'unfinished') is represented.
+        for job_id, job_data in active_jobs_info.items():
+            associated_benchmark_id = job_data.get('benchmark_id')
+            if associated_benchmark_id and associated_benchmark_id not in processed_benchmark_ids:
+                result.append({
+                    'id': associated_benchmark_id,
+                    'label': job_data.get('label', f'Benchmark {associated_benchmark_id}'),
+                    'description': job_data.get('description', ''),
+                    'model_names': job_data.get('models_details', {}).keys(),
+                    'status': 'running',
+                    'timestamp': job_data.get('start_time', datetime.now().isoformat()),
+                    'file_paths': [] # Or fetch if available
+                })
+                processed_benchmark_ids.add(associated_benchmark_id)
+                
+        # Sort by timestamp descending, as the original DB query did.
+        # The frontend might also sort, but good to be consistent.
+        result.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
         
         return result
 

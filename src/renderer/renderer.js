@@ -18,6 +18,7 @@ const consoleReturnBtn = document.getElementById('consoleReturnBtn');
 const exportCsvBtn = document.getElementById('exportCsvBtn');
 
 let selectedPdfPath = null;
+let benchmarksData = []; // Initialize benchmarksData array
 
 // Basic event handlers
 newBenchmarkBtn.addEventListener('click', () => navigateTo('composerContent'));
@@ -68,46 +69,6 @@ function populatePromptsTable(data) {
   });
 }
 
-// Export to CSV handler
-exportCsvBtn.addEventListener('click', () => {
-  // Get the current benchmark ID from the UI
-  const consoleContent = document.getElementById('consoleLog');
-  const idMatch = consoleContent.innerHTML.match(/Benchmark Details \(ID: (\d+)\)/);
-  
-  if (idMatch && idMatch[1]) {
-    const benchmarkId = parseInt(idMatch[1], 10);
-    console.log(`Exporting benchmark ID ${benchmarkId} to CSV...`);
-    
-    // Show a loading indicator
-    const exportBtn = document.getElementById('exportCsvBtn');
-    const originalText = exportBtn.textContent;
-    exportBtn.textContent = 'Exporting...';
-    exportBtn.disabled = true;
-    
-    // Call the export function
-    window.electronAPI.exportBenchmarkToCsv(benchmarkId)
-      .then(result => {
-        console.log('Export result:', result);
-        if (result && result.url) {
-          window.open(result.url);
-          showNotification('Exporting CSV...', 'success', 5000);
-        } else {
-          throw new Error(result?.error || 'Export failed');
-        }
-      })
-      .catch(error => {
-        console.error('Export error:', error);
-        showNotification(`Error exporting benchmark: ${error.message || error}`, 'error', 5000);
-      })
-      .finally(() => {
-        // Restore button state
-        exportBtn.textContent = originalText;
-        exportBtn.disabled = false;
-      });
-  } else {
-    alert('No benchmark is currently selected. Please view a benchmark first.');
-  }
-});
 
 // View toggle between grid and table
 gridViewBtn.addEventListener('click', () => {
@@ -203,34 +164,47 @@ runBtn.addEventListener('click', () => {
     .then((result) => {
       console.log('Benchmark launch result:', result);
       
-      if (result && result.success) {
-        // Show success notification
+      // Ensure benchmarkName is accessible here or passed if needed
+      const benchmarkNameInput = document.getElementById('benchmarkNameInput');
+      const benchmarkName = benchmarkNameInput ? benchmarkNameInput.value.trim() : 'Unnamed Benchmark';
+
+      if (result && result.status === 'success' && result.launched_benchmark_item) { 
         showNotification(`Benchmark "${benchmarkName}" started successfully!`, 'success');
         
-        // Navigate to home
+        // OPTIMISTIC UPDATE:
+        if (!Array.isArray(benchmarksData)) {
+            benchmarksData = [];
+        }
+        // Add to the beginning for most recent items to appear first
+        benchmarksData.unshift(result.launched_benchmark_item); 
+        renderBenchmarks(benchmarksData); 
+
         navigateTo('homeContent');
         
-        // Clear the benchmarks grid and show loading
+        // Keep setTimeout for loadBenchmarks to re-sync after a delay
+        setTimeout(() => {
+          // Use the enhanced loadBenchmarks with options to preserve in-progress status
+          loadBenchmarks({preserveInProgressStatus: true, silentRefresh: true}).then(() => {
+            console.log('Benchmarks re-synced after launch with preserved in-progress status');
+            // Optional: view details if needed, using ID from launched_benchmark_item
+            // if (result.launched_benchmark_item && result.launched_benchmark_item.id) {
+            //   setTimeout(() => viewBenchmarkDetails(result.launched_benchmark_item.id), 300);
+            // }
+          });
+        }, 2000); // Slightly longer delay to ensure UI stability 
+      } else if (result && result.status === 'success') {
+        // Fallback if launched_benchmark_item is missing but still success
+        showNotification(`Benchmark "${benchmarkName}" started successfully! (Awaiting details)`, 'success');
+        navigateTo('homeContent');
         const gridContainer = document.getElementById('benchmarksGrid');
         if (gridContainer) {
-          gridContainer.innerHTML = '<div class="loading">Loading new benchmark...</div>';
+          gridContainer.innerHTML = '<div class="loading">Loading benchmark details...</div>';
         }
-        
-        // Give it a moment for the database to update, then refresh
-        setTimeout(() => {
-          loadBenchmarks().then(() => {
-            console.log('Benchmarks refreshed after launch');
-            // If we have a benchmark ID, try to view its details
-            if (result.benchmarkId) {
-              // Small delay to ensure UI is ready
-              setTimeout(() => {
-                viewBenchmarkDetails(result.benchmarkId);
-              }, 300);
-            }
-          });
-        }, 1000);
+        setTimeout(loadBenchmarks, 1000); 
       } else {
-        throw new Error(result?.error || 'Failed to start benchmark');
+        // Use result.message from backend if available, otherwise a generic error
+        const errorMessage = result?.message || result?.error || 'Failed to start benchmark - unknown reason';
+        throw new Error(errorMessage);
       }
     })
     .catch(error => {
@@ -244,68 +218,92 @@ runBtn.addEventListener('click', () => {
     });
 });
 
+// Track deleted benchmark IDs to avoid re-rendering them
+let deletedBenchmarkIds = new Set();
+
 // Load benchmark data
-async function loadBenchmarks() {
-  const gridContainer = document.getElementById('benchmarksGrid');
-  const loadingHtml = '<div class="loading">Loading benchmarks...</div>';
-  
-  if (gridContainer) {
-    gridContainer.innerHTML = loadingHtml;
-  }
-  
+async function loadBenchmarks(options = {}) {
   try {
-    console.log('Loading benchmarks...');
-    const response = await window.electronAPI.listBenchmarks();
-    console.log('Benchmarks response:', response);
+    const homeContent = document.getElementById('homeContent');
+    const gridContainer = document.getElementById('benchmarksGrid');
+    const tableBody = document.getElementById('benchmarksTable').querySelector('tbody');
     
-    // Handle different response formats
-    let benchmarks = [];
-    if (Array.isArray(response)) {
-      benchmarks = response; // Direct array response
-    } else if (response && Array.isArray(response.result)) {
-      benchmarks = response.result; // Response with result array
-    } else if (response && response.benchmarks) {
-      benchmarks = response.benchmarks; // Response with benchmarks property
+    if (homeContent && gridContainer && tableBody) {
+      // Skip loading indicators if this is a silent refresh (to avoid flashing)
+      if (!options.silentRefresh) {
+        // Show loading indicators
+        gridContainer.innerHTML = '<div class="loading">Loading benchmarks...</div>';
+        tableBody.innerHTML = '<tr><td colspan="4" class="text-center">Loading...</td></tr>';
+      }
+      
+      // Store the previous state of benchmarks before fetching new data
+      const previousStatus = {};
+      
+      // First, capture status of currently visible benchmarks
+      document.querySelectorAll('.benchmark-card').forEach(card => {
+        if (card.dataset.benchmarkId) {
+          const id = parseInt(card.dataset.benchmarkId, 10);
+          const status = card.dataset.status; // 'in-progress' or 'complete'
+          previousStatus[id] = status;
+          console.log(`Saved current UI status for benchmark ${id}: ${status}`);
+        }
+      });
+      
+      // Fetch benchmarks from the API
+      const benchmarks = await window.electronAPI.listBenchmarks();
+      
+      if (!benchmarks || benchmarks.length === 0) {
+        gridContainer.innerHTML = '<div class="empty-state">No benchmarks available. Create a new benchmark to get started.</div>';
+        tableBody.innerHTML = '<tr><td colspan="4" class="text-center">No benchmarks available</td></tr>';
+        return;
+      }
+      
+      // Filter out any benchmarks we know were deleted locally
+      const filteredBenchmarks = benchmarks.filter(benchmark => !deletedBenchmarkIds.has(benchmark.id));
+      
+      if (benchmarks.length !== filteredBenchmarks.length) {
+        const removedIds = benchmarks
+          .filter(b => deletedBenchmarkIds.has(b.id))
+          .map(b => b.id);
+        console.log(`Filtered out ${benchmarks.length - filteredBenchmarks.length} deleted benchmarks from UI: IDs ${removedIds.join(', ')}`);
+      }
+      
+      // Apply status preservation logic - CRITICAL FIX
+      filteredBenchmarks.forEach(benchmark => {
+        const id = benchmark.id;
+        
+        // 1. If backend says 'running', ALWAYS show as running, override any saved state
+        if (benchmark.status === 'running') {
+          console.log(`Backend reports benchmark ${id} as running - preserving running status`);
+          benchmark.status = 'running';
+        }
+        // 2. If benchmark was previously COMPLETE, we need to KEEP it as complete
+        // even if the API is confused due to another benchmark running
+        else if (previousStatus[id] === 'complete') {
+          console.log(`Preserving COMPLETE status for benchmark ${id} from UI state`);
+          benchmark.status = 'complete';
+        }
+        // 3. Default case - use what the backend says if we don't have special handling
+      });
+      
+      // Update the UI with fetched benchmarks
+      renderBenchmarks(filteredBenchmarks);
+      
+      // Update our stored data reference - store the filtered version
+      benchmarksData = filteredBenchmarks;
     }
-    
-    console.log('Processed benchmarks:', benchmarks);
-    
-    if (!benchmarks || !Array.isArray(benchmarks)) {
-      throw new Error('Invalid benchmark data format received');
-    }
-    
-    // Sort benchmarks by timestamp (newest first)
-    benchmarks.sort((a, b) => {
-      const timeA = new Date(a.timestamp || 0).getTime();
-      const timeB = new Date(b.timestamp || 0).getTime();
-      return timeB - timeA;
-    });
-    
-    // Clear the loading message and render the benchmarks
-    if (gridContainer) {
-      gridContainer.innerHTML = '';
-      renderBenchmarks(benchmarks);
-    }
-    
-    return benchmarks; // Return the loaded benchmarks for chaining
   } catch (error) {
     console.error('Error loading benchmarks:', error);
-    const errorHtml = `
-      <div class="error">
-        <h3>Error loading benchmarks</h3>
-        <p>${error.message || 'Unknown error occurred'}</p>
-        <hr>
-        <button onclick="loadBenchmarks()" class="btn btn-sm btn-outline-secondary mt-2">
-          <i class="fas fa-sync-alt me-1"></i> Retry
-        </button>
-      </div>
-    `;
+    const gridContainer = document.getElementById('benchmarksGrid');
+    const tableBody = document.getElementById('benchmarksTable').querySelector('tbody');
     
-    if (gridContainer) {
-      gridContainer.innerHTML = errorHtml;
+    if (gridContainer && !options.silentRefresh) {
+      gridContainer.innerHTML = `<div class="error-state">Error loading benchmarks: ${error.message}</div>`;
     }
     
-    throw error; // Re-throw to allow error handling by the caller
+    if (tableBody && !options.silentRefresh) {
+      tableBody.innerHTML = `<tr><td colspan="4" class="text-center text-red-600">Error: ${error.message}</td></tr>`;
+    }
   }
 }
 
@@ -361,12 +359,28 @@ function renderBenchmarks(benchmarks) {
       ? modelNames.join(', ')
       : 'No models';
     
-    // Check if benchmark is in progress
-    const benchmarkStatus = benchmark.status || 'complete';
-    // Treat 'progress' as in-progress too
-    const isInProgress = benchmarkStatus === 'running' || benchmarkStatus === 'pending' || benchmarkStatus === 'progress';
+    // CRITICAL FIX: Force all newly created benchmarks to show as 'In Progress'
+    // This ensures benchmarks never prematurely show as complete
+    // A benchmark is only complete when ALL models have finished and the backend explicitly marks it complete
+    let benchmarkStatus = benchmark.status || 'running';
+    
+    // Safety check: If a benchmark has just been created, ALWAYS show it as running
+    const timestampDate = new Date(benchmark.timestamp);
+    const currentTime = new Date();
+    const benchmarkAgeInSeconds = (currentTime - timestampDate) / 1000;
+    
+    // Force running status for recently created benchmarks (created in the last 2 minutes)
+    if (benchmarkAgeInSeconds < 120) {
+      console.log(`Benchmark ${benchmark.id} is new (${benchmarkAgeInSeconds.toFixed(1)}s old), forcing 'running' status`);
+      benchmarkStatus = 'running';
+    }
+    
+    // ALWAYS treat any status other than explicit 'complete' as in-progress
+    const isInProgress = benchmarkStatus !== 'complete';
     const statusClass = isInProgress ? 'status-in-progress' : 'status-complete';
     const statusText = isInProgress ? 'In Progress' : 'Complete';
+    
+    console.log(`Benchmark ${benchmark.id} (${benchmark.label}) status: ${benchmarkStatus}, isInProgress: ${isInProgress}`);
     
     // Set data attributes for styling and identification
     card.dataset.status = isInProgress ? 'in-progress' : 'complete';
@@ -533,13 +547,34 @@ function renderBenchmarks(benchmarks) {
   
   // Populate table view
   benchmarks.forEach(benchmark => {
+    // Apply the same status logic used for grid view to ensure consistency
+    let benchmarkStatus = benchmark.status || 'running';
+    
+    // Force running status for recently created benchmarks (like in grid view)
+    const timestampDate = new Date(benchmark.timestamp);
+    const currentTime = new Date();
+    const benchmarkAgeInSeconds = (currentTime - timestampDate) / 1000;
+    
+    if (benchmarkAgeInSeconds < 120) {
+      console.log(`Table view: Benchmark ${benchmark.id} is new (${benchmarkAgeInSeconds.toFixed(1)}s old), forcing 'running' status`);
+      benchmarkStatus = 'running';
+    }
+    
+    // ALWAYS treat any status other than explicit 'complete' as in-progress
+    const isInProgress = benchmarkStatus !== 'complete';
+    const statusClass = isInProgress ? 'in-progress' : 'complete';
+    
+    console.log(`Table view: Benchmark ${benchmark.id} (${benchmark.label}) status: ${benchmarkStatus}, isInProgress: ${isInProgress}`);
+    
     const row = document.createElement('tr');
+    row.dataset.status = statusClass;
+    row.dataset.benchmarkId = benchmark.id;
+    
     row.innerHTML = `
-      <td><span class="status-indicator ${benchmark.status || 'complete'}"></span></td>
+      <td><span class="status-indicator ${statusClass}"></span></td>
       <td>${benchmark.label || 'Benchmark ' + benchmark.id}</td>
       <td>${benchmark.timestamp}</td>
-      <td>${benchmark.models ? benchmark.models.join(', ') : 'N/A'}</td>
-      <td>${benchmark.files ? benchmark.files.join(', ') : 'N/A'}</td>
+      <td>${benchmark.model_names ? benchmark.model_names.join(', ') : 'N/A'}</td>
     `;
     
     row.addEventListener('click', () => {
@@ -606,6 +641,7 @@ async function viewBenchmarkDetails(benchmarkId) {
           <table class="table table-sm table-hover">
             <thead>
               <tr>
+                <th>Model</th>
                 <th>Prompt</th>
                 <th>Expected</th>
                 <th>Actual</th>
@@ -616,11 +652,12 @@ async function viewBenchmarkDetails(benchmarkId) {
             <tbody>
               ${details.prompts_data.map(p => `
                 <tr>
+                  <td>${p.model_name || 'N/A'}</td>
                   <td>${p.prompt_text}</td>
                   <td>${p.expected_answer || 'N/A'}</td>
-                  <td>${p.actual_answer || 'N/A'}</td>
+                  <td>${p.model_answer || 'N/A'}</td>
                   <td>${typeof p.score === 'number' ? p.score.toFixed(2) : p.score}</td>
-                  <td>${p.latency_ms !== undefined ? p.latency_ms : 'N/A'}</td>
+                  <td>${p.prompt_latency !== undefined ? p.prompt_latency : (p.latency !== undefined ? p.latency : 'N/A')}</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -669,14 +706,6 @@ async function viewBenchmarkDetails(benchmarkId) {
                     <p class="mb-0">${details.models ? details.models.join(', ') : 'N/A'}</p>
                   </div>
                 </div>
-                <div class="col-md-6">
-                  <div class="mb-3">
-                    <h6 class="text-muted mb-1">Files</h6>
-                    <p class="mb-0 text-truncate" title="${details.files ? details.files.join(', ') : ''}">
-                      ${details.files ? details.files.join(', ') : 'N/A'}
-                    </p>
-                  </div>
-                </div>
               </div>
             </div>
           </div>
@@ -710,7 +739,13 @@ async function viewBenchmarkDetails(benchmarkId) {
           window.electronAPI.exportBenchmarkToCsv(benchmarkId)
             .then(result => {
               if (result && result.url) {
-                window.open(result.url);
+                // Create a hidden anchor element to download without opening a window
+                const downloadLink = document.createElement('a');
+                downloadLink.href = result.url;
+                downloadLink.download = `benchmark-${benchmarkId}.csv`;
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
                 showNotification('Exporting CSV...', 'success', 5000);
               } else {
                 throw new Error(result?.error || 'Export failed');
@@ -805,48 +840,53 @@ function showNotification(message, type = 'success', duration = 3000) {
 
 // Handle benchmark deletion
 async function handleDeleteBenchmark(benchmarkId) {
-  console.log(`Requesting deletion for benchmark ID: ${benchmarkId}`);
-  
-  // Show a confirmation dialog
-  const confirmed = confirm('Are you sure you want to delete this benchmark? This action cannot be undone.');
-  if (!confirmed) {
-    return; // User cancelled the deletion
+  // Confirm deletion
+  const confirmDelete = confirm(`Are you sure you want to delete this benchmark?`);
+  if (!confirmDelete) {
+    return;
   }
   
-  // Show loading state
-  const notification = showNotification('Deleting benchmark...', 'warning', 0);
-  
   try {
-    const result = await window.electronAPI.deleteBenchmark(benchmarkId);
+    // Immediately record this as deleted to ensure it doesn't reappear in UI
+    const benchmarkIdNumber = parseInt(benchmarkId, 10);
+    deletedBenchmarkIds.add(benchmarkIdNumber);
+    console.log(`Added benchmark ID ${benchmarkIdNumber} to frontend deleted benchmarks list`);
     
-    if (notification.parentNode) {
-      notification.classList.add('hide');
-      setTimeout(() => notification.remove(), 300);
+    // Show loading state
+    const card = document.querySelector(`.benchmark-card[data-benchmark-id="${benchmarkId}"]`);
+    if (card) {
+      card.classList.add('deleting');
     }
     
-    if (result && result.success) {
-      console.log('Benchmark deleted successfully, refreshing list...');
+    // Call the API to delete the benchmark
+    const result = await window.electronAPI.deleteBenchmark(benchmarkId);
+    
+    if (result.success) {
+      // Show success notification
       showNotification('Benchmark deleted successfully', 'success');
+      
+      // Remove the benchmark card immediately from UI without waiting for database
+      if (card) {
+        card.remove();
+        console.log(`Removed benchmark card ID ${benchmarkId} from UI immediately`);
+      }
       
       // Add a small delay to ensure the database is updated
       await new Promise(resolve => setTimeout(resolve, 500));
       
-      // Force a complete refresh of the benchmark list
+      // Force a complete refresh but preserve status of completed benchmarks
       const gridContainer = document.getElementById('benchmarksGrid');
       if (gridContainer) {
-        // Show loading state
-        gridContainer.innerHTML = '<div class="loading">Refreshing benchmarks...</div>';
+        // Show loading state only if we don't have any remaining cards
+        const remainingCards = document.querySelectorAll('.benchmark-card');
+        if (remainingCards.length === 0) {
+          gridContainer.innerHTML = '<div class="loading">Refreshing benchmarks...</div>';
+        }
       }
       
-      // Get fresh benchmark data
-      const benchmarks = await window.electronAPI.listBenchmarks();
-      console.log('Refreshed benchmarks after deletion:', benchmarks);
-      
-      // Clear the current view and re-render
-      if (gridContainer) {
-        gridContainer.innerHTML = '';
-        renderBenchmarks(benchmarks);
-      }
+      // Use our enhanced loadBenchmarks that preserves completed status and filters deleted items
+      await loadBenchmarks({silentRefresh: true});
+      console.log('Refreshed benchmarks with deleted IDs filtered out');
       
       // If we're currently viewing the deleted benchmark, navigate back to home
       const consoleContent = document.getElementById('consoleContent');
@@ -911,7 +951,13 @@ window.electronAPI.onBenchmarkProgress(data => {
     if (benchmarkCard) {
       const statusBadge = benchmarkCard.querySelector('.status-badge');
       if (statusBadge) {
-        if (data.status === 'complete') {
+        // CRITICAL FIX: Only update to "Complete" if this is the overall job status, not just a model completing
+        // Check if this is a progress update for an individual model or the entire benchmark
+        const isModelUpdate = data.model_name && data.status === 'complete';
+        const isFullJobComplete = !data.model_name && data.status === 'complete';
+        
+        if (isFullJobComplete) {
+          // Only update to Complete if the entire job/benchmark is done
           statusBadge.textContent = 'Complete';
           statusBadge.className = 'status-badge status-complete';
           benchmarkCard.dataset.status = 'complete';
@@ -922,11 +968,16 @@ window.electronAPI.onBenchmarkProgress(data => {
             viewLogsBtn.textContent = 'View Details';
             viewLogsBtn.className = 'view-btn';
           }
-        } else if (data.status === 'progress') {
-          // Show ongoing progress status
+          console.log('Benchmark fully complete, showing Complete status');
+        } else if (data.status === 'progress' || isModelUpdate) {
+          // For progress updates OR when a single model completes (but not all models)
           statusBadge.textContent = 'In Progress';
           statusBadge.className = 'status-badge status-in-progress';
           benchmarkCard.dataset.status = 'in-progress';
+          
+          if (isModelUpdate) {
+            console.log(`Individual model ${data.model_name} complete, but benchmark still in progress`);
+          }
         }
       }
     }
@@ -936,27 +987,49 @@ window.electronAPI.onBenchmarkProgress(data => {
 // Listen for completion updates
 window.electronAPI.onBenchmarkComplete(data => {
   // Update UI when benchmark completes
-  console.log('Benchmark complete:', data);
+  console.log('Benchmark complete event received:', data);
   
-  // Show completion message in the console if it's open
+  // CRITICAL FIX: Check if this is a FINAL completion notification (all models done)
+  // The backend should only send this event when ALL models are complete
+  const isAllModelsComplete = data.all_models_complete === true || data.final_completion === true;
+  
+  // Log whether this is a final completion or just a model completion
+  console.log(`Benchmark ${data.benchmark_id} completion event - Is final completion:`, 
+              isAllModelsComplete ? 'YES - All models done' : 'NO - Individual model completion');
+  
+  // Show completion message in the console for model-specific completions
   const consoleLog = document.getElementById('consoleLog');
   const consoleContent = document.getElementById('consoleContent');
   
   if (consoleLog && consoleContent && consoleContent.classList.contains('active')) {
     const completionDiv = document.createElement('div');
     completionDiv.className = 'completion-message';
-    completionDiv.innerHTML = `
-      <p style="font-weight: 600; color: #2f855a; margin-bottom: 8px;">✅ Benchmark Complete!</p>
-      <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
-      <p>Total Items: <strong>${data.items || '0'}</strong></p>
-      <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
-    `;
+    
+    // Show different message depending on if all models are complete
+    if (isAllModelsComplete) {
+      completionDiv.innerHTML = `
+        <p style="font-weight: 600; color: #2f855a; margin-bottom: 8px;">✅ Benchmark Complete!</p>
+        <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
+        <p>Total Items: <strong>${data.items || '0'}</strong></p>
+        <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
+      `;
+    } else {
+      // Individual model completion message
+      completionDiv.innerHTML = `
+        <p style="font-weight: 600; color: #4299e1; margin-bottom: 8px;">✓ Model ${data.model_name} Complete!</p>
+        <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
+        <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
+        <p><small>Waiting for other models to complete...</small></p>
+      `;
+    }
+    
     consoleLog.appendChild(completionDiv);
     consoleLog.scrollTop = consoleLog.scrollHeight;
   }
   
-  // Update the benchmark card status
-  if (data.benchmark_id) {
+  // CRITICAL FIX: Only update the benchmark card status if ALL models are complete
+  // This prevents premature completion status when only one model is done
+  if (data.benchmark_id && isAllModelsComplete) {
     const benchmarkCard = document.querySelector(`.benchmark-card[data-benchmark-id="${data.benchmark_id}"]`);
     if (benchmarkCard) {
       benchmarkCard.dataset.status = 'complete';
@@ -965,6 +1038,7 @@ window.electronAPI.onBenchmarkComplete(data => {
       if (statusBadge) {
         statusBadge.textContent = 'Complete';
         statusBadge.className = 'status-badge status-complete';
+        console.log(`Updated benchmark ${data.benchmark_id} status to Complete - ALL MODELS DONE`);
       }
       
       // Replace View Logs button with View Details if it exists
@@ -974,13 +1048,13 @@ window.electronAPI.onBenchmarkComplete(data => {
         viewLogsBtn.className = 'view-btn';
       }
     }
+  } else if (data.benchmark_id) {
+    console.log(`Model ${data.model_name} completed for benchmark ${data.benchmark_id}, but benchmark remains In Progress until all models complete`);
   }
   
-  // Refresh the benchmark list to show updated status
-  loadBenchmarks();
-  
-  // Show a notification if the console isn't open
-  if (!consoleContent || !consoleContent.classList.contains('active')) {
+  // Show a notification if the console isn't open AND this is a final completion
+  // CRITICAL FIX: Only show completion notification when ALL models are complete
+  if ((!consoleContent || !consoleContent.classList.contains('active')) && isAllModelsComplete) {
     const notification = document.createElement('div');
     notification.className = 'notification';
     notification.innerHTML = `

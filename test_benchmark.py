@@ -121,7 +121,7 @@ def main():
                 logging.info(f"\n--- Prompt {i+1} Results ---")
                 logging.info(f"Prompt: {prompt_data.get('prompt_text', 'N/A')}")
                 logging.info(f"Expected: {prompt_data.get('expected_answer', 'N/A')}")
-                logging.info(f"Actual: {prompt_data.get('actual_answer', 'N/A')}")
+                logging.info(f"Actual: {prompt_data.get('model_answer', 'N/A')}")
                 logging.info(f"Score: {prompt_data.get('score', 'N/A')}")
                 logging.info(f"Input tokens: {prompt_data.get('standard_input_tokens', 0)} standard, {prompt_data.get('cached_input_tokens', 0)} cached")
                 logging.info(f"Output tokens: {prompt_data.get('output_tokens', 0)}")

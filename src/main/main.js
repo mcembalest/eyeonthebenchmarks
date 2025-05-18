@@ -27,10 +27,24 @@ function httpGetJson(path) {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(e); }
+        // Check for successful status code first
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { 
+            resolve(JSON.parse(data)); 
+          } catch (e) { 
+            console.error(`JSON parse error for ${path}:`, e);
+            console.error('Raw response data:', data);
+            reject(new Error(`Failed to parse JSON response from ${path}: ${e.message}`)); 
+          }
+        } else {
+          console.error(`HTTP error ${res.statusCode} for ${path}:`, data);
+          reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 100)}${data.length > 100 ? '...' : ''}`));
+        }
       });
-    }).on('error', reject);
+    }).on('error', err => {
+      console.error(`Network error for ${path}:`, err);
+      reject(err);
+    });
   });
 }
 
@@ -52,11 +66,34 @@ function httpPostJson(path, payload) {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(e); }
+        // Check if response is empty
+        if (!data || data.trim() === '') {
+          console.warn(`Empty response received from ${path}`);
+          resolve({ success: false, error: 'Empty response from server' });
+          return;
+        }
+        
+        try { 
+          // Try to parse the response as JSON
+          const parsedData = JSON.parse(data);
+          resolve(parsedData); 
+        }
+        catch (e) { 
+          // If parsing fails, log the problematic response and return a formatted error
+          console.error(`Invalid JSON response from ${path}:`, data);
+          console.error(`JSON parse error:`, e.message);
+          // Return a proper JSON object with the error message
+          resolve({ 
+            success: false, 
+            error: `Server returned invalid JSON: ${data.substring(0, 100)}${data.length > 100 ? '...' : ''}` 
+          });
+        }
       });
     });
-    req.on('error', reject);
+    req.on('error', (error) => {
+      console.error(`Network error for ${path}:`, error.message);
+      reject(error);
+    });
     req.write(body);
     req.end();
   });
