@@ -3,10 +3,14 @@ const fs = require('fs').promises; // For file operations
 const path = require('path');
 const electron = require('electron');
 const http = require('http');
+const { spawn } = require('child_process');
 const apiHost = '127.0.0.1';
 const apiPort = 8000;
 const apiBase = `http://${apiHost}:${apiPort}`;
 const WebSocket = require('ws');
+
+// Backend process reference
+let backendProcess = null;
 
 // Get electron modules (safely)
 const app = electron.app;
@@ -17,8 +21,24 @@ const dialog = electron.dialog;
 // Store reference to main window
 let mainWindow = null;
 
-// Python process paths (relative to original application)
-const pythonPath = path.join(__dirname, '../../');
+// Get the backend executable path and command
+const isDev = !app.isPackaged;
+const getBackendCommand = () => {
+  if (isDev) {
+    return {
+      command: 'python',
+      args: [path.join(__dirname, '../../api.py')]
+    };
+  }
+  // In production, use the bundled executable
+  if (process.platform === 'darwin') {
+    return {
+      command: path.join(process.resourcesPath, 'dist/api'),
+      args: []
+    };
+  }
+  throw new Error('Unsupported platform');
+};
 
 // Helper for HTTP GET JSON
 function httpGetJson(path) {
@@ -122,7 +142,38 @@ const createWindow = () => {
 // Only run the app setup if we're in Electron (not if just loaded by Node)
 if (app) {
   // Create window when app is ready
-  app.whenReady().then(async () => { 
+  // Start the backend process
+const startBackend = () => {
+  const { command, args } = getBackendCommand();
+  console.log('Starting backend with:', command, args);
+  
+  backendProcess = spawn(command, args);
+
+  backendProcess.stdout.on('data', (data) => {
+    console.log('Backend stdout:', data.toString());
+  });
+
+  backendProcess.stderr.on('data', (data) => {
+    console.error('Backend stderr:', data.toString());
+  });
+
+  backendProcess.on('close', (code) => {
+    console.log('Backend process exited with code', code);
+    backendProcess = null;
+  });
+};
+
+// Clean up the backend process
+app.on('will-quit', () => {
+  if (backendProcess) {
+    backendProcess.kill();
+    backendProcess = null;
+  }
+});
+
+app.whenReady().then(async () => {
+  // Start the backend before creating the window
+  startBackend(); 
     createWindow();
 
     // Connect to backend WebSocket for real-time events

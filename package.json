@@ -1,5 +1,5 @@
 {
-  "name": "eotm-electron",
+  "name": "eye-on-the-benchmarks",
   "version": "1.0.0",
   "description": "Eye on the Benchmarks",
   "main": "src/main/main.js",
@@ -11,18 +11,24 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "electron": "^36.2.1",
     "electron-squirrel-startup": "^1.0.1",
     "python-shell": "^5.0.0",
     "ws": "^8.18.2"
   },
   "devDependencies": {
+    "electron": "^36.2.1",
     "electron-builder": "^26.0.12",
     "electron-packager": "^17.1.2"
   },
   "build": {
+    "productName": "Eye on the Benchmarks",
     "mac": {
-      "target": "dmg"
+      "target": "dmg",
+      "icon": "src/renderer/assets/icon.png",
+      "hardenRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "files": [
       "dist/api",

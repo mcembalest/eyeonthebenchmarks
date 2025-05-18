@@ -1207,11 +1207,47 @@ async function initPage() {
     console.error('Refresh button not found!');
   }
   
-  // Add default prompt rows
+  // Add default prompt rows (empty for now)
   const promptsTableBody = document.getElementById('promptsTable').querySelector('tbody');
-  const defaultPrompts = [
-    {prompt: "what year did this piece get written", expected: "2025"},
-  ];
+  const defaultPrompts = [];
+
+  // Add "Add Row" button after the table
+  const addRowBtn = document.createElement('button');
+  addRowBtn.textContent = 'Add Row';
+  addRowBtn.className = 'button';
+  addRowBtn.style.marginTop = '10px';
+  document.getElementById('promptsTable').parentNode.insertBefore(addRowBtn, document.getElementById('promptsTable').nextSibling);
+
+  // Function to add a new row
+  function addNewRow() {
+    const row = promptsTableBody.insertRow();
+    const promptCell = row.insertCell(0);
+    const expectedCell = row.insertCell(1);
+    
+    // Make cells editable
+    promptCell.contentEditable = 'true';
+    expectedCell.contentEditable = 'true';
+    
+    // Add placeholder text
+    promptCell.textContent = 'Enter prompt...';
+    expectedCell.textContent = 'Enter expected answer...';
+
+    // Clear placeholder on focus
+    promptCell.addEventListener('focus', function() {
+      if (this.textContent === 'Enter prompt...') {
+        this.textContent = '';
+      }
+    });
+
+    expectedCell.addEventListener('focus', function() {
+      if (this.textContent === 'Enter expected answer...') {
+        this.textContent = '';
+      }
+    });
+  }
+
+  // Add row button click handler
+  addRowBtn.addEventListener('click', addNewRow);
   
   defaultPrompts.forEach(item => {
     const row = promptsTableBody.insertRow();
