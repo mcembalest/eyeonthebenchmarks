@@ -25,58 +25,73 @@ let mainWindow = null;
 // Get the backend executable path and command
 const isDev = app ? !app.isPackaged : true;
 const getBackendCommand = () => {
+  let commandDetails;
   if (isDev) {
-    return {
+    commandDetails = {
       command: 'python',
       args: [path.join(__dirname, '../../api.py')]
     };
-  }
-  // In production, use the bundled executable
-  if (process.platform === 'darwin') {
-    return {
-      command: path.join(process.resourcesPath, 'dist/api'),
+  } else {
+    // In production, use the bundled executable
+    let backendPath;
+    if (process.platform === 'darwin') {
+      backendPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'dist', 'api');
+    } else {
+      // Add placeholders for other platforms if needed, or throw error
+      // For now, assuming macOS. Windows would be different.
+      // backendPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'dist', 'api.exe'); 
+      throw new Error('Unsupported platform for packaged backend');
+    }
+    commandDetails = {
+      command: backendPath,
       args: []
     };
   }
-  throw new Error('Unsupported platform');
+  console.log(`[Main Process] Backend command details: ${JSON.stringify(commandDetails)} (isDev: ${isDev})`);
+  return commandDetails;
 };
 
 // Helper for HTTP GET JSON
-function httpGetJson(path) {
+function httpGetJson(urlPath) { // Changed parameter name for clarity
+  const fullUrl = `${apiBase}${urlPath}`;
+  console.log(`[Main Process] httpGetJson: Attempting GET ${fullUrl}`);
   return new Promise((resolve, reject) => {
-    http.get(`${apiBase}${path}`, res => {
+    http.get(fullUrl, res => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
+        console.log(`[Main Process] httpGetJson: Received response for ${fullUrl}, statusCode: ${res.statusCode}`);
         // Check for successful status code first
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try { 
             resolve(JSON.parse(data)); 
           } catch (e) { 
-            console.error(`JSON parse error for ${path}:`, e);
-            console.error('Raw response data:', data);
-            reject(new Error(`Failed to parse JSON response from ${path}: ${e.message}`)); 
+            console.error(`[Main Process] JSON parse error for ${fullUrl}:`, e);
+            console.error('[Main Process] Raw response data:', data);
+            reject(new Error(`Failed to parse JSON response from ${fullUrl}: ${e.message}`)); 
           }
         } else {
-          console.error(`HTTP error ${res.statusCode} for ${path}:`, data);
-          reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 100)}${data.length > 100 ? '...' : ''}`));
+          console.error(`[Main Process] HTTP error ${res.statusCode} for ${fullUrl}:`, data);
+          reject(new Error(`HTTP ${res.statusCode} from ${fullUrl}: ${data.substring(0, 100)}${data.length > 100 ? '...' : ''}`));
         }
       });
     }).on('error', err => {
-      console.error(`Network error for ${path}:`, err);
+      console.error(`[Main Process] Network error for ${fullUrl}:`, err);
       reject(err);
     });
   });
 }
 
 // Helper for HTTP POST JSON
-function httpPostJson(path, payload) {
+function httpPostJson(urlPath, payload) { // Changed parameter name for clarity
+  const fullUrl = `${apiBase}${urlPath}`;
+  console.log(`[Main Process] httpPostJson: Attempting POST to ${fullUrl}`);
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(payload);
     const options = {
       hostname: apiHost,
       port: apiPort,
-      path: path,
+      path: urlPath,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -89,7 +104,7 @@ function httpPostJson(path, payload) {
       res.on('end', () => {
         // Check if response is empty
         if (!data || data.trim() === '') {
-          console.warn(`Empty response received from ${path}`);
+          console.warn(`[Main Process] Empty response received from ${fullUrl}`);
           resolve({ success: false, error: 'Empty response from server' });
           return;
         }
@@ -101,8 +116,8 @@ function httpPostJson(path, payload) {
         }
         catch (e) { 
           // If parsing fails, log the problematic response and return a formatted error
-          console.error(`Invalid JSON response from ${path}:`, data);
-          console.error(`JSON parse error:`, e.message);
+          console.error(`[Main Process] Invalid JSON response from ${fullUrl}:`, data);
+          console.error(`[Main Process] JSON parse error:`, e.message);
           // Return a proper JSON object with the error message
           resolve({ 
             success: false, 
@@ -112,7 +127,7 @@ function httpPostJson(path, payload) {
       });
     });
     req.on('error', (error) => {
-      console.error(`Network error for ${path}:`, error.message);
+      console.error(`[Main Process] Network error for ${fullUrl}:`, error.message);
       reject(error);
     });
     req.write(body);
@@ -134,6 +149,22 @@ const createWindow = () => {
   // Load the index.html file
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
+  // Send 'main-process-ready' signal to renderer AFTER the window content has loaded.
+  // This ensures that the renderer doesn't try to communicate with the main process
+  // (e.g., to get models via IPC which then makes an HTTP call) before the main process
+  // (especially the backend python server) is fully ready and the renderer's own page is loaded.
+  // The call to createWindow() in app.whenReady() is already made after `await startBackend()`,
+  // so backend readiness should be established before this point.
+  mainWindow.webContents.on('did-finish-load', () => {
+    console.log('Main window content (index.html) has finished loading. Sending main-process-ready signal.');
+    // Ensure mainWindow and its webContents still exist, as 'did-finish-load' is async.
+    if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('main-process-ready');
+    } else {
+        console.warn('mainWindow or webContents not available at did-finish-load, cannot send main-process-ready signal.');
+    }
+  });
+
   // Set application icon (macOS dock)
   if (process.platform === 'darwin') {
     app.dock.setIcon(path.join(__dirname, '../renderer/assets/icon.png'));
@@ -145,60 +176,83 @@ if (app) {
   // Create window when app is ready
   // Start the backend process
 const checkBackendRunning = () => {
+  const modelsUrl = `${apiBase}/models`;
+  console.log(`[Main Process] checkBackendRunning: Pinging ${modelsUrl}`);
   return new Promise((resolve) => {
-    const testRequest = http.get(`${apiBase}/models`, (res) => {
+    const testRequest = http.get(modelsUrl, (res) => {
+      console.log(`[Main Process] checkBackendRunning: Ping response status: ${res.statusCode}`);
       resolve(res.statusCode === 200);
     });
-    testRequest.on('error', () => {
+    testRequest.on('error', (err) => {
+      console.error(`[Main Process] checkBackendRunning: Ping error: ${err.message}`);
       resolve(false);
     });
   });
 };
 
 const startBackend = async () => {
+  console.log('[Main Process] startBackend: Checking if backend is already running...');
   // Check if backend is already running
   const isRunning = await checkBackendRunning();
   if (isRunning) {
-    console.log('Backend is already running, skipping startup');
+    console.log('[Main Process] Backend is already running, skipping startup.');
     return;
   }
 
   const { command, args } = getBackendCommand();
-  console.log('Starting backend with:', command, args);
+  console.log(`[Main Process] Attempting to start backend with command: '${command}' and args: [${args.join(', ')}]`);
   
-  backendProcess = spawn(command, args);
+  try {
+    backendProcess = spawn(command, args);
+  } catch (spawnError) {
+    console.error('[Main Process] CRITICAL: Error spawning backend process:', spawnError);
+    // If spawn itself throws (e.g., command not found), we need to catch it here.
+    // This often means the path to the executable is wrong or it doesn't have execute permissions.
+    throw new Error(`Failed to spawn backend: ${spawnError.message}`);
+  }
 
   backendProcess.stdout.on('data', (data) => {
-    console.log('Backend stdout:', data.toString());
+    console.log('[Backend STDOUT]:', data.toString().trim());
   });
 
   backendProcess.stderr.on('data', (data) => {
-    console.error('Backend stderr:', data.toString());
+    console.error('[Backend STDERR]:', data.toString().trim());
+  });
+
+  backendProcess.on('error', (err) => {
+    // This 'error' event is typically for errors *during* the spawning process itself,
+    // like if the command doesn't exist or permissions are denied for the executable.
+    console.error('[Main Process] Failed to start backend process (spawn error event):', err);
+    // Consider this a fatal error for backend startup.
   });
 
   backendProcess.on('close', (code) => {
-    console.log('Backend process exited with code', code);
+    console.log(`[Main Process] Backend process exited with code ${code}`);
     backendProcess = null;
   });
 
   // Wait for backend to be ready with retries
-  const maxRetries = 10;
-  const retryDelay = 1000; // 1 second
+  const maxRetries = 15; // Increased retries
+  const retryDelay = 2000; // Increased delay
   
   for (let i = 0; i < maxRetries; i++) {
+    console.log(`[Main Process] startBackend: Waiting for backend to be ready (attempt ${i + 1}/${maxRetries})...`);
     const isReady = await checkBackendRunning();
     if (isReady) {
-      console.log('Backend is ready');
+      console.log('[Main Process] Backend is confirmed ready.');
       return;
     }
-    console.log(`Backend not ready, retrying (${i + 1}/${maxRetries})...`);
+    console.log(`[Main Process] Backend not ready yet, retrying in ${retryDelay / 1000}s...`);
     await new Promise(resolve => setTimeout(resolve, retryDelay));
   }
   
-  console.error('Backend failed to start after maximum retries');
+  console.error('[Main Process] Backend failed to start or become responsive after maximum retries.');
+  // Optionally, show a dialog to the user
+  dialog.showErrorBox('Backend Error', 'The backend service failed to start. Please try restarting the application or contact support.');
   throw new Error('Backend failed to start');
 };
 
+// App lifecycle and window creation
 // Clean up the backend process
 app.on('will-quit', () => {
   if (backendProcess) {
@@ -208,8 +262,12 @@ app.on('will-quit', () => {
 });
 
 app.whenReady().then(async () => {
-  // Start the backend before creating the window
-  await startBackend(); 
+  // Start the backend before creating the window, but never block UI
+  try {
+    await startBackend();
+  } catch (e) {
+    console.error('Backend startup error:', e);
+  }
   createWindow();
 
     // Connect to backend WebSocket for real-time events

@@ -973,60 +973,94 @@ window.electronAPI.onBenchmarkProgress(data => {
   }
 });
 
-// Listen for completion updates
-// Sound effect initialization
-const WOOHOO_SOUND_PATH = 'renderer/assets/homer-woohoo.mp3';
-console.log('Sound effect path configured as:', WOOHOO_SOUND_PATH);
-
-// Initialize sound effect
-let woohooSound = null;
-let soundInitPromise = null;
-
-function initializeSound() {
-  if (soundInitPromise) return soundInitPromise;
+window.electronAPI.onBenchmarkComplete(data => {
+  console.log('Benchmark complete event received:', data);
   
-  soundInitPromise = window.electronAPI.playSound(WOOHOO_SOUND_PATH, false)
-    .then(fullPath => {
-      console.log('✅ Sound file verified at:', fullPath);
-      woohooSound = new Audio(`file://${fullPath}`);
-      woohooSound.volume = 1.0;
-      console.log('Sound effect initialized successfully');
-      return woohooSound;
-    })
-    .catch(error => {
-      console.error('Error initializing sound:', error);
-      soundInitPromise = null; // Allow retry on next attempt
-      throw error;
-    });
-    
-  return soundInitPromise;
-}
-
-function playWoohooSound() {
-  // Always try to initialize sound first
-  return initializeSound()
-    .then(sound => {
-      // Reset the sound to start
-      sound.currentTime = 0;
-      // Play and catch any autoplay errors
-      return sound.play().catch(error => {
-        console.error('Error playing sound:', error);
-        // If autoplay was blocked or browser audio failed, try using afplay directly
-        console.log('Browser audio failed, falling back to afplay...');
-        return window.electronAPI.playSound(WOOHOO_SOUND_PATH);
+  if (!data || !data.benchmark_id) {
+    console.error('Invalid benchmark completion data:', data);
+    return;
+  }
+  
+  // Check if this is a transition from in-progress to complete
+  const previousStatus = benchmarkStatuses.get(data.benchmark_id);
+  console.log(`Checking status transition for benchmark ${data.benchmark_id}:`, {
+    previousStatus,
+    currentStatus: 'complete',
+    data
+  });
+  
+  // Only play sound if this is a real transition from in-progress to complete
+  if (previousStatus === 'in-progress') {
+    console.log(`Playing sound for benchmark ${data.benchmark_id} completing (was ${previousStatus})`);
+    // Make sure we have the audio element ready
+    const woohooSound = document.getElementById('woohoo-sound');
+    if (woohooSound) {
+      console.log('Found audio element, playing sound...');
+      woohooSound.currentTime = 0;
+      woohooSound.play().catch(err => {
+        console.error('Error playing sound:', err);
       });
-    })
-    .catch(error => {
-      console.error('Could not initialize sound, trying afplay directly:', error);
-      // If initialization failed, try afplay as last resort
-      return window.electronAPI.playSound(WOOHOO_SOUND_PATH);
-    });
-}
+    } else {
+      console.error('Audio element not found!');
+    }
+  } else {
+    console.log(`Skipping sound for benchmark ${data.benchmark_id} - no status transition (was ${previousStatus})`);
+  }
+  
+  // Update stored status
+  benchmarkStatuses.set(data.benchmark_id, 'complete');
 
-// Keep track of benchmark statuses
-const benchmarkStatuses = new Map();
+  // Update progress display and status
+  const benchmarkElement = document.querySelector(`[data-benchmark-id="${data.benchmark_id}"]`);
+  if (benchmarkElement) {
+    // Update the progress text
+    const progressElement = benchmarkElement.querySelector('.benchmark-progress');
+    if (progressElement) {
+      progressElement.textContent = `Complete - Score: ${data.mean_score.toFixed(2)}`;
+    }
 
-// Track when benchmarks start running
+    // Update the status badge
+    const statusBadge = benchmarkElement.querySelector('.status-badge');
+    if (statusBadge) {
+      statusBadge.textContent = 'Complete';
+      statusBadge.className = 'status-badge status-complete';
+    }
+
+    // Update the benchmark card's status
+    benchmarkElement.dataset.status = 'complete';
+  }
+
+  // Add completion message to console
+  const completionDiv = document.createElement('div');
+  completionDiv.className = 'completion-message';
+  
+  if (data.all_models_complete) {
+    completionDiv.innerHTML = `
+      <p style="font-weight: 600; color: #48bb78; margin-bottom: 8px;">✅ All Models Complete!</p>
+      <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
+      <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
+    `;
+  } else {
+    completionDiv.innerHTML = `
+      <p style="font-weight: 600; color: #4299e1; margin-bottom: 8px;">✓ Model ${data.model_name} Complete!</p>
+      <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
+      <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
+      <p><small>Waiting for other models to complete...</small></p>
+    `;
+  }
+  
+  const consoleLog = document.getElementById('consoleLog');
+  if (consoleLog) {
+    consoleLog.appendChild(completionDiv);
+    consoleLog.scrollTop = consoleLog.scrollHeight;
+    // Auto-hide notification after 3 seconds
+    setTimeout(() => {
+      notification.classList.add('show');
+    }, 100);
+  }
+});
+
+// Listen for progress updates
 window.electronAPI.onBenchmarkProgress(data => {
   console.log('Progress event received:', data);
   
@@ -1139,6 +1173,9 @@ window.electronAPI.onBenchmarkComplete(data => {
   }
 });
 
+// Keep track of benchmark statuses
+const benchmarkStatuses = new Map();
+
 // Populate the model list with available models from Python files
 async function populateModelList() {
   const modelListContainer = document.getElementById('modelList');
@@ -1237,7 +1274,7 @@ function populateModelListWithModels(models) {
 
 // Initialize page
 async function initPage() {
-  console.log('DOM loaded - initializing application');
+  console.log('Main process ready - initializing application'); // Updated log message
   
   // Call model list population
   await populateModelList();
@@ -1325,5 +1362,20 @@ async function initPage() {
   loadBenchmarks();
 }
 
-// Initialize the app when DOM is ready
-document.addEventListener('DOMContentLoaded', initPage);
+// NEW WAY: Wait for the main process to signal it's ready
+if (window.electronAPI && typeof window.electronAPI.onMainProcessReady === 'function') {
+  window.electronAPI.onMainProcessReady(async () => {
+    console.log('Renderer received main-process-ready signal. Initializing page...');
+    await initPage();
+  });
+} else {
+  console.error('electronAPI.onMainProcessReady is not available. Page initialization will not occur automatically. This may indicate an issue with preload.js.');
+  // Fallback to old method if really necessary, but it might re-introduce the bug.
+  // document.addEventListener('DOMContentLoaded', async () => {
+  //   console.warn('Falling back to DOMContentLoaded for initPage due to missing onMainProcessReady.');
+  //   await initPage();
+  // });
+}
+
+// Ensure any other direct calls to initPage or functions within it that depend on main process readiness
+// are also covered by this new mechanism or are confirmed safe to run earlier.

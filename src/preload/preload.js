@@ -54,5 +54,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // System events - receive updates from main process
   onBenchmarkProgress: (callback) => ipcRenderer.on('benchmark-progress', (_, data) => callback(data)),
-  onBenchmarkComplete: (callback) => ipcRenderer.on('benchmark-complete', (_, data) => callback(data))
+  onBenchmarkComplete: (callback) => ipcRenderer.on('benchmark-complete', (_, data) => callback(data)),
+  onMainProcessReady: (callback) => ipcRenderer.on('main-process-ready', (_event, ...args) => callback(...args)),
 });

@@ -29,8 +29,10 @@
     "files": [
       "dist/api",
       "src/**/*",
-      "main.js",
       "package.json"
+    ],
+    "asarUnpack": [
+      "dist/api"
     ]
   }
 }
