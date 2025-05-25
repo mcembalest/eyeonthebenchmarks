@@ -1,5 +1,5 @@
 """
-CSV Export functionality for EOTM Benchmark results.
+CSV Export functionality
 
 This module provides functions to export benchmark results to CSV format,
 allowing users to easily analyze results and create charts in external tools.
@@ -77,9 +77,8 @@ def export_benchmark_summary(benchmark: dict, filepath: Path) -> None:
         # Write header
         writer.writeheader()
         
-        # Write rows for each metric
+        # Write rows for each metric (MVP - no scores)
         metrics = {
-            'Average Score (%)': 'score',
             'Latency (seconds)': 'latency',
             'Standard Input Tokens': 'standard_input_tokens',
             'Cached Input Tokens': 'cached_input_tokens', 
@@ -94,7 +93,7 @@ def export_benchmark_summary(benchmark: dict, filepath: Path) -> None:
                 if model_name in model_results:
                     value = model_results[model_name].get(metric_key, 'N/A')
                     # Format numeric values nicely
-                    if isinstance(value, (int, float)) and metric_key != 'score':
+                    if isinstance(value, (int, float)):
                         if metric_key == 'cost':
                             value = f"{value:.4f}"
                         elif 'tokens' in metric_key:
@@ -114,28 +113,27 @@ def export_benchmark_summary(benchmark: dict, filepath: Path) -> None:
         writer.writerow({'Metric': 'Created', **{model: benchmark.get('timestamp', 'N/A') for model in model_names}})
 
 def export_benchmark_detailed(benchmark_id: int, model_names: list, filepath: Path) -> None:
-    """Export detailed per-prompt results for all models in the benchmark."""
+    """Export detailed per-prompt results for all models in the benchmark (MVP - no expected answers or scores)."""
     # Get detailed data for the benchmark once
     benchmark_data = load_benchmark_details(benchmark_id)
     if not benchmark_data or 'prompts_by_model' not in benchmark_data:
         return
     
-    # Get all unique prompts across all models
+    # Get all unique prompts across all models (only prompt text, no expected answers)
     all_prompts = set()
     for model_name, prompts in benchmark_data['prompts_by_model'].items():
         for prompt in prompts:
-            all_prompts.add((prompt.get('prompt_text', ''), prompt.get('expected_answer', '')))
+            all_prompts.add(prompt.get('prompt_text', ''))
     
-    # Convert to list of (prompt, expected_answer) tuples and sort for consistent ordering
-    all_prompts = sorted(list(all_prompts), key=lambda x: x[0])
+    # Convert to list and sort for consistent ordering
+    all_prompts = sorted(list(all_prompts))
     
     with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
-        # Create fields for CSV
-        fieldnames = ['Prompt', 'Expected Answer']
+        # Create fields for CSV (MVP - no expected answers or scores)
+        fieldnames = ['Prompt']
         for model in model_names:
             fieldnames.extend([
-                f"{model} - Actual Answer",
-                f"{model} - Score",
+                f"{model} - Response",
                 f"{model} - Standard Input Tokens",
                 f"{model} - Cached Input Tokens",
                 f"{model} - Output Tokens",
@@ -146,10 +144,9 @@ def export_benchmark_detailed(benchmark_id: int, model_names: list, filepath: Pa
         writer.writeheader()
         
         # Write data for each prompt
-        for prompt_text, expected_answer in all_prompts:
+        for prompt_text in all_prompts:
             row = {
-                'Prompt': prompt_text,
-                'Expected Answer': expected_answer
+                'Prompt': prompt_text
             }
             
             # Add data for each model
@@ -157,14 +154,12 @@ def export_benchmark_detailed(benchmark_id: int, model_names: list, filepath: Pa
                 model_prompts = benchmark_data['prompts_by_model'].get(model, [])
                 prompt_data = next(
                     (p for p in model_prompts 
-                     if p.get('prompt_text') == prompt_text and 
-                        p.get('expected_answer') == expected_answer),
+                     if p.get('prompt_text') == prompt_text),
                     {}
                 )
                 
-                # Extract metrics
-                row[f"{model} - Actual Answer"] = prompt_data.get('model_answer', 'N/A')
-                row[f"{model} - Score"] = prompt_data.get('score', 'N/A')
+                # Extract metrics (MVP - no expected answers or scores)
+                row[f"{model} - Response"] = prompt_data.get('model_answer', prompt_data.get('response', 'N/A'))
                 row[f"{model} - Standard Input Tokens"] = prompt_data.get('standard_input_tokens', 'N/A')
                 row[f"{model} - Cached Input Tokens"] = prompt_data.get('cached_input_tokens', 'N/A')
                 row[f"{model} - Output Tokens"] = prompt_data.get('output_tokens', 'N/A')

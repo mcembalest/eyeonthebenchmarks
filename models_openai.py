@@ -1,9 +1,10 @@
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 import os
 import logging
 from dotenv import load_dotenv
 import openai
+from file_store import register_file, get_provider_file_id, register_provider_upload
 
 # Load environment variables from .env file
 load_dotenv()
@@ -16,8 +17,6 @@ if not api_key:
 # Configure OpenAI client
 client = openai.OpenAI(api_key=api_key)
 
-# Import cost calculator
-from cost_calculator import calculate_cost, calculate_image_cost
 
 AVAILABLE_MODELS = [
     "gpt-4o",
@@ -25,8 +24,227 @@ AVAILABLE_MODELS = [
     "gpt-4.1",
     "gpt-4.1-mini",
     "gpt-4.1-nano",
-    "gpt-image-1"
+    "o3",
+    "o4-mini"
 ]
+
+"""gpt 4o pricing
+Model	Input	Cached input	Output
+gpt-4o
+gpt-4o-2024-08-06
+$2.50
+$1.25
+$10.00"""
+
+"""gpt 4o-mini pricing
+Model	Input	Cached input	Output
+gpt-4o-mini
+gpt-4o-mini-2024-07-18
+$0.15
+$0.075
+$0.60"""
+
+"""gpt 4.1 pricing
+Model	Input	Cached input	Output
+gpt-4.1
+gpt-4.1-2025-04-14
+$2.00
+$0.50
+$8.00"""
+
+"""gpt 4.1 mini pricing
+Model	Input	Cached input	Output
+gpt-4.1-mini
+gpt-4.1-mini-2025-04-14
+$0.40
+$0.10
+$1.60"""
+
+"""gpt 4.1 nano pricing
+Model	Input	Cached input	Output
+gpt-4.1-nano
+gpt-4.1-nano-2025-04-14
+$0.10
+$0.025
+$0.40"""
+
+"""o3 pricing
+Model	Input	Cached input	Output
+o3
+o3-2025-04-16
+$10.00
+$2.50
+$40.00"""
+
+"""o4 mini pricing
+Model	Input	Cached input	Output
+o4-mini
+o4-mini-2025-04-16
+$1.10
+$0.275
+$4.40"""
+
+
+"""tools pricing
+
+Built-in tools
+The tokens used for built-in tools are billed at the chosen model's per-token rates.
+GB refers to binary gigabytes of storage (also known as gibibyte), where 1GB is 2^30 bytes.
+
+Tool	Cost
+Code Interpreter
+$0.03
+container
+File Search Storage
+$0.10
+GB/day (1GB free)
+File Search Tool Call (Responses API only*)
+$2.50
+1k calls (*Does not apply on Assistants API)
+Web Search
+Web search tool pricing is inclusive of tokens used to synthesize information
+from the web. Pricing depends on model and search context size. See below."""
+
+
+"""Web search pricing
+Web search is a built-in tool with pricing that depends on both the model used and the search context size. The billing dashboard will report these line items as 'web search tool calls | gpt-4o' and 'web search tool calls | gpt-4o-mini'.
+
+Model	Search context size	Cost
+gpt-4.1, gpt-4o, or gpt-4o-search-preview
+low
+$30.00
+1k calls
+medium (default)
+$35.00
+1k calls
+high
+$50.00
+1k calls
+gpt-4.1-mini, gpt-4o-mini, or gpt-4o-mini-search-preview
+low
+$25.00
+1k calls
+medium (default)
+$27.50
+1k calls
+high
+$30.00
+1k calls
+"""
+
+
+
+COSTS = {
+    "gpt-4.1": {"input": 2.00, "cached": 0.50, "output": 8.00, "search_cost": 0.035},
+    "gpt-4.1-mini": {"input": 0.40, "cached": 0.10, "output": 1.60, "search_cost": 0.0275},
+    "gpt-4.1-nano": {"input": 0.10, "cached": 0.025, "output": 0.40, "search_cost": 0.0275},
+    "gpt-4o": {"input": 2.50, "cached": 1.25, "output": 10.00, "search_cost": 0.035},
+    "gpt-4o-mini": {"input": 0.15, "cached": 0.075, "output": 0.60, "search_cost": 0.0275},
+    "o3": {"input": 10.00, "cached": 2.50, "output": 40.00, "search_cost": 0.035},
+    "o4-mini": {"input": 1.10, "cached": 0.55, "output": 4.40, "search_cost": 0.0275},
+    "gpt-3.5-turbo": {"input": 0.50, "cached": 0.25, "output": 1.50, "search_cost": 0.0275}
+}
+
+SEARCH_CONTEXT_COSTS = {
+    "low": 0.03,    # $30/1k searches
+    "medium": 0.035,  # $35/1k searches (default)
+    "high": 0.05,   # $50/1k searches
+}
+
+
+"""openai model response structure
+
+USE THIS TO GET THE STRUCTURE OF THE RESPONSE FROM THE OPENAI API
+
+FOCUS ON OUTPUT TEXT, TOKEN USAGE, AND THE RESPONSE STRUCTURE
+
+{
+  "id": "resp_67ccd3a9da748190baa7f1570fe91ac604becb25c45c1d41",
+  "object": "response",
+  "created_at": 1741476777,
+  "status": "completed",
+  "error": null,
+  "incomplete_details": null,
+  "instructions": null,
+  "max_output_tokens": null,
+  "model": "gpt-4o-2024-08-06",
+  "output": [
+    {
+      "type": "message",
+      "id": "msg_67ccd3acc8d48190a77525dc6de64b4104becb25c45c1d41",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "The image depicts a scenic landscape with a wooden boardwalk or pathway leading through lush, green grass under a blue sky with some clouds. The setting suggests a peaceful natural area, possibly a park or nature reserve. There are trees and shrubs in the background.",
+          "annotations": []
+        }
+      ]
+    }
+  ],
+  "parallel_tool_calls": true,
+  "previous_response_id": null,
+  "reasoning": {
+    "effort": null,
+    "summary": null
+  },
+  "store": true,
+  "temperature": 1,
+  "text": {
+    "format": {
+      "type": "text"
+    }
+  },
+  "tool_choice": "auto",
+  "tools": [],
+  "top_p": 1,
+  "truncation": "disabled",
+  "usage": {
+    "input_tokens": 328,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 52,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 380
+  },
+  "user": null,
+  "metadata": {}
+}"""
+
+def ensure_file_uploaded(file_path: Path, db_path: Path = Path.cwd()) -> str:
+    """
+    Ensure a file is uploaded to OpenAI and return the provider file ID.
+    Uses the new multi-provider file system to avoid duplicate uploads.
+    
+    Args:
+        file_path: Path to the file to upload
+        db_path: Path to the database directory
+        
+    Returns:
+        provider_file_id: The OpenAI file ID for this file
+    """
+    # Register file in our central registry
+    file_id = register_file(file_path, db_path)
+    
+    # Check if this file has already been uploaded to OpenAI
+    provider_file_id = get_provider_file_id(file_id, "openai", db_path)
+    
+    if provider_file_id:
+        logging.info(f"File {file_path.name} already uploaded to OpenAI with ID {provider_file_id}")
+        return provider_file_id
+    
+    # File hasn't been uploaded to OpenAI yet, upload it now
+    logging.info(f"Uploading {file_path.name} to OpenAI for the first time")
+    provider_file_id = openai_upload(file_path)
+    
+    # Register the upload in our database
+    register_provider_upload(file_id, "openai", provider_file_id, db_path)
+    
+    return provider_file_id
 
 def openai_upload(pdf_path: Path) -> str:
     """
@@ -86,80 +304,68 @@ def openai_upload(pdf_path: Path) -> str:
         logging.error(error_msg)
         raise
 
-def estimate_cost(
-    model_name: str,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    search_queries: int = 0,
-    images: int = 0,
-    image_size: str = "1024x1024",
-    image_quality: str = "standard"
-) -> Dict[str, Any]:
+def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd()) -> Tuple[str, int, int, int]:
     """
-    Estimate the cost of using this model.
+    Send a query to an OpenAI model with multiple file attachments.
     
     Args:
-        model_name: The model to use
-        input_tokens: Number of input tokens (for text models)
-        output_tokens: Number of output tokens (for text models)
-        search_queries: Number of web search queries
-        images: Number of images to generate (for image models)
-        image_size: Size of generated images (for image models)
-        image_quality: Quality of generated images
-        
-    Returns:
-        Dictionary with cost breakdown
-    """
-    if model_name.startswith('gpt-image'):
-        # For image generation
-        return calculate_cost(
-            model_name=model_name,
-            standard_input_tokens=0,
-            cached_input_tokens=0,
-            output_tokens=0,
-            search_queries=0,
-            image_generation={
-                'model': model_name,
-                'count': images,
-                'size': image_size,
-                'quality': image_quality
-            } if images > 0 else None
-        )
-    else:
-        # For text generation
-        return calculate_cost(
-            model_name=model_name,
-            standard_input_tokens=input_tokens,
-            cached_input_tokens=0,  # OpenAI doesn't report cached tokens separately
-            output_tokens=output_tokens,
-            search_queries=search_queries
-        )
-
-
-def openai_ask(file_id: Optional[str], prompt_text: str, model_name: str = "gpt-4o-mini") -> Tuple[str, int, int, int]:
-    """
-    Send a query to an OpenAI model with a file attachment.
-    
-    Args:
-        file_id: ID of the uploaded file (obtained via openai_upload).
-        prompt_text: The question to ask the model.
-        model_name: The model to use (e.g., "gpt-4o-mini", "gpt-4o").
+        file_paths: List of paths to files to include
+        prompt_text: The question to ask the model
+        model_name: The model to use (e.g., "gpt-4o-mini", "gpt-4o")
+        db_path: Path to the database directory
         
     Returns:
         A tuple containing:
-            - answer (str): The model's text response.
-            - standard_input_tokens (int): Tokens used in the input.
-            - cached_input_tokens (int): Always 0 for OpenAI (not separately reported).
-            - output_tokens (int): Tokens used in the output.
+            - answer (str): The model's text response
+            - standard_input_tokens (int): Tokens used in the input
+            - cached_input_tokens (int): Cached tokens used
+            - output_tokens (int): Tokens used in the output (includes reasoning tokens)
+    """
+    # Ensure all files are uploaded to OpenAI
+    file_ids = []
+    for file_path in file_paths:
+        file_id = ensure_file_uploaded(file_path, db_path)
+        file_ids.append(file_id)
+    
+    # Build content with all files
+    content = []
+    for file_id in file_ids:
+        content.append({
+            "type": "input_file",
+            "file_id": file_id,
+        })
+    
+    content.append({
+        "type": "input_text",
+        "text": prompt_text,
+    })
+    
+    return openai_ask_internal(content, model_name)
+
+def openai_ask_internal(content: List[Dict], model_name: str) -> Tuple[str, int, int, int]:
+    """
+    Internal function to send a query to OpenAI with prepared content.
+    
+    Returns:
+        A tuple containing:
+            - answer (str): The model's text response
+            - standard_input_tokens (int): Tokens used in the input
+            - cached_input_tokens (int): Cached tokens used
+            - output_tokens (int): Tokens used in the output (includes reasoning tokens)
     """
     # Add direct console output for high visibility
     print(f"\n🔄 OPENAI API CALL STARTING - MODEL: {model_name}")
-    print(f"   Prompt: '{prompt_text[:50]}...'")
-    print(f"   File ID: {file_id}")
+    print(f"   Content blocks: {len(content)}")
     
-    logging.info(f"===== OPENAI_ASK FUNCTION CALLED =====")
-    logging.info(f"Arguments: file_id={file_id}, model_name={model_name}")
-    logging.info(f"Prompt text (first 100 chars): {prompt_text[:100]}...")
+    # Count files in content
+    file_count = sum(1 for item in content if item.get("type") == "input_file")
+    text_blocks = [item for item in content if item.get("type") == "input_text"]
+    prompt_preview = text_blocks[0]["text"][:50] + "..." if text_blocks else "No text"
+    
+    print(f"   Files: {file_count}, Prompt: '{prompt_preview}'")
+    
+    logging.info(f"===== OPENAI_ASK_INTERNAL FUNCTION CALLED =====")
+    logging.info(f"Arguments: content_blocks={len(content)}, model_name={model_name}")
     
     try:
         import os
@@ -179,20 +385,9 @@ def openai_ask(file_id: Optional[str], prompt_text: str, model_name: str = "gpt-
         # Log key info without revealing sensitive data
         key_info = f"Length: {len(api_key)}, First 3 chars: {api_key[:3]}, Last 3 chars: {api_key[-3:]}"
         logging.info(f"API Key verified: {key_info}")
-        logging.info(f"File ID: {file_id}, Model: {model_name}")
+        logging.info(f"Content blocks: {len(content)}, Model: {model_name}")
 
         # Format the API input for Responses API
-        content = []
-        if file_id:
-            content.append({
-                "type": "input_file",
-                "file_id": file_id,
-            })
-        content.append({
-            "type": "input_text",
-            "text": prompt_text,
-        })
-        
         api_input = [
             {
                 "role": "user",
@@ -217,8 +412,7 @@ def openai_ask(file_id: Optional[str], prompt_text: str, model_name: str = "gpt-
                 
             # Show model and file details
             print(f"   Model name: {model_name}")
-            print(f"   File ID: {file_id}")
-            print(f"   Request details: 1 message, {len(prompt_text)} chars in prompt")
+            print(f"   Files: {file_count}")
             
             # Use the OpenAI Responses API
             logging.info("Making API call now...")
@@ -252,7 +446,6 @@ def openai_ask(file_id: Optional[str], prompt_text: str, model_name: str = "gpt-
             print(f"\n❌ OPENAI API CALL FAILED")
             print(f"   Error message: {str(e)}")
             print(f"   Model: {model_name}")
-            print(f"   File ID: {file_id}")
             
             # Check for common error types and provide more helpful messages
             error_str = str(e).lower()
@@ -402,5 +595,62 @@ def openai_ask(file_id: Optional[str], prompt_text: str, model_name: str = "gpt-
         logging.error(f"OpenAI API Error: {str(e)}", exc_info=True)
         raise Exception(f"OpenAI API Error: {str(e)}") from e
     except Exception as e:
-        logging.error(f"Error in openai_ask: {str(e)}", exc_info=True)
-        raise Exception(f"Error in openai_ask: {str(e)}") from e
+        logging.error(f"Error in openai_ask_internal: {str(e)}", exc_info=True)
+        raise Exception(f"Error in openai_ask_internal: {str(e)}") from e
+
+def calculate_cost(
+    model_name: str,
+    standard_input_tokens: int = 0,
+    cached_input_tokens: int = 0,
+    output_tokens: int = 0,
+    reasoning_tokens: int = 0,
+    search_queries: int = 0,
+    search_context: str = "medium"
+) -> Dict[str, Any]:
+    """
+    Calculate the cost of using an OpenAI model.
+    
+    Args:
+        model_name: The model to use (e.g., "gpt-4o", "gpt-4o-mini")
+        standard_input_tokens: Number of standard input tokens
+        cached_input_tokens: Number of cached input tokens
+        output_tokens: Number of output tokens (includes reasoning tokens for OpenAI)
+        reasoning_tokens: Number of reasoning tokens (for tracking, but included in output_tokens)
+        search_queries: Number of web search queries
+        search_context: Search context size ("low", "medium", "high")
+        
+    Returns:
+        Dictionary with cost breakdown
+    """
+    if model_name not in COSTS:
+        return {"error": f"Model {model_name} not found in cost database"}
+    
+    model_costs = COSTS[model_name]
+    
+    # Calculate token costs (prices are per 1M tokens, so divide by 1,000,000)
+    input_cost = (standard_input_tokens * model_costs["input"]) / 1_000_000
+    cached_cost = (cached_input_tokens * model_costs["cached"]) / 1_000_000
+    output_cost = (output_tokens * model_costs["output"]) / 1_000_000
+    
+    # Calculate search costs if applicable
+    search_cost = 0
+    if search_queries > 0 and "search_cost" in model_costs:
+        search_cost = search_queries * model_costs["search_cost"]
+    
+    total_cost = input_cost + cached_cost + output_cost + search_cost
+    
+    return {
+        "model": model_name,
+        "input_cost": round(input_cost, 6),
+        "cached_cost": round(cached_cost, 6),
+        "output_cost": round(output_cost, 6),
+        "search_cost": round(search_cost, 6),
+        "total_cost": round(total_cost, 6),
+        "tokens": {
+            "standard_input": standard_input_tokens,
+            "cached_input": cached_input_tokens,
+            "output": output_tokens,
+            "reasoning": reasoning_tokens,
+            "total": standard_input_tokens + cached_input_tokens + output_tokens
+        }
+    }

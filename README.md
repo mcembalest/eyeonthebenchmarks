@@ -1,8 +1,39 @@
 # Eye on the Benchmarks
 
-Eye on the Benchmarks is an application for setting up AI benchmarks, letting them run in the background, and exporting results in CSV format for subsequent plotting and analysis in Microsoft Excel.
+<img src="./src/renderer/assets/icon.png" alt="logo" width="640"/>
 
-![logo](./src/renderer/assets/icon.png)
+Eye on the Benchmarks lets you use AI with the simplest possible setup so you can better understand its strengths and weaknesses.
+
+## Prompts and Models and APIs
+
+You run one or more prompts at a time and get responses from one or more models. The application makes API calls behind the scenes to different model providers and records the response from each model (as well as the cost + latency of every request).
+
+### Models
+
+- OpenAI
+    - GPT 4o + mini
+    - GPT 4.1 + mini + nano
+    - o3
+    - o4-mini
+- Anthropic
+    - Claude 3.5 Haiku
+    - Claude 3.7 Sonnet
+    - Claude 4 Sonnet + Opus
+- Google
+    - Gemini 2.5 Pro
+    - Gemini 2.5 Flash
+
+<img src="assets/prompts-models-and-apis.png" alt="oh my" width="400"/>
+
+## Context and Features
+
+### Web Search
+
+You can enable/disable web search, which the models use to look for relevant context online before answering questions.
+
+### File Upload
+
+You can directly choose which PDFs the models will use as context to answer questions.
 
 ## Installation
 
@@ -13,9 +44,3 @@ Download the installer [here](https://github.com/mcembalest/eyeonthebenchmarks/r
 ### Windows
 
 Coming soon!
-
-## Why?
-
-Financial analysts, and other non-coding working professionals need a basic desktop application to test multiple AI model providers on large batches of their own questions. Currently no easy application for this exists.
-
-Doing this requires writing code, which is not a viable option for a lot of professionals. Eye on the Benchmarks exists for such professionals who have ideas about how to test AI models at using actual business PDFs and optional access to live sources on the internet to answer tough questions.

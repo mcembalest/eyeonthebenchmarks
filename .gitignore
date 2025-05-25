@@ -47,7 +47,7 @@ ENV/
 *.sqlite
 *.sqlite3
 *.db
-eotm_file_store.sqlite
+eotb_file_store.sqlite
 
 # IDE specific files
 .idea/

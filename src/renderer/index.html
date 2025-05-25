@@ -1,112 +1,290 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>EOTMBench</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Eye on the Benchmarks</title>
+  
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Font Awesome -->
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <!-- Custom CSS -->
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div id="app">
-    <header>
-      <h1>EOTM Benchmarks</h1>
-      <button id="newBenchmarkBtn">New Benchmark</button>
+  <div id="app" class="d-flex flex-column vh-100">
+    <!-- Header -->
+    <header class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
+      <div class="container-fluid">
+        <h1 class="navbar-brand mb-0 h1">
+          <i class="fas fa-chart-line me-2"></i>
+          Eye on the Benchmarks
+        </h1>
+        
+        <!-- Page-specific action buttons -->
+        <div id="headerActions" class="d-flex gap-2">
+          <!-- Dynamic actions will be inserted here -->
+        </div>
+      </div>
     </header>
     
-    <div id="homeContent" class="page active">
-      <div class="view-toggle">
-        <button id="gridViewBtn" class="active">Grid View</button>
-        <button id="tableViewBtn">Table View</button>
-      </div>
-      
-      <div id="benchmarksGrid" class="benchmarks-container grid-view active">
-        <!-- Benchmark cards will be loaded here -->
-        <div class="loading">Loading benchmarks...</div>
-      </div>
-      
-      <table id="benchmarksTable" class="benchmarks-container table-view">
-        <thead>
-          <tr>
-            <th>Status</th>
-            <th>Label</th>
-            <th>Date</th>
-            <th>Models</th>
-          </tr>
-        </thead>
-        <tbody>
-          <!-- Benchmark rows will be loaded here -->
-        </tbody>
-      </table>
-      
-      <button id="refreshBtn">🔄 Refresh</button>
-    </div>
-    
-    <div id="composerContent" class="page">
-      <!-- Benchmark composer content will go here -->
-      <div class="composer-container">
-        <div class="prompts-section">
-          <h2>Test Prompts</h2>
-          <button id="importCsvBtn">Import from CSV</button>
-          <table id="promptsTable">
-            <thead>
-              <tr>
-                <th>Prompt</th>
-                <th>Expected</th>
-              </tr>
-            </thead>
-            <tbody>
-              <!-- Default rows will be added by JavaScript -->
-            </tbody>
-          </table>
-        </div>
-        
-        <div class="settings-section">
-          <div class="model-selection">
-            <h3>Select Model(s)</h3>
-            <div id="modelList" class="model-list">
-              <!-- Model options will be added by JavaScript -->
+    <!-- Main Content -->
+    <main class="flex-grow-1 overflow-hidden">
+      <!-- Home Page -->
+      <div id="homeContent" class="page active h-100">
+        <div class="container-fluid h-100 py-3">
+          <!-- Controls -->
+          <div class="row mb-3">
+            <div class="col-md-6">
+              <div class="btn-group" role="group">
+                <button id="gridViewBtn" class="btn btn-outline-primary active">
+                  <i class="fas fa-th me-1"></i>Grid
+                </button>
+                <button id="tableViewBtn" class="btn btn-outline-primary">
+                  <i class="fas fa-list me-1"></i>Table
+                </button>
+              </div>
+            </div>
+            <div class="col-md-6 text-end">
+              <button id="refreshBtn" class="btn btn-outline-secondary">
+                <i class="fas fa-sync-alt me-1"></i>Refresh
+              </button>
             </div>
           </div>
           
-          <div class="pdf-selection">
-            <h3>Select PDF (Optional)</h3>
-            <button id="selectPdfBtn">Select PDF</button>
-            <span id="selectedPdfLabel">No PDF selected</span>
+          <!-- Content Area -->
+          <div class="row h-100">
+            <div class="col-12">
+              <!-- Grid View -->
+              <div id="benchmarksGrid" class="benchmarks-container grid-view active">
+                <!-- Content will be loaded here -->
+              </div>
+              
+              <!-- Table View -->
+              <div id="benchmarksTable" class="benchmarks-container table-view">
+                <div class="table-responsive">
+                  <table class="table table-hover">
+                    <thead class="table-dark">
+                      <tr>
+                        <th width="60">Status</th>
+                        <th>Name</th>
+                        <th width="180">Created</th>
+                        <th>Models</th>
+                        <th width="120">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <!-- Benchmark rows will be loaded here -->
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
           </div>
+        </div>
+      </div>
+      
+      <!-- Composer Page -->
+      <div id="composerContent" class="page h-100">
+        <div class="composer-layout">
+          <!-- Left Panel - Prompts -->
+          <div class="composer-left">
+            <div class="card h-100">
+              <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">
+                  <i class="fas fa-question-circle me-2"></i>
+                  Test Prompts
+                </h5>
+              </div>
+              <div class="card-body d-flex flex-column">
+                <div class="mb-3">
+                  <button id="loadPromptSetBtn" class="btn btn-outline-success btn-sm">
+                    <i class="fas fa-layer-group me-1"></i>Load Prompt Set
+                  </button>
+                  <button id="importCsvBtn" class="btn btn-outline-secondary btn-sm ms-2">
+                    <i class="fas fa-file-csv me-1"></i>Import CSV
+                  </button>
+                  <button id="addPromptBtn" class="btn btn-outline-primary btn-sm ms-2">
+                    <i class="fas fa-plus me-1"></i>Add Prompt
+                  </button>
+                </div>
+                
+                <div class="flex-grow-1 overflow-auto">
+                  <div id="promptsList" class="prompts-list">
+                    <!-- Prompts will be added here -->
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Right Panel - Settings -->
+          <div class="composer-right">
+            <div class="card h-100">
+              <div class="card-header bg-success text-white">
+                <h5 class="mb-0">
+                  <i class="fas fa-cog me-2"></i>
+                  Configuration
+                </h5>
+              </div>
+              <div class="card-body d-flex flex-column">
+                <!-- Benchmark Details -->
+                <div class="mb-4">
+                  <h6 class="text-muted mb-3">Benchmark Details</h6>
+                  <div class="mb-3">
+                    <label for="benchmarkNameInput" class="form-label">Name *</label>
+                    <input type="text" id="benchmarkNameInput" class="form-control" 
+                           placeholder="Enter benchmark name">
+                  </div>
+                  <div class="mb-3">
+                    <label for="benchmarkDescriptionInput" class="form-label">Description</label>
+                    <textarea id="benchmarkDescriptionInput" class="form-control" rows="2"
+                              placeholder="Optional description"></textarea>
+                  </div>
+                </div>
 
-          <div class="benchmark-naming">
-            <h3>Benchmark Details</h3>
-            <div>
-              <label for="benchmarkNameInput">Name:</label>
-              <input type="text" id="benchmarkNameInput" placeholder="Enter benchmark name (e.g., My Q1 Report Test)">
-            </div>
-            <div>
-              <label for="benchmarkDescriptionInput">Description (Optional):</label>
-              <textarea id="benchmarkDescriptionInput" placeholder="Enter a brief description..."></textarea>
+                <!-- File Upload -->
+                <div class="mb-4">
+                  <h6 class="text-muted mb-3">Files for context (optional)</h6>
+                  <div class="d-flex align-items-center">
+                    <button id="selectPdfBtn" class="btn btn-outline-secondary">
+                      <i class="fas fa-file-pdf me-1"></i>Select PDF
+                    </button>
+                    <span id="selectedPdfLabel" class="ms-3 text-muted">No file selected</span>
+                  </div>
+                </div>
+                
+                <!-- Model Selection -->
+                <div class="mb-4">
+                  <h6 class="text-muted mb-3">Models</h6>
+                  <div id="modelList" class="model-list">
+                    <div class="text-center">
+                      <div class="spinner-border spinner-border-sm text-primary" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                      </div>
+                      <small class="text-muted ms-2">Loading models...</small>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-        
-        <div class="actions">
-          <button id="runBtn" class="primary">Run Benchmark ▸</button>
-          <button id="returnHomeBtn">Return to Home</button>
+      </div>
+      
+      <!-- Details Page -->
+      <div id="detailsContent" class="page">
+        <div class="container-fluid h-100 d-flex flex-column">
+          <div id="detailsContainer" class="flex-grow-1" style="overflow-y: auto; min-height: 0; padding: 1rem;">
+            <!-- Details will be loaded here -->
+          </div>
         </div>
       </div>
-    </div>
-    
-    <div id="consoleContent" class="page">
-      <!-- Console output will go here -->
-      <div id="consoleLog" class="console-log"></div>
-      <div class="console-actions">
-        <button id="consoleReturnBtn">Return to Home</button>
+
+      <!-- Prompt Set Creation Page -->
+      <div id="promptSetContent" class="page">
+        <div class="container-fluid h-100">
+          <div class="row h-100">
+            <!-- Left Panel - Prompt Set Info -->
+            <div class="col-md-4 border-end bg-light h-100 d-flex flex-column">
+              <div class="p-3 border-bottom">
+                <h5 class="mb-3">Prompt Set Details</h5>
+                
+                <!-- Prompt Set Name -->
+                <div class="mb-3">
+                  <label for="promptSetName" class="form-label">Name</label>
+                  <div class="input-group">
+                    <input type="text" class="form-control" id="promptSetName" placeholder="Enter prompt set name">
+                    <button class="btn btn-outline-secondary" type="button" id="changeNameBtn" style="display: none;">
+                      <i class="fas fa-edit"></i>
+                    </button>
+                  </div>
+                  <div class="form-text" id="autoNameNotice" style="display: none;">
+                    <i class="fas fa-info-circle"></i> Will be auto-saved as "Prompt Set X"
+                  </div>
+                </div>
+
+                <!-- Prompt Set Description -->
+                <div class="mb-3">
+                  <label for="promptSetDescription" class="form-label">Description</label>
+                  <textarea class="form-control" id="promptSetDescription" rows="3" placeholder="Optional description"></textarea>
+                </div>
+
+                <!-- Import Options -->
+                <div class="mb-3">
+                  <h6>Import Options</h6>
+                  <button class="btn btn-outline-primary btn-sm me-2" id="promptSetImportCsvBtn">
+                    <i class="fas fa-file-csv"></i> Import CSV
+                  </button>
+                  <button class="btn btn-outline-secondary btn-sm" id="loadExistingBtn">
+                    <i class="fas fa-folder-open"></i> Load Existing
+                  </button>
+                </div>
+
+                <!-- Prompt Count -->
+                <div class="mb-3">
+                  <small class="text-muted">
+                    <i class="fas fa-list"></i> <span id="promptCount">0</span> prompts
+                  </small>
+                </div>
+              </div>
+
+              <!-- Action Buttons -->
+              <div class="mt-auto p-3 border-top">
+                <button class="btn btn-success w-100 mb-2" id="savePromptSetBtn">
+                  <i class="fas fa-save"></i> Save Prompt Set
+                </button>
+                <button class="btn btn-outline-danger w-100" id="deletePromptSetBtn" style="display: none;">
+                  <i class="fas fa-trash"></i> Delete Prompt Set
+                </button>
+              </div>
+            </div>
+
+            <!-- Right Panel - Prompts List -->
+            <div class="col-md-8 h-100 d-flex flex-column">
+              <div class="p-3 border-bottom">
+                <div class="d-flex justify-content-between align-items-center">
+                  <h5 class="mb-0">Prompts</h5>
+                  <button class="btn btn-primary btn-sm" id="promptSetAddPromptBtn">
+                    <i class="fas fa-plus"></i> Add Prompt
+                  </button>
+                </div>
+              </div>
+
+              <!-- Prompts Container -->
+              <div class="flex-grow-1 p-3" id="promptsContainer" style="overflow-y: auto; min-height: 0;">
+                <div id="promptsList" style="height: auto;">
+                  <!-- Prompts will be added here -->
+                </div>
+                
+                <!-- Empty State -->
+                <div id="emptyPromptsState" class="text-center text-muted py-5">
+                  <i class="fas fa-comment-dots fa-3x mb-3"></i>
+                  <h6>No prompts yet</h6>
+                  <p>Add prompts manually or import from a CSV file</p>
+                  <button class="btn btn-outline-primary" id="promptSetAddFirstPromptBtn">
+                    <i class="fas fa-plus"></i> Add Your First Prompt
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
+    </main>
   </div>
   
-  <!-- Audio elements -->
-  <audio id="woohoo-sound" preload="auto">
-    <source src="assets/homer-woohoo.mp3" type="audio/mpeg">
-  </audio>
+  <!-- Toast Container -->
+  <div id="toastContainer" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
   
-  <script src="renderer.js"></script>
+  <!-- Bootstrap JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- Custom JS -->
+  <script src="js/utils.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/components.js"></script>
+  <script src="js/pages.js"></script>
+  <script src="js/app.js"></script>
 </body>
 </html>

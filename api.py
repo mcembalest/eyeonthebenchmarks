@@ -1,17 +1,13 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
 import asyncio
-import json
 from pathlib import Path
 from file_store import load_benchmark_details, load_all_benchmarks_with_models
-from available_models import get_available_models_as_list
 
-# Import your existing application logic and enums
 from app import AppLogic
 from ui_bridge import DataChangeType
 
 app = FastAPI()
-# Placeholder for event loop to schedule cross-thread tasks
 event_loop: asyncio.AbstractEventLoop | None = None
 
 @app.on_event("startup")
@@ -19,7 +15,6 @@ async def startup_event():
     global event_loop
     event_loop = asyncio.get_running_loop()
 
-# Manage WebSocket connections for streaming events
 class WebSocketManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
@@ -40,10 +35,8 @@ class WebSocketManager:
 
 manager = WebSocketManager()
 
-# Bridge that forwards AppLogic events to WebSocket clients
 class WSBridge:
     def __getattr__(self, name):
-        # No-op for unused UIBridge methods
         return lambda *args, **kwargs: None
 
     def notify_benchmark_progress(self, job_id: int, progress_data: dict):
@@ -64,11 +57,9 @@ class WSBridge:
         else:
             asyncio.create_task(manager.broadcast({"event": change_type.name.lower(), "data": data}))
 
-# Instantiate a single AppLogic with WebSocket bridge
 bridge = WSBridge()
 logic = AppLogic(ui_bridge=bridge)
 
-# HTTP endpoint to launch a benchmark asynchronously
 @app.post("/launch")
 async def launch_benchmark(payload: dict):
     return logic.launch_benchmark_run(
@@ -79,38 +70,19 @@ async def launch_benchmark(payload: dict):
         payload.get("benchmarkDescription", ""),
     )
 
-# HTTP endpoint to list all benchmarks (including active)
 @app.get("/benchmarks/all")
 async def list_benchmarks():
-    # Get basic benchmark data
     benchmarks = load_all_benchmarks_with_models(db_path=Path(__file__).parent)
-    
-    # If status is not specified, default to in-progress
-    for benchmark in benchmarks:
-        if 'status' not in benchmark:
-            benchmark['status'] = 'in-progress'
-    
-    # Try to get active benchmarks info if available
-    try:
-        # Check if logic exists and has the get_active_benchmarks_info method
-        if hasattr(logic, 'get_active_benchmarks_info'):
-            active_benchmarks = logic.get_active_benchmarks_info()
-            
-            # Update status info in benchmark data
-            for benchmark in benchmarks:
-                benchmark_id = benchmark.get('id')
-                # Check if this benchmark is in the active_benchmarks list
-                for job_id, job_info in active_benchmarks.items():
-                    if job_info.get('benchmark_id') == benchmark_id:
-                        # This benchmark is active, mark it as in-progress
-                        benchmark['status'] = 'in-progress'
-                        break
-    except Exception as e:
-        print(f"Warning: Could not get active benchmarks info: {e}")
-    
+    if hasattr(logic, 'get_active_benchmarks_info'):
+        active_benchmarks = logic.get_active_benchmarks_info()
+        for benchmark in benchmarks:
+            benchmark_id = benchmark.get('id')
+            for job_id, job_info in active_benchmarks.items():
+                if job_info.get('benchmark_id') == benchmark_id:
+                    benchmark['status'] = 'in-progress'
+                    break
     return benchmarks
 
-# HTTP endpoint to get benchmark details
 @app.get("/benchmarks/{benchmark_id}")
 async def get_benchmark_details(benchmark_id: int):
     details = load_benchmark_details(benchmark_id, db_path=Path(__file__).parent)
@@ -118,13 +90,11 @@ async def get_benchmark_details(benchmark_id: int):
         raise HTTPException(status_code=404, detail="Benchmark not found")
     return details
 
-# HTTP endpoint to delete a benchmark
 @app.post("/delete")
 async def delete_benchmark_endpoint(payload: dict):
     benchmark_id = payload.get("benchmarkId") or payload.get("benchmark_id")
     return logic.handle_delete_benchmark(int(benchmark_id))
 
-# HTTP endpoint to update benchmark details
 @app.post("/update")
 async def update_benchmark_endpoint(payload: dict):
     benchmark_id = payload.get("benchmarkId") or payload.get("benchmark_id")
@@ -132,28 +102,107 @@ async def update_benchmark_endpoint(payload: dict):
     new_description = payload.get("newDescription") or payload.get("new_description")
     return logic.handle_update_benchmark_details(int(benchmark_id), new_label, new_description)
 
-# HTTP endpoint to list models
 @app.get("/models")
 async def list_models():
-    return get_available_models_as_list()
+    return [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "gpt-4.1-nano",
+        "o3",
+        "o4-mini",
+        "claude-opus-4-20250514",
+        "claude-sonnet-4-20250514",
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-haiku-20241022",
+        "gemini-2.5-flash-preview-05-20",
+        "gemini-2.5-pro-preview-05-06",
+    ]
 
-# HTTP endpoint to export a benchmark as CSV
 @app.get("/benchmarks/{benchmark_id}/export")
 async def export_csv(benchmark_id: int):
-    filename = f"benchmark_{benchmark_id}.csv"
-    logic.handle_export_benchmark_csv(benchmark_id, filename)
-    return FileResponse(filename, media_type="text/csv", filename=filename)
+    import tempfile
+    import os
+    
+    # Create a temporary file
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_file:
+        temp_filename = temp_file.name
+    
+    try:
+        # Use the more detailed export method that accepts a filename
+        result = logic.handle_export_benchmark_csv(benchmark_id, temp_filename)
+        
+        # Return the file and let FastAPI handle the cleanup
+        response_filename = f"benchmark_{benchmark_id}.csv"
+        return FileResponse(
+            temp_filename, 
+            media_type="text/csv", 
+            filename=response_filename,
+            background=lambda: os.unlink(temp_filename)  # Clean up temp file after response
+        )
+    except Exception as e:
+        # Clean up temp file if there's an error
+        if os.path.exists(temp_filename):
+            os.unlink(temp_filename)
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
-# WebSocket endpoint for real-time progress and completion events
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # Keep connection open; ignore any client messages
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+# ===== PROMPT SET ENDPOINTS =====
+
+@app.post("/prompt-sets")
+async def create_prompt_set(payload: dict):
+    """Create a new prompt set."""
+    name = payload.get("name", "")
+    description = payload.get("description", "")
+    prompts = payload.get("prompts", [])
+    
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    if not prompts:
+        raise HTTPException(status_code=400, detail="At least one prompt is required")
+    
+    return logic.create_prompt_set(name, description, prompts)
+
+@app.get("/prompt-sets")
+async def get_prompt_sets():
+    """Get all prompt sets."""
+    return logic.get_prompt_sets()
+
+@app.get("/prompt-sets/next-number")
+async def get_next_prompt_set_number():
+    """Get the next available prompt set number for auto-naming."""
+    return {"next_number": logic.get_next_prompt_set_number()}
+
+@app.get("/prompt-sets/{prompt_set_id}")
+async def get_prompt_set_details(prompt_set_id: int):
+    """Get detailed information about a specific prompt set."""
+    details = logic.get_prompt_set_details(prompt_set_id)
+    if details is None:
+        raise HTTPException(status_code=404, detail="Prompt set not found")
+    return details
+
+@app.put("/prompt-sets/{prompt_set_id}")
+async def update_prompt_set(prompt_set_id: int, payload: dict):
+    """Update a prompt set."""
+    name = payload.get("name")
+    description = payload.get("description")
+    prompts = payload.get("prompts")
+    
+    return logic.update_prompt_set(prompt_set_id, name, description, prompts)
+
+@app.delete("/prompt-sets/{prompt_set_id}")
+async def delete_prompt_set(prompt_set_id: int):
+    """Delete a prompt set."""
+    return logic.delete_prompt_set(prompt_set_id)
 
 if __name__ == "__main__":
     import uvicorn

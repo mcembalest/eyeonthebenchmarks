@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO,
                     ])
 
 # Set log levels for specific modules to increase visibility
-logging.getLogger('runner').setLevel(logging.DEBUG)
+# logging.getLogger('runner').setLevel(logging.DEBUG)
 logging.getLogger('models_openai').setLevel(logging.DEBUG)
 
 # Import the CSV exporter
@@ -41,7 +41,13 @@ from file_store import (
     find_benchmark_by_files,
     delete_benchmark,
     update_benchmark_details,
-    load_all_benchmarks_with_models
+    load_all_benchmarks_with_models,
+    create_prompt_set,
+    get_all_prompt_sets,
+    get_prompt_set,
+    update_prompt_set,
+    delete_prompt_set,
+    get_next_prompt_set_number
 )
 # Import the UI bridge protocol and data change types
 from ui_bridge import AppUIBridge, DataChangeType
@@ -116,35 +122,7 @@ class BenchmarkWorker(threading.Thread):
         self.active = True  # Single source of truth for worker state
         self._original_emit_progress_callback = None
         logging.info(f"BenchmarkWorker created: {self.name} with {len(prompts)} prompts for model {model_name}")
-        
-    def _validate_environment(self):
-        """Validate environment variables and dependencies required for the benchmark run"""
-        import os
-        logging.info(f"Validating environment for model: {self.model_name}")
-        
-        from dotenv import load_dotenv
-        load_dotenv()
-        logging.info(f"Worker {self.name}: Loaded environment variables from .env file")
-            
-        # Check API keys based on model
-        if self.model_name.startswith(("gpt-", "text-")) or "openai" in self.model_name.lower():
-            # OpenAI model
-            openai_key = os.environ.get('OPENAI_API_KEY')
-            if not openai_key:
-                logging.error(f"Worker {self.name}: OPENAI_API_KEY environment variable is not set")
-        
-        elif self.model_name.startswith("gemini") or "google" in self.model_name.lower():
-            # Google model
-            google_key = os.environ.get('GOOGLE_API_KEY')
-            if not google_key:
-                logging.error(f"Worker {self.name}: GOOGLE_API_KEY environment variable is not set")
-        
-        # Check required packages
-        required_packages = ['openai', 'tiktoken', 'PyPDF2']
-        for package in required_packages:
-            __import__(package)
-            logging.info(f"Package {package} is available")
-
+     
 
     def run(self):
         # Set a flag to track if we've called the completion callback
@@ -267,7 +245,6 @@ class BenchmarkWorker(threading.Thread):
             str(self.job_id),
             str(self.benchmark_id),
             prompts_file_path,  # Path to prompts JSON file
-            str(self.pdf_path) if self.pdf_path else '',  # Empty string if no PDF
             self.model_name
         ]
     
@@ -393,11 +370,11 @@ class BenchmarkWorker(threading.Thread):
             print(f"   ✅ Fallback completion callback sent")
             sys.stdout.flush()
         
-        # Clean up resources
-        if hasattr(self, '_original_emit_progress_callback') and self._original_emit_progress_callback is not None:
-            # Use the directly imported set_emit_progress_callback to restore the original callback
-            from runner import set_emit_progress_callback
-            set_emit_progress_callback(self._original_emit_progress_callback)
+        # # Clean up resources
+        # if hasattr(self, '_original_emit_progress_callback') and self._original_emit_progress_callback is not None:
+        #     # Use the directly imported set_emit_progress_callback to restore the original callback
+        #     from runner import set_emit_progress_callback
+        #     set_emit_progress_callback(self._original_emit_progress_callback)
         
         # Mark thread as inactive
         self.active = False
@@ -486,7 +463,7 @@ class AppLogic:
         init_file_store_db(db_path=db_dir)
         
         # Verify that the database was created successfully
-        db_file = db_dir / 'eotm_file_store.sqlite'
+        db_file = db_dir / 'eotb_file_store.sqlite'
         if not db_file.exists():
             logging.error(f"Database file was not created at expected location: {db_file}")
             raise FileNotFoundError(f"Database initialization failed: {db_file} not found")
@@ -533,7 +510,7 @@ class AppLogic:
         Launch a benchmark run with the provided prompts, PDF file, and model(s)
         
         Args:
-            prompts: List of prompt dictionaries with 'prompt_text' and 'expected_answer' keys
+            prompts: List of prompt dictionaries with 'prompt_text' keys
             pdfPath: Path to the PDF file to run the benchmark against
             modelNames: List of model names to use for this benchmark
             label: User-provided name for this benchmark
@@ -645,7 +622,7 @@ class AppLogic:
         
         # Use consistent database path - same as in _initialize_database
         db_dir = Path(__file__).parent
-        db_path = db_dir / 'eotm_file_store.sqlite'
+        db_path = db_dir / 'eotb_file_store.sqlite'
         logger.info(f"Using database at: {db_path} for saving benchmark")
         
         # Ensure database directory exists
@@ -661,6 +638,7 @@ class AppLogic:
             label=label,
             description=description or "",
             file_paths=[str(pdf_to_run)] if pdf_to_run else [],
+            intended_models=modelNames,  # Store the intended models
             db_path=db_dir
         )
         
@@ -850,16 +828,11 @@ class AppLogic:
                         # Add model name
                         row_dict['model_name'] = model_name
                         
-                        # Standardize column names
+                        # Standardize column names for MVP (no expected answers or scores)
                         if 'prompt' in row_dict:
                             row_dict['prompt_text'] = row_dict.pop('prompt')
                         elif 'prompt_preview' in row_dict:
                             row_dict['prompt_text'] = row_dict.pop('prompt_preview')
-                            
-                        if 'answer' in row_dict:
-                            row_dict['expected_answer'] = row_dict.pop('answer')
-                        elif 'answer_preview' in row_dict:
-                            row_dict['expected_answer'] = row_dict.pop('answer_preview')
                             
                         if 'response' in row_dict:
                             row_dict['model_answer'] = row_dict.pop('response')
@@ -874,9 +847,10 @@ class AppLogic:
                 
             df = pd.DataFrame(all_prompts_data)
             
-            # Define column order with model_name first
-            cols_order = ['model_name', 'prompt_text', 'expected_answer', 'model_answer', 'score', 'latency',
-                          'standard_input_tokens', 'cached_input_tokens', 'output_tokens']
+            # Define column order with model_name first, including cost columns
+            cols_order = ['model_name', 'prompt_text', 'model_answer', 'latency',
+                          'standard_input_tokens', 'cached_input_tokens', 'output_tokens',
+                          'input_cost', 'cached_cost', 'output_cost', 'total_cost']
             
             # Only keep relevant columns in order
             cols_to_export = [c for c in cols_order if c in df.columns]
@@ -925,8 +899,6 @@ class AppLogic:
         # First, log detailed information about the result
         if isinstance(result, dict):
             logging.info(f"Result is a dictionary with keys: {list(result.keys())}")
-            if 'mean_score' in result:
-                logging.info(f"Mean score: {result['mean_score']}")
             if 'items' in result:
                 logging.info(f"Items processed: {result['items']}")
             if 'error' in result:
@@ -1042,43 +1014,72 @@ class AppLogic:
             logging.info(f"Using model_name={model_name} for saving results")
                 
             # Create a report summary
-            report = f"Mean score: {result.get('mean_score', 'N/A')}, Items: {result.get('items', 'N/A')}, Time: {result.get('elapsed_s', 'N/A')}s"
+            report = f"Items: {result.get('items', 'N/A')}, Time: {result.get('elapsed_s', 'N/A')}s"
             logging.info(f"Benchmark summary: {report}")
             latency = result.get('elapsed_s', 0.0)
 
             total_standard_input_tokens = result.get('total_standard_input_tokens', 0)
             total_cached_input_tokens = result.get('total_cached_input_tokens', 0)
             total_output_tokens = result.get('total_output_tokens', 0)
+            total_cost = result.get('total_cost', 0.0)
+            provider = result.get('provider', 'unknown')
 
             total_tokens_overall = result.get('total_tokens', 0)
 
-            # Save the benchmark run to the database
-            run_id = save_benchmark_run(benchmark_id, model_name, report, latency, 
-                                        total_standard_input_tokens, total_cached_input_tokens, 
-                                        total_output_tokens, total_tokens_overall)
+            # Save the benchmark run to the database with cost tracking
+            run_id = save_benchmark_run(
+                benchmark_id=benchmark_id, 
+                model_name=model_name, 
+                provider=provider,
+                report=report, 
+                latency=latency,
+                total_standard_input_tokens=total_standard_input_tokens, 
+                total_cached_input_tokens=total_cached_input_tokens, 
+                total_output_tokens=total_output_tokens, 
+                total_tokens=total_tokens_overall,
+                total_input_cost=0.0,  # Will be calculated from individual prompts
+                total_cached_cost=0.0,  # Will be calculated from individual prompts
+                total_output_cost=0.0,  # Will be calculated from individual prompts
+                total_cost=total_cost
+            )
 
             if run_id:
                 prompts_data = result.get('prompts_data', [])
                 for p in prompts_data:
-                    prompt = p.get('prompt_text', '')
-                    answer = p.get('expected_answer', '')
-                    response = p.get('model_answer', '')
-                    score = str(p.get('score', ''))
-                    latency_val = p.get('latency_ms', 0.0)
+                    prompt = p.get('prompt', '')  # Updated key name from runner.py
+                    response = p.get('response', '')  # Updated key name from runner.py
+                    latency_val = p.get('latency', 0.0)  # Updated key name from runner.py
                     
                     standard_input_tokens_prompt = p.get('standard_input_tokens', 0)
                     cached_input_tokens_prompt = p.get('cached_input_tokens', 0)
                     output_tokens_prompt = p.get('output_tokens', 0)
+                    
+                    # Extract cost data from prompt results
+                    input_cost = p.get('input_cost', 0.0)
+                    cached_cost = p.get('cached_cost', 0.0)
+                    output_cost = p.get('output_cost', 0.0)
+                    total_cost_prompt = p.get('total_cost', 0.0)
 
-                    save_benchmark_prompt(run_id, prompt, answer, response, score, latency_val, 
-                                            standard_input_tokens_prompt, cached_input_tokens_prompt, output_tokens_prompt)
+                    # Use the updated save_benchmark_prompt function with cost tracking
+                    save_benchmark_prompt(
+                        benchmark_run_id=run_id, 
+                        prompt=prompt, 
+                        response=response, 
+                        latency=latency_val,
+                        standard_input_tokens=standard_input_tokens_prompt, 
+                        cached_input_tokens=cached_input_tokens_prompt, 
+                        output_tokens=output_tokens_prompt,
+                        input_cost=input_cost,
+                        cached_cost=cached_cost,
+                        output_cost=output_cost,
+                        total_cost=total_cost_prompt
+                    )
 
-                self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] run saved with DB ID: {run_id}", 5000)
+                self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] run saved with DB ID: {run_id if 'run_id' in locals() else 'N/A'})")
                 
                 result['summary'] = {
                     'run_id': run_id,
                     'model_name': model_name,
-                    'mean_score': result.get('mean_score', 'N/A'),
                     'items': result.get('items', 'N/A'),
                     'elapsed_s': result.get('elapsed_s', 'N/A')
                 }
@@ -1144,8 +1145,8 @@ class AppLogic:
         
         self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_LIST, None)
 
-    def get_active_benchmarks_info(self) -> dict:
-        return {jid: data for jid, data in self.jobs.items() if data['status'] == 'unfinished'}
+    def get_active_benchmarks_info(self) -> Dict[str, Any]:
+        return {jid: data for jid, data in self.jobs.items() if data['status'] not in ['complete', 'finished', 'error', 'deleted']}
 
     def request_display_benchmark_details(self, benchmark_id): 
         if benchmark_id is None:
@@ -1282,9 +1283,6 @@ class AppLogic:
             self.ui_bridge.show_message("error", "Update Failed", f"Could not update benchmark ID {benchmark_id}.")
             return {"success": False, "error": error_msg}
 
-    def get_active_benchmarks_info(self) -> List[Dict[str, Any]]:
-        return {jid: data for jid, data in self.jobs.items() if data['status'] == 'unfinished'}
-        
     def list_benchmarks(self) -> List[Dict[str, Any]]:
         """Get a list of all benchmarks from the database."""
         db_path = Path(__file__).parent
@@ -1340,7 +1338,7 @@ class AppLogic:
                         'id': db_item_id, # Use the DB benchmark_id
                         'label': active_job_data.get('label', benchmark_db_item.get('label', f'Benchmark {db_item_id}')),
                         'description': active_job_data.get('description', benchmark_db_item.get('description', '')),
-                        'model_names': active_job_data.get('models_details', {}).keys(), # Or fetch from db_item if more reliable
+                        'model_names': list(active_job_data.get('models_details', {}).keys()), # Convert to list
                         'status': 'running', # Mark as running
                         'timestamp': benchmark_db_item.get('timestamp', active_job_data.get('start_time', datetime.now().isoformat())),
                         # Include other fields like 'file_paths' if needed, usually from benchmark_db_item
@@ -1367,7 +1365,7 @@ class AppLogic:
                     'id': associated_benchmark_id,
                     'label': job_data.get('label', f'Benchmark {associated_benchmark_id}'),
                     'description': job_data.get('description', ''),
-                    'model_names': job_data.get('models_details', {}).keys(),
+                    'model_names': list(job_data.get('models_details', {}).keys()), # Convert to list
                     'status': 'running',
                     'timestamp': job_data.get('start_time', datetime.now().isoformat()),
                     'file_paths': [] # Or fetch if available
@@ -1379,6 +1377,123 @@ class AppLogic:
         result.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
         
         return result
+
+    def delete_benchmark(self, benchmark_id: int) -> dict:
+        """Delete a benchmark and all associated data."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import delete_benchmark
+            
+            success = delete_benchmark(benchmark_id, db_path)
+            
+            if success:
+                # Also mark the job as deleted if it exists
+                for job_id, job_data in self.jobs.items():
+                    if job_data.get('benchmark_id') == benchmark_id:
+                        job_data['status'] = 'deleted'  # Mark the job as deleted
+                        break
+                
+                return {"success": True, "message": f"Benchmark {benchmark_id} deleted successfully"}
+            else:
+                return {"success": False, "error": "Failed to delete benchmark"}
+                
+        except Exception as e:
+            logging.error(f"Error deleting benchmark {benchmark_id}: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ===== PROMPT SET MANAGEMENT =====
+    
+    def create_prompt_set(self, name: str, description: str, prompts: List[str]) -> dict:
+        """Create a new prompt set."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import create_prompt_set
+            
+            prompt_set_id = create_prompt_set(name, description, prompts, db_path)
+            
+            if prompt_set_id:
+                return {
+                    "success": True, 
+                    "prompt_set_id": prompt_set_id,
+                    "message": f"Prompt set '{name}' created successfully"
+                }
+            else:
+                return {"success": False, "error": "Failed to create prompt set"}
+                
+        except Exception as e:
+            logging.error(f"Error creating prompt set: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def get_prompt_sets(self) -> List[dict]:
+        """Get all prompt sets."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import get_all_prompt_sets
+            
+            return get_all_prompt_sets(db_path)
+            
+        except Exception as e:
+            logging.error(f"Error getting prompt sets: {e}")
+            return []
+    
+    def get_prompt_set_details(self, prompt_set_id: int) -> Optional[dict]:
+        """Get detailed information about a specific prompt set."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import get_prompt_set
+            
+            return get_prompt_set(prompt_set_id, db_path)
+            
+        except Exception as e:
+            logging.error(f"Error getting prompt set {prompt_set_id}: {e}")
+            return None
+    
+    def update_prompt_set(self, prompt_set_id: int, name: str = None, 
+                         description: str = None, prompts: List[str] = None) -> dict:
+        """Update a prompt set."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import update_prompt_set
+            
+            success = update_prompt_set(prompt_set_id, name, description, prompts, db_path)
+            
+            if success:
+                return {"success": True, "message": f"Prompt set {prompt_set_id} updated successfully"}
+            else:
+                return {"success": False, "error": "Failed to update prompt set"}
+                
+        except Exception as e:
+            logging.error(f"Error updating prompt set {prompt_set_id}: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def delete_prompt_set(self, prompt_set_id: int) -> dict:
+        """Delete a prompt set."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import delete_prompt_set
+            
+            success = delete_prompt_set(prompt_set_id, db_path)
+            
+            if success:
+                return {"success": True, "message": f"Prompt set {prompt_set_id} deleted successfully"}
+            else:
+                return {"success": False, "error": "Failed to delete prompt set (may be in use by benchmarks)"}
+                
+        except Exception as e:
+            logging.error(f"Error deleting prompt set {prompt_set_id}: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def get_next_prompt_set_number(self) -> int:
+        """Get the next available prompt set number for auto-naming."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import get_next_prompt_set_number
+            
+            return get_next_prompt_set_number(db_path)
+            
+        except Exception as e:
+            logging.error(f"Error getting next prompt set number: {e}")
+            return 1
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

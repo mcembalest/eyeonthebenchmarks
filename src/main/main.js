@@ -137,8 +137,8 @@ function httpPostJson(urlPath, payload) { // Changed parameter name for clarity
 
 const createWindow = () => {
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 600,
+    width: 1200,
+    height: 800,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -276,9 +276,11 @@ app.whenReady().then(async () => {
     ws.on('message', data => {
       try {
         const msg = JSON.parse(data);
+        console.log('🌐 Main Process: Received WebSocket message:', msg);
+        
         if (mainWindow && mainWindow.webContents && msg.ui_bridge_event) {
           // Extract the event name from ui_bridge_event and send only the data
-          console.log('Forwarding UI bridge event:', msg.ui_bridge_event, 'with data:', msg.data);
+          console.log('🌐 Main Process: Forwarding UI bridge event:', msg.ui_bridge_event, 'with data:', msg.data);
           
           // Special handling for benchmark progress events
           if (msg.ui_bridge_event === 'benchmark-progress') {
@@ -286,12 +288,16 @@ app.whenReady().then(async () => {
             if (msg.data.status === 'running' || msg.data.message?.includes('Starting benchmark')) {
               msg.data.status = 'running';
             }
+            console.log('🌐 Main Process: Sending benchmark-progress event to renderer with data:', msg.data);
           }
           
           mainWindow.webContents.send(msg.ui_bridge_event, msg.data);
+          console.log('🌐 Main Process: Event sent to renderer successfully');
+        } else {
+          console.log('🌐 Main Process: Not forwarding message - missing window, webContents, or ui_bridge_event');
         }
       } catch (e) {
-        console.error('Error parsing WS message:', e);
+        console.error('🌐 Main Process: Error parsing WS message:', e);
       }
     });
     ws.on('error', err => console.error('WS error:', err));
@@ -411,22 +417,20 @@ const setupIpcHandlers = () => {
         return result.map(v => v.trim());
       };
 
-      // Robust header detection (prompt, expected, expected_answer, ground_truth)
-      const headerLineRaw = lines[0].replace(/^\uFEFF/, '');
+      // Robust header detection (prompt only for MVP)
+      const headerLineRaw = lines[0].replace(/^\\uFEFF/, '');
       const headers = parseCsvLine(headerLineRaw).map(h => h.toLowerCase());
 
       let promptIndex = headers.findIndex(h => h === 'prompt' || h === 'prompt_text' || h === 'question');
-      let expectedIndex = headers.findIndex(h => ['expected', 'expected_answer', 'ground_truth', 'answer'].includes(h));
 
-      if (promptIndex === -1 || expectedIndex === -1) {
-        console.error(`Main: CSV headers did not contain required columns. Found headers: ${headers.join(', ')}`);
-        // Attempt to use first two columns if headers are not standard
-        if (headers.length >= 2) {
-          console.warn('Main: Defaulting to first column as prompt and second as expected.');
+      if (promptIndex === -1) {
+        console.error(`Main: CSV headers did not contain required prompt column. Found headers: ${headers.join(', ')}`);
+        // Attempt to use first column if headers are not standard
+        if (headers.length >= 1) {
+          console.warn('Main: Defaulting to first column as prompt.');
           promptIndex = 0;
-          expectedIndex = 1;
         } else {
-          throw new Error('CSV must have at least two columns, or standard headers (prompt, expected).');
+          throw new Error('CSV must have at least one column with prompt data.');
         }
       }
       
@@ -437,11 +441,10 @@ const setupIpcHandlers = () => {
         
         const values = parseCsvLine(line);
         
-        if (values.length > Math.max(promptIndex, expectedIndex)) {
+        if (values.length > promptIndex) {
           const promptText = values[promptIndex];
-          const expectedText = values[expectedIndex];
           if (promptText) { // Ensure prompt is not empty
-            data.push({ prompt: promptText, expected: expectedText || '' }); // Allow empty expected answer
+            data.push({ prompt: promptText }); // MVP - only prompt text
           }
         } else {
           console.warn(`Skipping line ${i+1} due to insufficient columns: ${line}`);
@@ -490,8 +493,25 @@ const setupIpcHandlers = () => {
 
   // Export benchmark to CSV via HTTP
   ipcMain.handle('export-benchmark-to-csv', async (event, benchmarkId) => {
-    // Frontend can open the CSV URL directly or implement download separately
-    return { url: `${apiBase}/benchmarks/${benchmarkId}/export` };
+    try {
+      const exportUrl = `${apiBase}/benchmarks/${benchmarkId}/export`;
+      console.log(`Main: Opening CSV export URL: ${exportUrl}`);
+      
+      // Open the CSV export URL in the default browser to trigger download
+      await shell.openExternal(exportUrl);
+      
+      return { 
+        success: true, 
+        message: 'CSV export opened in browser',
+        url: exportUrl 
+      };
+    } catch (error) {
+      console.error('Error exporting benchmark to CSV:', error);
+      return { 
+        success: false, 
+        error: error.message || 'Failed to export benchmark to CSV' 
+      };
+    }
   });
 
   // IPC for deleting a benchmark

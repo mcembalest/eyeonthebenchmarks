@@ -56,15 +56,14 @@ function populatePromptsTable(data) {
   promptsTableBody.innerHTML = ''; // Clear existing rows
 
   data.forEach(item => {
-    if (item.prompt !== undefined && item.expected !== undefined) {
+    if (item.prompt !== undefined) {
       const row = promptsTableBody.insertRow();
       const promptCell = row.insertCell();
-      const expectedCell = row.insertCell();
 
       promptCell.textContent = item.prompt;
-      expectedCell.textContent = item.expected;
+      promptCell.contentEditable = 'true';
     } else {
-      console.warn('Skipping row due to missing prompt or expected data:', item);
+      console.warn('Skipping row due to missing prompt data:', item);
     }
   });
 }
@@ -111,12 +110,10 @@ runBtn.addEventListener('click', () => {
   for (let i = 1; i < promptsTable.rows.length; i++) {
     const row = promptsTable.rows[i];
     const promptText = row.cells[0].textContent.trim();
-    const expectedAnswer = row.cells[1].textContent.trim();
     
-    if (promptText) {
+    if (promptText && promptText !== 'Enter prompt...') {
       prompts.push({
-        prompt_text: promptText,
-        expected_answer: expectedAnswer
+        prompt_text: promptText
       });
     }
   }
@@ -590,11 +587,13 @@ async function viewBenchmarkDetails(benchmarkId) {
     const consoleLog = document.getElementById('consoleLog');
     if (consoleLog) {
       consoleLog.innerHTML = `
-        <div class="text-center py-4">
-          <div class="spinner-border text-primary" role="status">
-            <span class="visually-hidden">Loading...</span>
+        <div class="d-flex justify-content-center align-items-center" style="min-height: 300px;">
+          <div class="text-center">
+            <div class="spinner-border text-primary mb-3" role="status" style="width: 3rem; height: 3rem;">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            <h5 class="text-muted">Loading benchmark details...</h5>
           </div>
-          <p class="mt-2">Loading benchmark details...</p>
         </div>
       `;
     }
@@ -610,102 +609,225 @@ async function viewBenchmarkDetails(benchmarkId) {
       throw new Error('Invalid or empty response from server');
     }
 
-    // Format timestamp if it exists
+    // Format timestamp
     let formattedTimestamp = 'N/A';
-    if (details.timestamp) {
+    if (details.created_at) {
       try {
-        const date = new Date(details.timestamp);
+        const date = new Date(details.created_at);
         formattedTimestamp = date.toLocaleString();
       } catch (e) {
         console.error('Error formatting timestamp:', e);
-        formattedTimestamp = details.timestamp;
+        formattedTimestamp = details.created_at;
       }
     }
+
+    // Extract models and create summary stats
+    const models = details.runs ? details.runs.map(run => run.model_name) : [];
+    const totalPrompts = details.runs && details.runs.length > 0 ? details.runs[0].prompts.length : 0;
+    const totalRuns = details.runs ? details.runs.length : 0;
     
-    // Format results for display using prompt-level data
-    let resultsHtml = '<p>No results available.</p>';
-    if (details.prompts_data && details.prompts_data.length > 0) {
-      resultsHtml = `
-        <div class="table-responsive">
-          <table class="table table-sm table-hover">
-            <thead>
-              <tr>
-                <th>Model</th>
-                <th>Prompt</th>
-                <th>Expected</th>
-                <th>Actual</th>
-                <th>Score</th>
-                <th>Latency (ms)</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${details.prompts_data.map(p => `
-                <tr>
-                  <td>${p.model_name || 'N/A'}</td>
-                  <td>${p.prompt_text}</td>
-                  <td>${p.expected_answer || 'N/A'}</td>
-                  <td>${p.model_answer || 'N/A'}</td>
-                  <td>${typeof p.score === 'number' ? p.score.toFixed(2) : p.score}</td>
-                  <td>${p.prompt_latency !== undefined ? p.prompt_latency : (p.latency !== undefined ? p.latency : 'N/A')}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      `;
+    // Calculate total cost and tokens across all runs
+    let totalCost = 0;
+    let totalTokens = 0;
+    let avgLatency = 0;
+    
+    if (details.runs && details.runs.length > 0) {
+      details.runs.forEach(run => {
+        if (run.prompts) {
+          run.prompts.forEach(prompt => {
+            totalCost += prompt.total_cost || 0;
+            totalTokens += (prompt.standard_input_tokens || 0) + (prompt.cached_input_tokens || 0) + (prompt.output_tokens || 0);
+            avgLatency += prompt.prompt_latency || 0;
+          });
+        }
+      });
+      avgLatency = avgLatency / (totalRuns * totalPrompts) || 0;
     }
+
+    // Create results HTML
+    let resultsHtml = '<div class="text-center text-muted py-4"><h5>No results available</h5></div>';
     
-    // Update the UI with benchmark details
-    if (consoleLog) {
-      consoleLog.innerHTML = `
-        <div class="benchmark-details">
-          <div class="d-flex justify-content-between align-items-center mb-4">
-            <h2 class="mb-0">${details.label || `Benchmark ${details.id}`}</h2>
+    if (details.runs && details.runs.length > 0) {
+      // Create a modern card-based layout for each model
+      resultsHtml = details.runs.map(run => {
+        const modelDisplayName = run.model_name || 'Unknown Model';
+        const provider = run.provider || 'unknown';
+        const runDate = run.run_created_at ? new Date(run.run_created_at).toLocaleString() : 'N/A';
+        
+        // Calculate run-level stats
+        const runTokens = (run.total_standard_input_tokens || 0) + (run.total_cached_input_tokens || 0) + (run.total_output_tokens || 0);
+        const runCost = run.prompts ? run.prompts.reduce((sum, p) => sum + (p.total_cost || 0), 0) : 0;
+        
+        // Provider badge color
+        const providerColors = {
+          'openai': 'bg-success',
+          'anthropic': 'bg-warning',
+          'google': 'bg-info',
+          'unknown': 'bg-secondary'
+        };
+        
+        const promptsHtml = run.prompts ? run.prompts.map((prompt, index) => `
+          <div class="border rounded p-3 mb-3 bg-light">
+            <div class="d-flex justify-content-between align-items-start mb-2">
+              <h6 class="mb-0 text-primary">Prompt ${index + 1}</h6>
+              <div class="d-flex gap-2">
+                <span class="badge bg-secondary">${prompt.prompt_latency || 0}ms</span>
+                <span class="badge bg-info">${(prompt.standard_input_tokens || 0) + (prompt.cached_input_tokens || 0)}→${prompt.output_tokens || 0} tokens</span>
+                ${prompt.total_cost ? `<span class="badge bg-success">$${prompt.total_cost.toFixed(6)}</span>` : ''}
+              </div>
+            </div>
+            
+            <div class="mb-3">
+              <div class="fw-bold text-muted mb-1">Question:</div>
+              <div class="p-2 bg-white border rounded small">${prompt.prompt || 'N/A'}</div>
+            </div>
+            
             <div>
-              <button id="refreshDetailsBtn" class="btn btn-outline-secondary btn-sm me-2">
-                <i class="fas fa-sync-alt"></i> Refresh
-              </button>
-              <button id="exportCsvBtn" class="btn btn-primary btn-sm">
-                <i class="fas fa-file-export me-1"></i> Export to CSV
-              </button>
+              <div class="fw-bold text-muted mb-1">Answer:</div>
+              <div class="p-2 bg-white border rounded small" style="white-space: pre-wrap;">${prompt.response || 'N/A'}</div>
             </div>
           </div>
-          
-          <div class="card mb-4">
+        `).join('') : '<div class="text-muted">No prompts available</div>';
+
+        return `
+          <div class="card mb-4 shadow-sm">
+            <div class="card-header bg-primary text-white">
+              <div class="d-flex justify-content-between align-items-center">
+                <div>
+                  <h5 class="mb-0">${modelDisplayName}</h5>
+                  <small class="opacity-75">Run completed: ${runDate}</small>
+                </div>
+                <div class="d-flex gap-2 align-items-center">
+                  <span class="badge ${providerColors[provider]} fs-6">${provider.toUpperCase()}</span>
+                  <span class="badge bg-light text-dark fs-6">${run.latency || 0}s total</span>
+                </div>
+              </div>
+            </div>
+            
             <div class="card-body">
-              <div class="row">
-                <div class="col-md-6">
-                  <div class="mb-3">
-                    <h6 class="text-muted mb-1">Description</h6>
-                    <p class="mb-0">${details.description || 'No description provided'}</p>
+              <div class="row mb-3">
+                <div class="col-md-3">
+                  <div class="text-center p-2 bg-light rounded">
+                    <div class="h4 mb-0 text-primary">${totalPrompts}</div>
+                    <small class="text-muted">Prompts</small>
                   </div>
                 </div>
-                <div class="col-md-6">
-                  <div class="mb-3">
-                    <h6 class="text-muted mb-1">Created</h6>
-                    <p class="mb-0">${formattedTimestamp}</p>
+                <div class="col-md-3">
+                  <div class="text-center p-2 bg-light rounded">
+                    <div class="h4 mb-0 text-info">${runTokens.toLocaleString()}</div>
+                    <small class="text-muted">Total Tokens</small>
+                  </div>
+                </div>
+                <div class="col-md-3">
+                  <div class="text-center p-2 bg-light rounded">
+                    <div class="h4 mb-0 text-success">$${runCost.toFixed(6)}</div>
+                    <small class="text-muted">Total Cost</small>
+                  </div>
+                </div>
+                <div class="col-md-3">
+                  <div class="text-center p-2 bg-light rounded">
+                    <div class="h4 mb-0 text-warning">${(run.latency || 0).toFixed(2)}s</div>
+                    <small class="text-muted">Avg Latency</small>
                   </div>
                 </div>
               </div>
               
-              <div class="row">
-                <div class="col-md-6">
-                  <div class="mb-3">
-                    <h6 class="text-muted mb-1">Models</h6>
-                    <p class="mb-0">${details.models ? details.models.join(', ') : 'N/A'}</p>
-                  </div>
+              <div class="mt-3">
+                <h6 class="text-muted mb-3">Detailed Results:</h6>
+                ${promptsHtml}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Update the UI with completely new design
+    if (consoleLog) {
+      consoleLog.innerHTML = `
+        <div class="container-fluid">
+          <!-- Header Section -->
+          <div class="d-flex justify-content-between align-items-center mb-4 p-3 bg-primary text-white rounded">
+            <div>
+              <h2 class="mb-1">${details.label || `Benchmark ${details.id}`}</h2>
+              <p class="mb-0 opacity-75">${details.description || 'No description provided'}</p>
+            </div>
+            <div class="d-flex gap-2">
+              <button id="refreshDetailsBtn" class="btn btn-light btn-sm">
+                <i class="fas fa-sync-alt me-1"></i> Refresh
+              </button>
+              <button id="exportCsvBtn" class="btn btn-success btn-sm">
+                <i class="fas fa-download me-1"></i> Export CSV
+              </button>
+              <button onclick="navigateTo('homeContent')" class="btn btn-outline-light btn-sm">
+                <i class="fas fa-arrow-left me-1"></i> Back to Home
+              </button>
+            </div>
+          </div>
+
+          <!-- Summary Stats -->
+          <div class="row mb-4">
+            <div class="col-md-2">
+              <div class="card text-center h-100">
+                <div class="card-body">
+                  <div class="h3 text-primary mb-1">${totalRuns}</div>
+                  <div class="text-muted small">Models Tested</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-2">
+              <div class="card text-center h-100">
+                <div class="card-body">
+                  <div class="h3 text-info mb-1">${totalPrompts}</div>
+                  <div class="text-muted small">Prompts Each</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-2">
+              <div class="card text-center h-100">
+                <div class="card-body">
+                  <div class="h3 text-success mb-1">$${totalCost.toFixed(6)}</div>
+                  <div class="text-muted small">Total Cost</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-2">
+              <div class="card text-center h-100">
+                <div class="card-body">
+                  <div class="h3 text-warning mb-1">${totalTokens.toLocaleString()}</div>
+                  <div class="text-muted small">Total Tokens</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-2">
+              <div class="card text-center h-100">
+                <div class="card-body">
+                  <div class="h3 text-secondary mb-1">${avgLatency.toFixed(0)}ms</div>
+                  <div class="text-muted small">Avg Latency</div>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-2">
+              <div class="card text-center h-100">
+                <div class="card-body">
+                  <div class="h3 text-dark mb-1">${formattedTimestamp.split(',')[0]}</div>
+                  <div class="text-muted small">Created</div>
                 </div>
               </div>
             </div>
           </div>
-          
-          <div class="card">
-            <div class="card-header">
-              <h5 class="mb-0">Results</h5>
-            </div>
-            <div class="card-body">
-              ${resultsHtml}
-            </div>
+
+          <!-- Models Section -->
+          <div class="mb-3">
+            <h4 class="text-muted mb-3">
+              <i class="fas fa-robot me-2"></i>Model Results
+              <small class="text-muted ms-2">(${models.length} models tested)</small>
+            </h4>
+          </div>
+
+          <!-- Results -->
+          <div class="results-container">
+            ${resultsHtml}
           </div>
         </div>
       `;
@@ -720,36 +842,27 @@ async function viewBenchmarkDetails(benchmarkId) {
       
       const exportBtn = document.getElementById('exportCsvBtn');
       if (exportBtn) {
-        exportBtn.addEventListener('click', () => {
-          showNotification('Preparing export...', 'info');
-          exportBtn.disabled = true;
-          exportBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Exporting...';
-          
-          window.electronAPI.exportBenchmarkToCsv(benchmarkId)
-            .then(result => {
-              if (result && result.url) {
-                // Create a hidden anchor element to download without opening a window
-                const downloadLink = document.createElement('a');
-                downloadLink.href = result.url;
-                downloadLink.download = `benchmark-${benchmarkId}.csv`;
-                document.body.appendChild(downloadLink);
-                downloadLink.click();
-                document.body.removeChild(downloadLink);
-                showNotification('Exporting CSV...', 'success', 5000);
-              } else {
-                throw new Error(result?.error || 'Export failed');
-              }
-            })
-            .catch(error => {
-              console.error('Export error:', error);
-              showNotification(`Export failed: ${error.message || 'Unknown error'}`, 'error');
-            })
-            .finally(() => {
-              if (exportBtn) {
-                exportBtn.disabled = false;
-                exportBtn.innerHTML = '<i class="fas fa-file-export me-1"></i> Export to CSV';
-              }
-            });
+        exportBtn.addEventListener('click', async () => {
+          try {
+            showNotification('Preparing export...', 'info');
+            exportBtn.disabled = true;
+            exportBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Exporting...';
+            
+            const result = await window.electronAPI.exportBenchmarkToCsv(benchmarkId);
+            if (result && result.success) {
+              showNotification('CSV export completed successfully!', 'success', 5000);
+            } else {
+              throw new Error(result?.error || 'Export failed');
+            }
+          } catch (error) {
+            console.error('Export error:', error);
+            showNotification(`Export failed: ${error.message || 'Unknown error'}`, 'error');
+          } finally {
+            if (exportBtn) {
+              exportBtn.disabled = false;
+              exportBtn.innerHTML = '<i class="fas fa-download me-1"></i> Export CSV';
+            }
+          }
         });
       }
     }
@@ -760,16 +873,24 @@ async function viewBenchmarkDetails(benchmarkId) {
     const consoleLog = document.getElementById('consoleLog');
     if (consoleLog) {
       consoleLog.innerHTML = `
-        <div class="alert alert-danger">
-          <h4 class="alert-heading">Error loading benchmark</h4>
-          <p>${errorMessage}</p>
-          <hr>
-          <button onclick="window.history.back()" class="btn btn-sm btn-outline-secondary me-2">
-            <i class="fas fa-arrow-left me-1"></i> Go Back
-          </button>
-          <button onclick="loadBenchmarks()" class="btn btn-sm btn-outline-primary">
-            <i class="fas fa-home me-1"></i> View All Benchmarks
-          </button>
+        <div class="container-fluid">
+          <div class="alert alert-danger shadow-sm">
+            <div class="d-flex align-items-center">
+              <i class="fas fa-exclamation-triangle fa-2x me-3 text-danger"></i>
+              <div>
+                <h4 class="alert-heading mb-1">Failed to Load Benchmark</h4>
+                <p class="mb-2">${errorMessage}</p>
+                <div class="d-flex gap-2">
+                  <button onclick="navigateTo('homeContent')" class="btn btn-outline-danger btn-sm">
+                    <i class="fas fa-home me-1"></i> Back to Home
+                  </button>
+                  <button onclick="viewBenchmarkDetails(${benchmarkId})" class="btn btn-danger btn-sm">
+                    <i class="fas fa-redo me-1"></i> Try Again
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       `;
     }
@@ -989,23 +1110,6 @@ window.electronAPI.onBenchmarkComplete(data => {
     data
   });
   
-  // Only play sound if this is a real transition from in-progress to complete
-  if (previousStatus === 'in-progress') {
-    console.log(`Playing sound for benchmark ${data.benchmark_id} completing (was ${previousStatus})`);
-    // Make sure we have the audio element ready
-    const woohooSound = document.getElementById('woohoo-sound');
-    if (woohooSound) {
-      console.log('Found audio element, playing sound...');
-      woohooSound.currentTime = 0;
-      woohooSound.play().catch(err => {
-        console.error('Error playing sound:', err);
-      });
-    } else {
-      console.error('Audio element not found!');
-    }
-  } else {
-    console.log(`Skipping sound for benchmark ${data.benchmark_id} - no status transition (was ${previousStatus})`);
-  }
   
   // Update stored status
   benchmarkStatuses.set(data.benchmark_id, 'complete');
@@ -1016,7 +1120,7 @@ window.electronAPI.onBenchmarkComplete(data => {
     // Update the progress text
     const progressElement = benchmarkElement.querySelector('.benchmark-progress');
     if (progressElement) {
-      progressElement.textContent = `Complete - Score: ${data.mean_score.toFixed(2)}`;
+      progressElement.textContent = `Complete - ${data.items || 'N/A'} responses collected`;
     }
 
     // Update the status badge
@@ -1037,13 +1141,11 @@ window.electronAPI.onBenchmarkComplete(data => {
   if (data.all_models_complete) {
     completionDiv.innerHTML = `
       <p style="font-weight: 600; color: #48bb78; margin-bottom: 8px;">✅ All Models Complete!</p>
-      <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
       <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
     `;
   } else {
     completionDiv.innerHTML = `
       <p style="font-weight: 600; color: #4299e1; margin-bottom: 8px;">✓ Model ${data.model_name} Complete!</p>
-      <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
       <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
       <p><small>Waiting for other models to complete...</small></p>
     `;
@@ -1102,23 +1204,6 @@ window.electronAPI.onBenchmarkComplete(data => {
     data
   });
   
-  // Only play sound if this is a real transition from in-progress to complete
-  if (previousStatus === 'in-progress') {
-    console.log(`Playing sound for benchmark ${data.benchmark_id} completing (was ${previousStatus})`);
-    // Make sure we have the audio element ready
-    const woohooSound = document.getElementById('woohoo-sound');
-    if (woohooSound) {
-      console.log('Found audio element, playing sound...');
-      woohooSound.currentTime = 0;
-      woohooSound.play().catch(err => {
-        console.error('Error playing sound:', err);
-      });
-    } else {
-      console.error('Audio element not found!');
-    }
-  } else {
-    console.log(`Skipping sound for benchmark ${data.benchmark_id} - no status transition (was ${previousStatus})`);
-  }
   
   // Update stored status
   benchmarkStatuses.set(data.benchmark_id, 'complete');
@@ -1129,7 +1214,7 @@ window.electronAPI.onBenchmarkComplete(data => {
     // Update the progress text
     const progressElement = benchmarkElement.querySelector('.benchmark-progress');
     if (progressElement) {
-      progressElement.textContent = `Complete - Score: ${data.mean_score.toFixed(2)}`;
+      progressElement.textContent = `Complete - ${data.items || 'N/A'} responses collected`;
     }
 
     // Update the status badge
@@ -1150,13 +1235,11 @@ window.electronAPI.onBenchmarkComplete(data => {
   if (data.all_models_complete) {
     completionDiv.innerHTML = `
       <p style="font-weight: 600; color: #48bb78; margin-bottom: 8px;">✅ All Models Complete!</p>
-      <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
       <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
     `;
   } else {
     completionDiv.innerHTML = `
       <p style="font-weight: 600; color: #4299e1; margin-bottom: 8px;">✓ Model ${data.model_name} Complete!</p>
-      <p>Mean Score: <strong>${data.mean_score || 'N/A'}</strong></p>
       <p>Elapsed Time: <strong>${data.elapsed_s || data.duration_seconds || '0'}</strong> seconds</p>
       <p><small>Waiting for other models to complete...</small></p>
     `;
@@ -1312,25 +1395,16 @@ async function initPage() {
   function addNewRow() {
     const row = promptsTableBody.insertRow();
     const promptCell = row.insertCell(0);
-    const expectedCell = row.insertCell(1);
     
-    // Make cells editable
+    // Make cell editable
     promptCell.contentEditable = 'true';
-    expectedCell.contentEditable = 'true';
     
     // Add placeholder text
     promptCell.textContent = 'Enter prompt...';
-    expectedCell.textContent = 'Enter expected answer...';
 
     // Clear placeholder on focus
     promptCell.addEventListener('focus', function() {
       if (this.textContent === 'Enter prompt...') {
-        this.textContent = '';
-      }
-    });
-
-    expectedCell.addEventListener('focus', function() {
-      if (this.textContent === 'Enter expected answer...') {
         this.textContent = '';
       }
     });
@@ -1342,21 +1416,16 @@ async function initPage() {
   defaultPrompts.forEach(item => {
     const row = promptsTableBody.insertRow();
     const promptCell = row.insertCell(0);
-    const expectedCell = row.insertCell(1);
     promptCell.textContent = item.prompt;
-    expectedCell.textContent = item.expected;
     
-    // Make cells editable
+    // Make cell editable
     promptCell.contentEditable = 'true';
-    expectedCell.contentEditable = 'true';
   });
   
   // Add extra empty row for new entries
   const emptyRow = promptsTableBody.insertRow();
   const emptyPromptCell = emptyRow.insertCell(0);
-  const emptyExpectedCell = emptyRow.insertCell(1);
   emptyPromptCell.contentEditable = 'true';
-  emptyExpectedCell.contentEditable = 'true';
   
   // Load initial benchmark data
   loadBenchmarks();

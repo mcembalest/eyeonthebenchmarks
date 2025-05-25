@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Direct benchmark execution script - designed to run benchmarks directly with minimal dependencies.
-This is a simplified version that can be called as a separate process from app.py
+This script runs benchmarks using the new multi-provider, multi-file database system.
 """
 
 import os
@@ -9,7 +9,6 @@ import sys
 import json
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, List
 import time
 
 # Configure logging
@@ -40,12 +39,11 @@ def emit_completion(data: dict):
     }))
     sys.stdout.flush()
 
-def run_direct_benchmark(job_id, benchmark_id, prompts, pdf_path, model_name):
+def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name):
     """
-    Run a benchmark directly without complex importing
+    Run a benchmark using files from the database
     """
     t0 = time.time()
-    pdf_path_obj = Path(pdf_path) if pdf_path else None
     
     try:
         # Add the current directory to sys.path
@@ -54,91 +52,40 @@ def run_direct_benchmark(job_id, benchmark_id, prompts, pdf_path, model_name):
         print(f"Added {project_root} to Python path")
         sys.stdout.flush()
         
-        # Verify the PDF exists and is readable if provided
-        if pdf_path_obj:
-            if not pdf_path_obj.exists():
-                error_msg = f"PDF file not found: {pdf_path}"
-                print(f"ERROR: {error_msg}")
-                sys.stdout.flush()
-                emit_progress({
-                    "job_id": job_id,
-                    "benchmark_id": benchmark_id,
-                    "model_name": model_name,
-                    "status": "error",
-                    "message": error_msg
-                })
-                return {"success": False, "error": error_msg}
-                
-            print(f"PDF file found: {pdf_path} (Size: {pdf_path_obj.stat().st_size / 1024:.1f} KB)")
-        else:
-            print("No PDF file provided - running benchmark without document context")
-        
         # Load environment variables
         from dotenv import load_dotenv
         load_dotenv()
         
-        # Check if we have the API key
-        api_key = os.environ.get('OPENAI_API_KEY')
-        if api_key:
-            print(f"OPENAI_API_KEY is set (length: {len(api_key)})")
-            print(f"API key starts with: {api_key[:5]}... ends with: ...{api_key[-3:]}")
-            sys.stdout.flush()
-        else:
-            error_msg = "OPENAI_API_KEY is not set!"
+        # Check if we have the required API keys
+        openai_key = os.environ.get('OPENAI_API_KEY')
+        google_key = os.environ.get('GOOGLE_API_KEY')
+        
+        if openai_key:
+            print(f"OPENAI_API_KEY is set (length: {len(openai_key)})")
+        if google_key:
+            print(f"GOOGLE_API_KEY is set (length: {len(google_key)})")
+        
+        if not openai_key and not google_key:
+            error_msg = "Neither OPENAI_API_KEY nor GOOGLE_API_KEY is set!"
             print(f"ERROR: {error_msg}")
-            print("Looking for .env file...")
-            env_path = os.path.join(project_root, '.env')
-            if os.path.exists(env_path):
-                print(f".env file exists at {env_path}")
-                with open(env_path, 'r') as f:
-                    content = f.read().strip()
-                    if content:
-                        print(f"Found content in .env file (length: {len(content)})")
-                        try:
-                            # Re-try loading with explicit path
-                            load_dotenv(env_path)
-                            print("Re-loaded environment variables from explicit path")
-                            api_key = os.environ.get('OPENAI_API_KEY')
-                            if api_key:
-                                print(f"SUCCESS: API key loaded now (length: {len(api_key)})")
-                            else:
-                                print("ERROR: Still could not load API key!")
-                        except Exception as e:
-                            print(f"Error loading .env file: {e}")
-                    else:
-                        print("ERROR: .env file exists but is empty!")
-            else:
-                print(f"ERROR: No .env file found at {env_path}")
-                
-            # Stop if no API key after attempts to load it
-            if not os.environ.get('OPENAI_API_KEY'):
-                error_msg = "Failed to load OpenAI API key from environment or .env file"
-                emit_progress({
-                    "job_id": job_id,
-                    "benchmark_id": benchmark_id,
-                    "model_name": model_name,
-                    "status": "error",
-                    "message": error_msg
-                })
-                return {"success": False, "error": error_msg}
+            emit_progress({
+                "job_id": job_id,
+                "benchmark_id": benchmark_id,
+                "model_name": model_name,
+                "status": "error",
+                "message": error_msg
+            })
+            return {"success": False, "error": error_msg}
         
-        sys.stdout.flush()
-        
-        # List available modules
-        import pkgutil
-        print("Available modules in path:")
-        modules = list(pkgutil.iter_modules([str(project_root)]))
-        for module in modules:
-            print(f"  - {module.name}")
         sys.stdout.flush()
         
         # Import the run_benchmark function directly
-        print("Importing run_benchmark from runner module...")
+        print("Importing run_benchmark_from_db from runner module...")
         sys.stdout.flush()
         
         try:
-            from runner import run_benchmark, set_emit_progress_callback
-            print("Successfully imported run_benchmark function")
+            from runner import run_benchmark_from_db, set_emit_progress_callback
+            print("Successfully imported run_benchmark_from_db function")
             sys.stdout.flush()
         except ImportError as e:
             error_msg = f"Failed to import required modules: {str(e)}"
@@ -167,10 +114,7 @@ def run_direct_benchmark(job_id, benchmark_id, prompts, pdf_path, model_name):
         set_emit_progress_callback(progress_callback)
         
         # Log start of benchmark
-        if pdf_path_obj:
-            print(f"Starting benchmark with model {model_name} on {pdf_path}")
-        else:
-            print(f"Starting benchmark with model {model_name} without document context")
+        print(f"Starting benchmark {benchmark_id} with model {model_name}")
         print(f"Number of prompts: {len(prompts)}")
         sys.stdout.flush()
         
@@ -183,10 +127,10 @@ def run_direct_benchmark(job_id, benchmark_id, prompts, pdf_path, model_name):
             "message": f"Starting benchmark with model {model_name}"
         })
         
-        # Run the actual benchmark
-        print(f"\n🔄 STARTING OPENAI API CALL WITH MODEL {model_name}...")
+        # Run the actual benchmark using database files
+        print(f"\n🔄 STARTING BENCHMARK WITH MODEL {model_name}...")
         sys.stdout.flush()
-        result = run_benchmark(prompts, pdf_path, model_name)
+        result = run_benchmark_from_db(prompts, benchmark_id, model_name)
         duration = time.time() - t0
         print(f"\n✅ BENCHMARK COMPLETED IN {duration:.2f} SECONDS")
         sys.stdout.flush()
@@ -239,25 +183,24 @@ def run_direct_benchmark(job_id, benchmark_id, prompts, pdf_path, model_name):
 # Entry point for subprocess execution
 if __name__ == "__main__":
     import sys, json
-    # Expecting args: job_id, benchmark_id, prompts_file_path, pdf_path, model_name
-    if len(sys.argv) != 6:
-        print(f"ERROR: Usage: python {sys.argv[0]} <job_id> <benchmark_id> <prompts_file> <pdf_path> <model_name>")
+    
+    if len(sys.argv) != 5:
+        print(f"ERROR: Usage: python {sys.argv[0]} <job_id> <benchmark_id> <prompts_file> <model_name>")
         sys.exit(1)
+    
     try:
         job_id = int(sys.argv[1])
         benchmark_id = int(sys.argv[2])
         prompts_file = sys.argv[3]
-        pdf_path = sys.argv[4]
-        model_name = sys.argv[5]
+        model_name = sys.argv[4]
+        
+        # Load prompts list
+        with open(prompts_file, 'r') as f:
+            prompts = json.load(f)
+        
+        # Run the database-based benchmark
+        run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name)
+        
     except Exception as e:
         print(f"ERROR: Invalid arguments: {e}")
         sys.exit(1)
-    # Load prompts list
-    try:
-        with open(prompts_file, 'r') as f:
-            prompts = json.load(f)
-    except Exception as e:
-        print(f"ERROR: Failed to load prompts file: {e}")
-        sys.exit(1)
-    # Run the direct benchmark
-    run_direct_benchmark(job_id, benchmark_id, prompts, pdf_path, model_name)

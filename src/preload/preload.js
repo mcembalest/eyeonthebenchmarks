@@ -48,12 +48,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // Navigation
   navigateTo: (page) => ipcRenderer.send('navigate-to', page),
-
-  // Sound playback - get verified path from main process
-  playSound: (soundPath, shouldPlay = true) => ipcRenderer.invoke('play-sound', soundPath, shouldPlay),
   
   // System events - receive updates from main process
-  onBenchmarkProgress: (callback) => ipcRenderer.on('benchmark-progress', (_, data) => callback(data)),
-  onBenchmarkComplete: (callback) => ipcRenderer.on('benchmark-complete', (_, data) => callback(data)),
+  onBenchmarkProgress: (callback) => {
+    console.log('🔌 Preload: Setting up onBenchmarkProgress listener');
+    ipcRenderer.on('benchmark-progress', (_, data) => {
+      console.log('🔌 Preload: Received benchmark-progress event:', data);
+      callback(data);
+    });
+  },
+  onBenchmarkComplete: (callback) => {
+    console.log('🔌 Preload: Setting up onBenchmarkComplete listener');
+    ipcRenderer.on('benchmark-complete', (_, data) => {
+      console.log('🔌 Preload: Received benchmark-complete event:', data);
+      callback(data);
+    });
+  },
   onMainProcessReady: (callback) => ipcRenderer.on('main-process-ready', (_event, ...args) => callback(...args)),
 });
