@@ -214,64 +214,152 @@ class Utils {
   }
 
   /**
-   * Get model image path based on model name
-   * @param {string} modelName - Model name
-   * @returns {string} Image path or null if not found
+   * Get model image filename
+   * @param {string} modelName - Model name (formatted or raw)
+   * @returns {string} Image path
    */
   static getModelImage(modelName) {
-    if (!modelName) return null;
+    if (!modelName) return 'assets/default-model.png';
     
-    // Clean the model name by removing date strings and normalizing
-    const cleanName = modelName.toLowerCase()
-      .replace(/-\d{4}-\d{2}-\d{2}.*$/, '') // Remove date strings like -2024-12-17
-      .replace(/-\d{8}.*$/, '') // Remove date strings like -20241217
-      .replace(/-preview.*$/, '') // Remove preview suffixes
-      .replace(/\s+/g, '-') // Replace spaces with hyphens
-      .trim();
+    const name = modelName.toLowerCase();
     
-    // List of available model images (based on the assets folder)
-    const availableModels = [
-      'claude-opus-4',
-      'claude-sonnet-4', 
-      'claude-3.7-sonnet',
-      'claude-3.5-haiku',
-      'gemini-2.5-flash',
-      'gemini-2.5-pro',
-      'gpt-4o-mini',
-      'gpt-4.1-nano',
-      'gpt-4.1-mini',
-      'gpt-4o',
-      'gpt-4.1',
-      'o4-mini',
-      'o3'
-    ];
-    
-    // Check if we have an exact match
-    if (availableModels.includes(cleanName)) {
-      return `assets/${cleanName}.png`;
+    // Handle OpenAI models - be very specific about exact matches
+    // Order matters: check more specific patterns first
+    if (name.includes('gpt-4.1-nano')) {
+      return 'assets/gpt-4.1-nano.png';
+    }
+    if (name.includes('gpt-4.1-mini')) {
+      return 'assets/gpt-4.1-mini.png';
+    }
+    if (name.includes('gpt-4.1')) {
+      return 'assets/gpt-4.1.png';
+    }
+    if (name.includes('gpt-4o-mini')) {
+      return 'assets/gpt-4o-mini.png';
+    }
+    if (name.includes('gpt-4o')) {
+      return 'assets/gpt-4o.png';
+    }
+    if (name.includes('gpt-4-turbo')) {
+      return 'assets/gpt-4-turbo.png';
+    }
+    // Note: We don't have a standalone gpt-4 model in this project
+    if (name.includes('gpt-3.5')) {
+      return 'assets/gpt-3.5.png';
     }
     
-    // Special handling for Claude models with dots converted to hyphens
-    if (cleanName.includes('claude-3.5') || cleanName.includes('claude-3-5')) {
-      if (cleanName.includes('haiku')) {
-        return 'assets/claude-3.5-haiku.png';
+    // Handle o-series models (separate from gpt-4o)
+    if (name === 'o3' || name.includes('o3-mini')) {
+      return 'assets/o3.png';
+    }
+    if (name === 'o4-mini' || name.includes('o4-mini')) {
+      return 'assets/o4-mini.png';
+    }
+    if (name.includes('o1')) {
+      return 'assets/o1.png';
+    }
+    
+    // Handle Claude models - match exact API names with date suffixes
+    if (name.includes('claude-opus-4')) {
+      return 'assets/claude-opus-4.png';
+    }
+    if (name.includes('claude-sonnet-4')) {
+      return 'assets/claude-sonnet-4.png';
+    }
+    if (name.includes('claude-3-7-sonnet')) {
+      return 'assets/claude-3.7-sonnet.png';
+    }
+    if (name.includes('claude-3-5-haiku')) {
+      return 'assets/claude-3.5-haiku.png';
+    }
+    if (name.includes('claude-3.5') || name.includes('claude-3-5')) {
+      return 'assets/claude-3.5.png';
+    }
+    if (name.includes('claude-3.7') || name.includes('claude-3-7')) {
+      return 'assets/claude-3.7-sonnet.png';
+    }
+    if (name.includes('claude-3')) {
+      return 'assets/claude-3.png';
+    }
+    if (name.includes('claude')) {
+      return 'assets/claude.png';
+    }
+    
+    // Handle Gemini models - match exact API names with preview suffixes
+    if (name.includes('gemini-2.5-flash')) {
+      return 'assets/gemini-2.5-flash.png';
+    }
+    if (name.includes('gemini-2.5-pro')) {
+      return 'assets/gemini-2.5-pro.png';
+    }
+    if (name.includes('gemini-2.5')) {
+      return 'assets/gemini-2.5.png';
+    }
+    if (name.includes('gemini-1.5')) {
+      return 'assets/gemini-1.5.png';
+    }
+    if (name.includes('gemini')) {
+      return 'assets/gemini.png';
+    }
+    
+    return 'assets/default-model.png';
+  }
+
+  /**
+   * Get provider from model name
+   * @param {string} modelName - Model name
+   * @returns {string} Provider name
+   */
+  static getProviderFromModel(modelName) {
+    if (!modelName) return 'unknown';
+    
+    const name = modelName.toLowerCase();
+    
+    if (name.includes('gpt') || name.includes('o1') || name.includes('o3') || name.includes('o4')) {
+      return 'openai';
+    }
+    if (name.includes('claude')) {
+      return 'anthropic';
+    }
+    if (name.includes('gemini')) {
+      return 'google';
+    }
+    
+    return 'unknown';
+  }
+
+  /**
+   * Create an image element for a model
+   * @param {string} modelName - Model name
+   * @param {string} className - CSS classes to apply
+   * @param {boolean} useModelSpecificIcon - Whether to use model-specific icons (true) or company logos (false)
+   * @returns {string} HTML img element or fallback
+   */
+  static createModelImage(modelName, className = 'model-image', useModelSpecificIcon = false) {
+    const formattedName = Utils.formatModelName(modelName);
+    
+    if (useModelSpecificIcon) {
+      // Use model-specific icons (for detailed results)
+      const imagePath = Utils.getModelImage(modelName);
+      if (imagePath && imagePath !== 'assets/default-model.png') {
+        return `<img src="${imagePath}" alt="${formattedName}" class="${className}" style="width: 24px; height: 24px; object-fit: contain;" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline';">
+                <i class="fas fa-microchip" style="display: none;"></i>`;
       }
-    }
-    
-    if (cleanName.includes('claude-3.7') || cleanName.includes('claude-3-7')) {
-      if (cleanName.includes('sonnet')) {
-        return 'assets/claude-3.7-sonnet.png';
+      // Fallback to icon
+      return `<i class="fas fa-microchip"></i>`;
+    } else {
+      // Use company logos (for home page, grids, tables, etc.)
+      const provider = Utils.getProviderFromModel(modelName);
+      const providerImage = Utils.getProviderImage(provider);
+      
+      if (providerImage) {
+        return `<img src="${providerImage}" alt="${provider}" class="${className}" style="width: 20px; height: 20px; object-fit: contain;" title="${formattedName}">`;
       }
+      
+      // Fallback to colored badge
+      const color = Utils.getProviderColor(provider);
+      return `<span class="badge bg-${color}" title="${formattedName}">${provider?.toUpperCase() || 'UNKNOWN'}</span>`;
     }
-    
-    // Try partial matches for common model families
-    for (const available of availableModels) {
-      if (cleanName.includes(available) || available.includes(cleanName)) {
-        return `assets/${available}.png`;
-      }
-    }
-    
-    return null;
   }
 
   /**
@@ -291,78 +379,104 @@ class Utils {
   }
 
   /**
-   * Create an image element for a model
-   * @param {string} modelName - Model name
-   * @param {string} className - CSS classes to apply
-   * @returns {string} HTML img element or fallback
+   * Format model name for display
+   * @param {string} modelId - Raw model ID
+   * @returns {string} Formatted model name
    */
-  static createModelImage(modelName, className = 'model-image') {
-    const imagePath = Utils.getModelImage(modelName);
-    const formattedName = Utils.formatModelName(modelName);
+  static formatModelName(modelId) {
+    if (!modelId) return 'Unknown Model';
     
-    if (imagePath) {
-      return `<img src="${imagePath}" alt="${formattedName}" class="${className}" style="width: 24px; height: 24px; object-fit: contain;">`;
+    const name = modelId.toLowerCase();
+    
+    // Handle OpenAI models with proper naming - order matters!
+    // Check more specific patterns first
+    if (name.includes('gpt-4.1-nano')) {
+      return 'GPT-4.1 Nano';
     }
-    // Fallback to icon
-    return `<i class="fas fa-microchip"></i>`;
-  }
-
-  /**
-   * Format model name for display with proper capitalization and formatting
-   * @param {string} modelName - Raw model name from API
-   * @returns {string} Formatted model name for display
-   */
-  static formatModelName(modelName) {
-    if (!modelName) return 'Unknown Model';
+    if (name.includes('gpt-4.1-mini')) {
+      return 'GPT-4.1 Mini';
+    }
+    if (name.includes('gpt-4.1')) {
+      return 'GPT-4.1';
+    }
+    if (name.includes('gpt-4o-mini')) {
+      return 'GPT-4o Mini'; // Four-oh Mini
+    }
+    if (name.includes('gpt-4o')) {
+      return 'GPT-4o'; // Four-oh
+    }
+    if (name.includes('gpt-4-turbo')) {
+      return 'GPT-4 Turbo';
+    }
+    // Note: We don't have a standalone gpt-4 model in this project
+    if (name.includes('gpt-3.5-turbo')) {
+      return 'GPT-3.5 Turbo';
+    }
+    if (name.includes('gpt-3.5')) {
+      return 'GPT-3.5';
+    }
     
-    let formatted = modelName;
+    // Handle o-series models (different from gpt-4o)
+    if (name === 'o3' || name === 'o3-mini') {
+      return name.toUpperCase(); // O3, O3-MINI
+    }
+    if (name === 'o4-mini') {
+      return 'O4 Mini';
+    }
+    if (name === 'o1' || name === 'o1-mini' || name === 'o1-preview') {
+      return name.toUpperCase().replace('-', ' '); // O1, O1 MINI, O1 PREVIEW
+    }
     
-    // Replace hyphens with dots for version numbers in Claude models
-    formatted = formatted.replace(/claude-3-5/gi, 'Claude 3.5');
-    formatted = formatted.replace(/claude-3-7/gi, 'Claude 3.7');
-    
-    // Handle other Claude models
-    formatted = formatted.replace(/claude-(\w+)-(\d+)/gi, 'Claude $1 $2');
-    formatted = formatted.replace(/claude-(\w+)/gi, 'Claude $1');
-    
-    // Handle GPT models
-    formatted = formatted.replace(/gpt-(\d+\.?\d*)-?(\w*)/gi, (match, version, variant) => {
-      let result = `GPT-${version}`;
-      if (variant) {
-        result += ` ${variant.charAt(0).toUpperCase() + variant.slice(1)}`;
-      }
-      return result;
-    });
-    
-    // Handle O models (OpenAI's O series)
-    formatted = formatted.replace(/^o(\d+)-?(\w*)/gi, (match, version, variant) => {
-      let result = `O${version}`;
-      if (variant) {
-        result += ` ${variant.charAt(0).toUpperCase() + variant.slice(1)}`;
-      }
-      return result;
-    });
+    // Handle Claude models
+    if (name.includes('claude-3.5-sonnet') || name.includes('claude-3-5-sonnet')) {
+      return 'Claude 3.5 Sonnet';
+    }
+    if (name.includes('claude-3.5-haiku') || name.includes('claude-3-5-haiku')) {
+      return 'Claude 3.5 Haiku';
+    }
+    if (name.includes('claude-3.7-sonnet') || name.includes('claude-3-7-sonnet')) {
+      return 'Claude 3.7 Sonnet';
+    }
+    if (name.includes('claude-sonnet-4')) {
+      return 'Claude Sonnet 4';
+    }
+    if (name.includes('claude-opus-4')) {
+      return 'Claude Opus 4';
+    }
+    if (name.includes('claude-3-sonnet')) {
+      return 'Claude 3 Sonnet';
+    }
+    if (name.includes('claude-3-haiku')) {
+      return 'Claude 3 Haiku';
+    }
+    if (name.includes('claude-3-opus')) {
+      return 'Claude 3 Opus';
+    }
     
     // Handle Gemini models
-    formatted = formatted.replace(/gemini-(\d+\.?\d*)-?(\w*)/gi, (match, version, variant) => {
-      let result = `Gemini ${version}`;
-      if (variant) {
-        result += ` ${variant.charAt(0).toUpperCase() + variant.slice(1)}`;
-      }
-      return result;
-    });
-    
-    // Remove date strings and preview suffixes
-    formatted = formatted.replace(/-\d{4}-\d{2}-\d{2}.*$/gi, '');
-    formatted = formatted.replace(/-\d{8}.*$/gi, '');
-    formatted = formatted.replace(/-preview.*$/gi, '');
-    
-    // Capitalize first letter if not already handled
-    if (!formatted.match(/^(GPT|Claude|Gemini|O\d)/)) {
-      formatted = formatted.charAt(0).toUpperCase() + formatted.slice(1);
+    if (name.includes('gemini-2.5-flash')) {
+      return 'Gemini 2.5 Flash';
+    }
+    if (name.includes('gemini-2.5-pro')) {
+      return 'Gemini 2.5 Pro';
+    }
+    if (name.includes('gemini-1.5-pro')) {
+      return 'Gemini 1.5 Pro';
+    }
+    if (name.includes('gemini-1.5-flash')) {
+      return 'Gemini 1.5 Flash';
+    }
+    if (name.includes('gemini-pro')) {
+      return 'Gemini Pro';
+    }
+    if (name.includes('gemini-flash')) {
+      return 'Gemini Flash';
     }
     
-    return formatted.trim();
+    // Fallback: capitalize first letter of each word
+    return modelId.split(/[-_]/).map(word => 
+      word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+    ).join(' ');
   }
 }
 

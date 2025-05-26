@@ -230,43 +230,195 @@ class App {
   }
 
   /**
-   * Update the PDF display to show all selected files
+   * Update PDF display with current selection
    */
   updatePdfDisplay() {
-    const label = document.getElementById('selectedPdfLabel');
-    if (!label) return;
+    const selectedPdfLabel = document.getElementById('selectedPdfLabel');
+    if (!selectedPdfLabel) return;
 
-    if (window.Pages.selectedPdfPaths.length === 0) {
-      label.innerHTML = '<span class="text-muted">No files selected</span>';
-      return;
-    }
-
-    const fileList = window.Pages.selectedPdfPaths.map((path, index) => {
-      const fileName = path.split('/').pop() || path.split('\\').pop();
-      return `
-        <div class="d-flex align-items-center justify-content-between mb-1">
-          <span class="text-success small">${fileName}</span>
-          <button class="btn btn-sm btn-outline-danger ms-2" onclick="window.App.removePdfFile(${index})" title="Remove file">
+    const pdfPaths = window.Pages.selectedPdfPaths || [];
+    
+    if (pdfPaths.length === 0) {
+      selectedPdfLabel.innerHTML = '<span class="text-muted">No files selected</span>';
+    } else if (pdfPaths.length === 1) {
+      const fileName = pdfPaths[0].split('/').pop() || pdfPaths[0].split('\\\\').pop();
+      selectedPdfLabel.innerHTML = `
+        <div class="d-flex justify-content-between align-items-center">
+          <span class="small">${Utils.sanitizeHtml(fileName)}</span>
+          <button class="btn btn-sm btn-outline-danger" onclick="window.App.removePdfFile(0)">
             <i class="fas fa-times"></i>
           </button>
         </div>
       `;
-    }).join('');
+    } else {
+      selectedPdfLabel.innerHTML = `
+        <div class="selected-files">
+          ${pdfPaths.map((path, index) => {
+            const fileName = path.split('/').pop() || path.split('\\\\').pop();
+            return `
+              <div class="d-flex justify-content-between align-items-center">
+                <span class="small">${Utils.sanitizeHtml(fileName)}</span>
+                <button class="btn btn-sm btn-outline-danger" onclick="window.App.removePdfFile(${index})">
+                  <i class="fas fa-times"></i>
+                </button>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+    }
 
-    label.innerHTML = `
-      <div class="selected-files">
-        ${fileList}
-        <small class="text-muted">${window.Pages.selectedPdfPaths.length} file(s) selected</small>
-      </div>
-    `;
+    // Show warning for multiple PDFs with real-time token validation
+    if (pdfPaths.length > 1) {
+      this.showTokenWarningForPdfs(pdfPaths);
+    } else {
+      // Remove any existing warning
+      const existingWarning = document.querySelector('.pdf-token-warning');
+      if (existingWarning) {
+        existingWarning.remove();
+      }
+    }
   }
 
   /**
-   * Remove a PDF file from the selection
+   * Show token warning for multiple PDFs with real-time validation
+   */
+  async showTokenWarningForPdfs(pdfPaths) {
+    // Remove any existing warning first
+    const existingWarning = document.querySelector('.pdf-token-warning');
+    if (existingWarning) {
+      existingWarning.remove();
+    }
+
+    // Get currently selected models
+    const selectedModels = Array.from(
+      document.querySelectorAll('#modelList input[type="checkbox"]:checked')
+    ).map(cb => cb.value);
+
+    if (selectedModels.length === 0) {
+      // Show generic warning if no models selected yet
+      const selectedPdfLabel = document.getElementById('selectedPdfLabel');
+      selectedPdfLabel.insertAdjacentHTML('afterend', `
+        <div class="alert alert-warning mt-2 mb-0 small pdf-token-warning">
+          <i class="fas fa-exclamation-triangle me-1"></i>
+          <strong>Multiple PDFs selected:</strong> Some models may hit token limits. Select models to see specific estimates.
+        </div>
+      `);
+      return;
+    }
+
+    // Get a sample prompt to estimate tokens (use first prompt if available)
+    const prompts = window.Pages.prompts
+      ?.map(p => ({ prompt_text: p.text.trim() }))
+      ?.filter(p => p.prompt_text) || [{ prompt_text: "Sample prompt for token estimation" }];
+
+    try {
+      // Perform real-time token validation
+      const validation = await window.API.validateTokens({
+        prompts: prompts.slice(0, 1), // Use just one prompt for estimation
+        pdfPaths,
+        modelNames: selectedModels
+      });
+
+      if (validation.status === 'success' && validation.validation_results) {
+        const results = validation.validation_results;
+        
+        // Categorize models by risk level
+        const exceedingModels = [];
+        const warningModels = [];
+        const safeModels = [];
+
+        Object.entries(results.model_results).forEach(([modelName, result]) => {
+          const formattedName = Utils.formatModelName(modelName);
+          const tokenInfo = `${result.estimated_tokens.toLocaleString()} / ${result.context_limit.toLocaleString()} tokens`;
+          
+          if (result.will_exceed) {
+            exceedingModels.push(`${formattedName} (${tokenInfo})`);
+          } else if (result.estimated_tokens > result.context_limit * 0.8) {
+            warningModels.push(`${formattedName} (${tokenInfo})`);
+          } else {
+            safeModels.push(`${formattedName} (${tokenInfo})`);
+          }
+        });
+
+        // Create detailed warning message
+        let warningHtml = `
+          <div class="alert alert-warning mt-2 mb-0 small pdf-token-warning">
+            <div class="d-flex align-items-start">
+              <i class="fas fa-exclamation-triangle me-2 mt-1"></i>
+              <div class="flex-grow-1">
+                <strong>Token Analysis for ${pdfPaths.length} PDFs:</strong>
+        `;
+
+        if (exceedingModels.length > 0) {
+          warningHtml += `
+            <div class="mt-1">
+              <span class="text-danger fw-bold">🚫 Will likely fail:</span>
+              <div class="ms-2">${exceedingModels.join(', ')}</div>
+            </div>
+          `;
+        }
+
+        if (warningModels.length > 0) {
+          warningHtml += `
+            <div class="mt-1">
+              <span class="text-warning fw-bold">⚠️ May struggle:</span>
+              <div class="ms-2">${warningModels.join(', ')}</div>
+            </div>
+          `;
+        }
+
+        if (safeModels.length > 0) {
+          warningHtml += `
+            <div class="mt-1">
+              <span class="text-success fw-bold">✅ Should work:</span>
+              <div class="ms-2">${safeModels.join(', ')}</div>
+            </div>
+          `;
+        }
+
+        warningHtml += `
+              </div>
+            </div>
+          </div>
+        `;
+
+        const selectedPdfLabel = document.getElementById('selectedPdfLabel');
+        selectedPdfLabel.insertAdjacentHTML('afterend', warningHtml);
+
+      } else {
+        // Fallback to generic warning if validation fails
+        const selectedPdfLabel = document.getElementById('selectedPdfLabel');
+        selectedPdfLabel.insertAdjacentHTML('afterend', `
+          <div class="alert alert-warning mt-2 mb-0 small pdf-token-warning">
+            <i class="fas fa-exclamation-triangle me-1"></i>
+            <strong>Multiple PDFs selected:</strong> Models with smaller context windows may hit token limits.
+            <br><strong>Most likely to fail:</strong> GPT-4o and GPT-4o Mini (128K tokens)
+            <br><strong>May fail with large documents:</strong> Claude models and o3/o4-mini (200K tokens)
+            <br><strong>Best for large documents:</strong> GPT 4.1 series and Gemini models (1M+ tokens)
+          </div>
+        `);
+      }
+    } catch (error) {
+      console.error('Error validating tokens for PDF warning:', error);
+      // Show generic warning on error
+      const selectedPdfLabel = document.getElementById('selectedPdfLabel');
+      selectedPdfLabel.insertAdjacentHTML('afterend', `
+        <div class="alert alert-warning mt-2 mb-0 small pdf-token-warning">
+          <i class="fas fa-exclamation-triangle me-1"></i>
+          <strong>Multiple PDFs selected:</strong> Unable to estimate token usage. Some models may hit limits.
+        </div>
+      `);
+    }
+  }
+
+  /**
+   * Remove a PDF file from selection
+   * @param {number} index - Index of file to remove
    */
   removePdfFile(index) {
-    if (index >= 0 && index < window.Pages.selectedPdfPaths.length) {
-      const fileName = window.Pages.selectedPdfPaths[index].split('/').pop() || window.Pages.selectedPdfPaths[index].split('\\').pop();
+    if (window.Pages.selectedPdfPaths && index >= 0 && index < window.Pages.selectedPdfPaths.length) {
+      const fileName = window.Pages.selectedPdfPaths[index].split('/').pop() || window.Pages.selectedPdfPaths[index].split('\\\\').pop();
       window.Pages.selectedPdfPaths.splice(index, 1);
       this.updatePdfDisplay();
       window.Components.showToast(`Removed file: ${fileName}`, 'info');

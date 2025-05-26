@@ -494,6 +494,28 @@ class API {
       throw error;
     }
   }
+
+  /**
+   * Validate token limits for prompts and files
+   * @param {Object} config - Validation configuration
+   * @returns {Promise<Object>} Validation results
+   */
+  async validateTokens(config) {
+    const { prompts, pdfPaths, modelNames } = config;
+
+    try {
+      const result = await this.electronAPI.validateTokens(
+        prompts || [],
+        pdfPaths || [],
+        modelNames || []
+      );
+
+      return result;
+    } catch (error) {
+      console.error('Error validating tokens:', error);
+      throw new Error(`Failed to validate tokens: ${error.message}`);
+    }
+  }
 }
 
 // Create singleton instance

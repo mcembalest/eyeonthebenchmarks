@@ -51,6 +51,7 @@ from file_store import (
 )
 # Import the UI bridge protocol and data change types
 from ui_bridge import AppUIBridge, DataChangeType
+from token_validator import validate_token_limits, format_token_validation_message
 
 # --- ScriptUiBridge for command-line execution ---
 class ScriptUiBridge(AppUIBridge):
@@ -1525,6 +1526,38 @@ class AppLogic:
         except Exception as e:
             logging.error(f"Error getting next prompt set number: {e}")
             return 1
+
+    def validate_tokens(self, prompts: list, pdfPaths: list, modelNames: list) -> dict:
+        """
+        Validate that prompts + PDFs don't exceed context limits for the selected models.
+        
+        Args:
+            prompts: List of prompt dictionaries with 'prompt_text' keys
+            pdfPaths: List of PDF file paths
+            modelNames: List of model names to check
+            
+        Returns:
+            Dictionary with validation results
+        """
+        try:
+            # Validate inputs
+            if not prompts:
+                return {"status": "error", "message": "No prompts provided"}
+            if not modelNames:
+                return {"status": "error", "message": "No models provided"}
+            
+            # Run token validation
+            validation_results = validate_token_limits(prompts, pdfPaths or [], modelNames)
+            
+            return {
+                "status": "success",
+                "validation_results": validation_results,
+                "formatted_message": format_token_validation_message(validation_results)
+            }
+            
+        except Exception as e:
+            logging.error(f"Error validating tokens: {str(e)}")
+            return {"status": "error", "message": f"Token validation failed: {str(e)}"}
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

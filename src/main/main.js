@@ -575,4 +575,15 @@ const setupIpcHandlers = () => {
       return { success: false, models: [], error: error.message };
     }
   });
+
+  // Validate tokens via HTTP
+  ipcMain.handle('validate-tokens', async (event, { prompts, pdfPaths, modelNames }) => {
+    try {
+      const result = await httpPostJson('/validate-tokens', { prompts, pdfPaths, modelNames });
+      return result;
+    } catch (err) {
+      console.error('Error validating tokens:', err);
+      return { status: 'error', message: err.message };
+    }
+  });
 }

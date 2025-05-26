@@ -629,7 +629,6 @@ class Pages {
               <div class="d-flex align-items-center">
                 ${statusContent}
                 ${Utils.createProviderImage(provider, 'me-2')}
-                ${Utils.createModelImage(modelName, 'me-2')}
                 <strong>${Utils.sanitizeHtml(Utils.formatModelName(modelName))}</strong>
               </div>
             </td>
@@ -846,7 +845,16 @@ class Pages {
       return '<div class="text-center text-muted py-4"><h5>No results available</h5></div>';
     }
 
-    return runs.map(run => {
+    // Deduplicate runs by model name and provider (same logic as summary table)
+    const uniqueModels = new Map();
+    runs.forEach(run => {
+      const modelKey = `${run.model_name}_${run.provider}`;
+      if (!uniqueModels.has(modelKey)) {
+        uniqueModels.set(modelKey, run);
+      }
+    });
+
+    return Array.from(uniqueModels.values()).map(run => {
       const modelDisplayName = Utils.formatModelName(run.model_name) || 'Unknown Model';
       const provider = run.provider || 'unknown';
       const runDate = Utils.formatDate(run.run_created_at);
@@ -933,7 +941,7 @@ class Pages {
                 
                 <div>
                   <div class="fw-bold text-muted mb-1">Answer:</div>
-                  <div class="p-2 bg-white border rounded small" style="white-space: pre-wrap;">${Utils.sanitizeHtml(prompt.response || 'N/A')}</div>
+                  <div class="p-2 bg-white border rounded small" style="white-space: pre-wrap;">${this.formatPromptResponse(prompt.response || 'N/A')}</div>
                 </div>
               </div>
             `;
@@ -987,14 +995,12 @@ class Pages {
           <div class="card-header ${headerClass} text-white">
             <div class="d-flex justify-content-between align-items-center">
               <div class="d-flex align-items-center">
-                ${Utils.createModelImage(modelDisplayName, 'me-2')}
                 <div>
                   <h5 class="mb-0">${Utils.sanitizeHtml(modelDisplayName)}</h5>
                   <small class="opacity-75">${statusText}${runDate ? ` • ${runDate}` : ''}</small>
                 </div>
               </div>
               <div class="d-flex gap-2 align-items-center">
-                ${Utils.createProviderImage(provider, 'provider-badge')}
                 ${hasResults ? `<span class="badge bg-light text-dark fs-6">${formatModelLatency(totalLatencyMs)} total</span>` : ''}
                 ${isRunning ? '<i class="fas fa-spinner fa-spin"></i>' : ''}
               </div>
@@ -1422,6 +1428,39 @@ class Pages {
         return;
       }
 
+      // Validate token limits before running
+      window.Components.showToast('Checking token limits...', 'info');
+      
+      try {
+        const validation = await window.API.validateTokens({
+          prompts,
+          pdfPaths: this.selectedPdfPaths,
+          modelNames: selectedModels
+        });
+
+        if (validation.status === 'error') {
+          window.Components.showToast(`Token validation failed: ${validation.message}`, 'error');
+          return;
+        }
+
+        const validationResults = validation.validation_results;
+        
+        // If there are models that will exceed limits, show confirmation dialog
+        if (!validationResults.valid) {
+          const confirmed = await this.showTokenLimitConfirmation(validation.formatted_message, validationResults);
+          if (!confirmed) {
+            return; // User cancelled
+          }
+        } else {
+          // All models are fine, show success message
+          window.Components.showToast('✅ All models can handle the content within their limits', 'success');
+        }
+        
+      } catch (error) {
+        console.error('Token validation error:', error);
+        window.Components.showToast('Could not validate token limits. Proceeding anyway...', 'warning');
+      }
+
       // Disable button and show loading
       if (runBtn) {
         runBtn.disabled = true;
@@ -1461,6 +1500,129 @@ class Pages {
         runBtn.innerHTML = '<i class="fas fa-play me-2"></i>Run Benchmark';
       }
     }
+  }
+
+  /**
+   * Show token limit confirmation dialog
+   * @param {string} message - Formatted validation message
+   * @param {Object} validationResults - Validation results object
+   * @returns {Promise<boolean>} Whether user confirmed to proceed
+   */
+  async showTokenLimitConfirmation(message, validationResults) {
+    return new Promise((resolve) => {
+      // Count models that will exceed vs those that won't
+      const exceedingModels = [];
+      const safeModels = [];
+      
+      Object.entries(validationResults.model_results).forEach(([modelName, result]) => {
+        if (result.will_exceed) {
+          exceedingModels.push(modelName);
+        } else {
+          safeModels.push(modelName);
+        }
+      });
+
+      const modalHtml = `
+        <div class="modal fade" id="tokenLimitModal" tabindex="-1">
+          <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+              <div class="modal-header bg-warning text-dark">
+                <h5 class="modal-title">
+                  <i class="fas fa-exclamation-triangle me-2"></i>
+                  Token Limit Warning
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <div class="alert alert-warning">
+                  <strong>Some models may fail due to token limits:</strong>
+                </div>
+                
+                ${exceedingModels.length > 0 ? `
+                  <div class="mb-3">
+                    <h6 class="text-danger">🚫 Models likely to fail:</h6>
+                    <ul class="list-unstyled ms-3">
+                      ${exceedingModels.map(model => {
+                        const result = validationResults.model_results[model];
+                        return `<li class="text-danger">• ${model}: ${result.estimated_tokens.toLocaleString()} tokens (limit: ${result.context_limit.toLocaleString()})</li>`;
+                      }).join('')}
+                    </ul>
+                  </div>
+                ` : ''}
+                
+                ${safeModels.length > 0 ? `
+                  <div class="mb-3">
+                    <h6 class="text-success">✅ Models that should work:</h6>
+                    <ul class="list-unstyled ms-3">
+                      ${safeModels.map(model => {
+                        const result = validationResults.model_results[model];
+                        return `<li class="text-success">• ${model}: ${result.estimated_tokens.toLocaleString()} tokens (limit: ${result.context_limit.toLocaleString()})</li>`;
+                      }).join('')}
+                    </ul>
+                  </div>
+                ` : ''}
+                
+                <div class="alert alert-info">
+                  <strong>💡 Recommendations:</strong>
+                  <ul class="mb-0 mt-2">
+                    <li>Consider using models with larger context windows (GPT 4.1 series, Gemini models)</li>
+                    <li>Reduce the number of PDF files</li>
+                    <li>Use shorter prompts</li>
+                    <li>Remove models that will exceed limits from your selection</li>
+                  </ul>
+                </div>
+                
+                <p class="mb-0">
+                  <strong>Do you want to proceed anyway?</strong> Models that exceed limits will show error messages in the results.
+                </p>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="cancelBtn">
+                  Cancel
+                </button>
+                <button type="button" class="btn btn-warning" id="proceedBtn">
+                  <i class="fas fa-exclamation-triangle me-1"></i>
+                  Proceed Anyway
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      // Remove existing modal if any
+      const existingModal = document.getElementById('tokenLimitModal');
+      if (existingModal) {
+        existingModal.remove();
+      }
+
+      // Add modal to DOM
+      document.body.insertAdjacentHTML('beforeend', modalHtml);
+      
+      const modal = new bootstrap.Modal(document.getElementById('tokenLimitModal'));
+      const proceedBtn = document.getElementById('proceedBtn');
+      const cancelBtn = document.getElementById('cancelBtn');
+
+      // Handle proceed
+      proceedBtn.addEventListener('click', () => {
+        modal.hide();
+        resolve(true);
+      });
+
+      // Handle cancel
+      cancelBtn.addEventListener('click', () => {
+        modal.hide();
+        resolve(false);
+      });
+
+      // Handle modal close
+      document.getElementById('tokenLimitModal').addEventListener('hidden.bs.modal', () => {
+        document.getElementById('tokenLimitModal').remove();
+        resolve(false);
+      });
+
+      modal.show();
+    });
   }
 
   /**
@@ -2476,6 +2638,101 @@ class Pages {
       console.error('Error deleting prompt set:', error);
       window.Components.showToast('Failed to delete prompt set', 'error');
     }
+  }
+
+  /**
+   * Format prompt response
+   * @param {string} response - Prompt response
+   * @returns {string} Formatted response
+   */
+  formatPromptResponse(response) {
+    // Check if this is an error response
+    if (response && response.startsWith('ERROR:')) {
+      const errorText = response.substring(6).trim(); // Remove "ERROR:" prefix
+      
+      // Check for token limit errors
+      if (errorText.includes('context_length_exceeded') || 
+          errorText.includes('context length') || 
+          errorText.includes('token count') ||
+          errorText.includes('exceeds the maximum limit') ||
+          errorText.includes('token limit')) {
+        return `
+          <div class="alert alert-warning mb-0">
+            <div class="d-flex align-items-start">
+              <i class="fas fa-exclamation-triangle text-warning me-2 mt-1"></i>
+              <div>
+                <strong>Token Limit Exceeded</strong>
+                <p class="mb-2">This model hit its context window limit with the provided documents. This is expected with multiple large PDFs.</p>
+                <small class="text-muted">
+                  <strong>Solutions:</strong>
+                  <br>• Use models with larger context windows (GPT 4.1 series or Gemini models)
+                  <br>• Reduce the number of PDF files
+                  <br>• Use shorter prompts
+                </small>
+                <details class="mt-2">
+                  <summary class="text-muted small" style="cursor: pointer;">Show technical details</summary>
+                  <pre class="small text-muted mt-1 mb-0" style="white-space: pre-wrap;">${Utils.sanitizeHtml(errorText)}</pre>
+                </details>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      
+      // Check for API key errors
+      if (errorText.includes('API key') || 
+          errorText.includes('authentication') || 
+          errorText.includes('unauthorized')) {
+        return `
+          <div class="alert alert-danger mb-0">
+            <div class="d-flex align-items-start">
+              <i class="fas fa-key text-danger me-2 mt-1"></i>
+              <div>
+                <strong>Authentication Error</strong>
+                <p class="mb-1">There's an issue with the API key for this model.</p>
+                <small class="text-muted">Please check that your API keys are correctly configured in the .env file.</small>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      
+      // Check for rate limit errors
+      if (errorText.includes('rate limit') || 
+          errorText.includes('too many requests')) {
+        return `
+          <div class="alert alert-info mb-0">
+            <div class="d-flex align-items-start">
+              <i class="fas fa-clock text-info me-2 mt-1"></i>
+              <div>
+                <strong>Rate Limit Exceeded</strong>
+                <p class="mb-1">Too many requests sent to this model's API.</p>
+                <small class="text-muted">Wait a moment and try again, or try a different model.</small>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      
+      // Generic error formatting
+      return `
+        <div class="alert alert-danger mb-0">
+          <div class="d-flex align-items-start">
+            <i class="fas fa-exclamation-circle text-danger me-2 mt-1"></i>
+            <div>
+              <strong>Error</strong>
+              <details class="mt-1">
+                <summary class="text-muted small" style="cursor: pointer;">Show error details</summary>
+                <pre class="small text-muted mt-1 mb-0" style="white-space: pre-wrap;">${Utils.sanitizeHtml(errorText)}</pre>
+              </details>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    
+    // Not an error, return sanitized response
+    return Utils.sanitizeHtml(response);
   }
 }
 

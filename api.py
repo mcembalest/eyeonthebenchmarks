@@ -231,6 +231,14 @@ async def delete_prompt_set(prompt_set_id: int):
     """Delete a prompt set."""
     return logic.delete_prompt_set(prompt_set_id)
 
+@app.post("/validate-tokens")
+async def validate_tokens(payload: dict):
+    return logic.validate_tokens(
+        payload.get("prompts", []),
+        payload.get("pdfPaths", []),
+        payload.get("modelNames", [])
+    )
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api:app", host="127.0.0.1", port=8000)

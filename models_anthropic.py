@@ -58,6 +58,124 @@ COSTS = {
 
 WEB_SEARCH_COST = 10.00  # $10 per 1K searches
 
+"""web search
+
+response = client.messages.create(
+    model="claude-3-7-sonnet-latest",
+    max_tokens=1024,
+    messages=[
+        {
+            "role": "user",
+            "content": "How do I update a web app to TypeScript 5.5?"
+        }
+    ],
+    tools=[{
+        "type": "web_search_20250305",
+        "name": "web_search",
+        "max_uses": 5
+    }]
+)
+print(response)
+
+Here’s an example response structure:
+
+
+Copy
+{
+  "role": "assistant",
+  "content": [
+    // 1. Claude's decision to search
+    {
+      "type": "text",
+      "text": "I'll search for when Claude Shannon was born."
+    },
+    // 2. The search query used
+    {
+      "type": "server_tool_use",
+      "id": "srvtoolu_01WYG3ziw53XMcoyKL4XcZmE",
+      "name": "web_search",
+      "input": {
+        "query": "claude shannon birth date"
+      }
+    },
+    // 3. Search results
+    {
+      "type": "web_search_tool_result",
+      "tool_use_id": "srvtoolu_01WYG3ziw53XMcoyKL4XcZmE",
+      "content": [
+        {
+          "type": "web_search_result",
+          "url": "https://en.wikipedia.org/wiki/Claude_Shannon",
+          "title": "Claude Shannon - Wikipedia",
+          "encrypted_content": "EqgfCioIARgBIiQ3YTAwMjY1Mi1mZjM5LTQ1NGUtODgxNC1kNjNjNTk1ZWI3Y...",
+          "page_age": "April 30, 2025"
+        }
+      ]
+    },
+    {
+      "text": "Based on the search results, ",
+      "type": "text"
+    },
+    // 4. Claude's response with citations
+    {
+      "text": "Claude Shannon was born on April 30, 1916, in Petoskey, Michigan",
+      "type": "text",
+      "citations": [
+        {
+          "type": "web_search_result_location",
+          "url": "https://en.wikipedia.org/wiki/Claude_Shannon",
+          "title": "Claude Shannon - Wikipedia",
+          "encrypted_index": "Eo8BCioIAhgBIiQyYjQ0OWJmZi1lNm..",
+          "cited_text": "Claude Elwood Shannon (April 30, 1916 – February 24, 2001) was an American mathematician, electrical engineer, computer scientist, cryptographer and i..."
+        }
+      ]
+    }
+  ],
+  "id": "msg_a930390d3a",
+  "usage": {
+    "input_tokens": 6039,
+    "output_tokens": 931,
+    "server_tool_use": {
+      "web_search_requests": 1
+    }
+  },
+  "stop_reason": "end_turn"
+}
+​
+Search results
+Search results include:
+
+url: The URL of the source page
+title: The title of the source page
+page_age: When the site was last updated
+encrypted_content: Encrypted content that must be passed back in multi-turn conversations for citations
+​
+Citations
+Citations are always enabled for web search, and each web_search_result_location includes:
+
+url: The URL of the cited source
+title: The title of the cited source
+encrypted_index: A reference that must be passed back for multi-turn conversations.
+cited_text: Up to 150 characters of the cited content
+The web search citation fields cited_text, title, and url do not count towards input or output token usage.
+
+When displaying web results or information contained in web results to end users, inline citations must be made clearly visible and clickable in your user interface.
+
+​
+Errors
+If an error occurs during web search, you’ll receive a response that takes the following form:
+
+
+Copy
+{
+  "type": "web_search_tool_result",
+  "tool_use_id": "servertoolu_a93jad",
+  "content": {
+    "type": "web_search_tool_result_error",
+    "error_code": "max_uses_exceeded"
+  }
+}"""
+
 """todo token counting
 
 response = client.messages.count_tokens(
@@ -316,6 +434,13 @@ JSON
 
 Copy
 { "input_tokens": 2188 }"""
+
+"""Claude context windows
+
+All claude models have input context window of 200K tokens
+
+we need to use the anthropic count_tokens() function to get token counts before launching a benchmark and getting model response objects
+"""
 
 def ensure_file_uploaded(file_path: Path, db_path: Path = Path.cwd()) -> str:
     """
@@ -721,4 +846,71 @@ def calculate_cost(
             "total": standard_input_tokens + cache_write_tokens + cache_read_tokens + output_tokens
         }
     }
+
+def count_tokens_anthropic(content: List[Dict], model_name: str) -> int:
+    """
+    Count tokens for Anthropic models using their count_tokens API.
+    
+    Args:
+        content: List of content blocks (text and documents)
+        model_name: Anthropic model name
+        
+    Returns:
+        Estimated token count
+    """
+    try:
+        # Convert content to Anthropic format for token counting
+        anthropic_content = []
+        
+        for item in content:
+            if item.get("type") == "text":
+                anthropic_content.append({
+                    "type": "text",
+                    "text": item.get("text", "")
+                })
+            elif item.get("type") == "document":
+                # For documents, we'll need to estimate since we can't count tokens
+                # for uploaded files without making the actual API call
+                # Use file size as rough estimate: ~1 token per 4 bytes
+                file_path = Path(item.get("file_path", ""))
+                if file_path.exists():
+                    file_size_bytes = file_path.stat().st_size
+                    estimated_tokens = file_size_bytes // 4
+                    # Add to a text block for counting purposes
+                    anthropic_content.append({
+                        "type": "text", 
+                        "text": "x" * estimated_tokens  # Placeholder text for token estimation
+                    })
+        
+        if not anthropic_content:
+            return 0
+            
+        # Use Anthropic's count_tokens API
+        response = client.messages.count_tokens(
+            model=model_name,
+            messages=[{
+                "role": "user",
+                "content": anthropic_content
+            }]
+        )
+        
+        return response.input_tokens
+        
+    except Exception as e:
+        logging.warning(f"Error counting tokens for Anthropic model {model_name}: {e}")
+        # Return a conservative high estimate if we can't count properly
+        return 150000
+
+def get_context_limit_anthropic(model_name: str) -> int:
+    """
+    Get the context window limit for an Anthropic model.
+    
+    Args:
+        model_name: Anthropic model name
+        
+    Returns:
+        Context window size in tokens
+    """
+    # All Claude models currently have 200K token context windows
+    return 200000
 

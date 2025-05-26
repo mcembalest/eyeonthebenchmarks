@@ -160,7 +160,7 @@ class Components {
           <div class="card-text small mb-3">
             <div class="d-flex align-items-center flex-wrap gap-1">
               ${models.length > 0 ? models.map(modelName => 
-                Utils.createModelImage(modelName, 'model-icon-small')
+                Utils.createModelImage(modelName, 'model-icon-small', false)
               ).join('') : '<span class="text-muted">No models</span>'}
             </div>
           </div>
@@ -249,7 +249,7 @@ class Components {
       <td>
         <div class="d-flex align-items-center flex-wrap gap-1">
           ${models.length > 0 ? models.map(modelName => 
-            Utils.createModelImage(modelName, 'model-icon-small')
+            Utils.createModelImage(modelName, 'model-icon-small', false)
           ).join('') : '<span class="text-muted">No models</span>'}
         </div>
       </td>
@@ -353,12 +353,26 @@ class Components {
       <label class="form-check-label d-flex justify-content-between align-items-center" 
              for="model-${model.id}">
         <div class="d-flex align-items-center">
-          ${Utils.createModelImage(model.name, 'me-2')}
+          ${Utils.createModelImage(model.name, 'me-2', true)}
           <span>${Utils.sanitizeHtml(formattedName)}</span>
         </div>
         ${Utils.createProviderImage(model.provider, 'ms-2')}
       </label>
     `;
+
+    // Add event listener for token validation updates
+    const checkbox = div.querySelector('.form-check-input');
+    if (checkbox) {
+      checkbox.addEventListener('change', () => {
+        // Trigger token validation update for PDF warnings
+        if (window.App && window.App.updatePdfDisplay) {
+          // Small delay to ensure checkbox state is updated
+          setTimeout(() => {
+            window.App.updatePdfDisplay();
+          }, 50);
+        }
+      });
+    }
 
     return div;
   }
@@ -470,7 +484,7 @@ class Components {
       
       if (models.length > 0) {
         modelsContainer.innerHTML = models.map(modelName => 
-          Utils.createModelImage(modelName, 'model-icon-small')
+          Utils.createModelImage(modelName, 'model-icon-small', false)
         ).join('');
       } else {
         modelsContainer.innerHTML = '<span class="text-muted">No models</span>';
@@ -481,7 +495,7 @@ class Components {
       if (modelsRow) {
         if (models.length > 0) {
           modelsRow.innerHTML = models.map(modelName => 
-            Utils.createModelImage(modelName, 'model-icon-small')
+            Utils.createModelImage(modelName, 'model-icon-small', false)
           ).join('');
         } else {
           modelsRow.innerHTML = '<span class="text-muted">No models</span>';
@@ -492,4 +506,4 @@ class Components {
 }
 
 // Create singleton instance
-window.Components = new Components(); 
+window.Components = new Components();
