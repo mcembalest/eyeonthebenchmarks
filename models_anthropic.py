@@ -529,7 +529,7 @@ def anthropic_upload(pdf_path: Path) -> str:
         logging.error(error_msg)
         raise
 
-def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "claude-3-5-haiku-20241022", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int]:
+def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "claude-3-5-haiku-20241022", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, bool, str]:
     """
     Send a query to an Anthropic Claude model with multiple file attachments.
     
@@ -546,6 +546,8 @@ def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_nam
             - standard_input_tokens (int): Tokens used in the input
             - cached_input_tokens (int): Cached tokens used
             - output_tokens (int): Tokens used in the output
+            - web_search_used (bool): Whether web search was actually used
+            - web_search_sources (str): Raw web search data as string
     """
     # Build content with all files and prompt
     content = []
@@ -566,7 +568,7 @@ def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_nam
     
     return anthropic_ask_internal(content, model_name, web_search)
 
-def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: bool = False) -> Tuple[str, int, int, int]:
+def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: bool = False) -> Tuple[str, int, int, int, bool, str]:
     """
     Internal function to send a query to Anthropic with prepared content.
     
@@ -576,6 +578,8 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             - standard_input_tokens (int): Tokens used in the input
             - cached_input_tokens (int): Cached tokens used
             - output_tokens (int): Tokens used in the output
+            - web_search_used (bool): Whether web search was actually used
+            - web_search_sources (str): Raw web search data as string
     """
     # Add direct console output for high visibility
     print(f"\n🔄 ANTHROPIC API CALL STARTING - MODEL: {model_name}")
@@ -616,7 +620,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
         ]
         
         # Set up tools for web search if enabled
-        tools = None
+        tools = []
         if web_search:
             tools = [{
                 "type": "web_search_20250305",
@@ -653,22 +657,62 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
         
         # Send message to Anthropic
         try:
-            response = client.messages.create(
-                model=model_name,
-                max_tokens=2048,
-                temperature=0.2,
-                messages=messages,
-                tools=tools
-            )
+            # Prepare API call parameters
+            api_params = {
+                "model": model_name,
+                "max_tokens": 2048,
+                "temperature": 0.2,
+                "messages": messages
+            }
+            
+            # Only add tools if web search is enabled
+            if web_search and tools:
+                api_params["tools"] = tools
+            
+            response = client.messages.create(**api_params)
             
             # Extract text response from Claude
             answer = ""
+            web_search_used = False
+            web_search_queries = 0
+            web_search_sources = ""
+            
             if hasattr(response, 'content') and response.content:
                 for content_block in response.content:
                     if hasattr(content_block, 'text') and content_block.text:
                         answer += content_block.text
                     elif hasattr(content_block, 'type') and content_block.type == 'text':
                         answer += content_block.text
+                    elif hasattr(content_block, 'type') and content_block.type == 'tool_use':
+                        # Check if this is a web search tool use
+                        if hasattr(content_block, 'name') and 'web_search' in content_block.name:
+                            web_search_used = True
+                            web_search_queries += 1
+                    elif hasattr(content_block, 'type') and content_block.type == 'web_search_tool_result':
+                        # Extract web search results
+                        web_search_sources += f"Web search tool result: {str(content_block)}\n"
+                        if hasattr(content_block, 'content'):
+                            for result in content_block.content:
+                                if hasattr(result, 'url'):
+                                    web_search_sources += f"URL: {result.url}\n"
+                                if hasattr(result, 'title'):
+                                    web_search_sources += f"Title: {result.title}\n"
+                                if hasattr(result, 'cited_text'):
+                                    web_search_sources += f"Cited text: {result.cited_text}\n"
+                                web_search_sources += "---\n"
+            
+            # Also check if web search was used by looking for citations or search indicators in the text
+            if web_search and answer and not web_search_used:
+                # Look for common web search indicators in the response
+                search_indicators = ['http', 'www.', 'source:', 'according to', 'based on recent', 'search results']
+                if any(indicator in answer.lower() for indicator in search_indicators):
+                    web_search_used = True
+                    web_search_queries = 1  # Assume 1 search query
+            
+            if web_search_used:
+                logging.info(f"Web search detected: {web_search_queries} queries")
+                print(f"   🌐 Web search used: {web_search_queries} queries")
+                print(f"   📊 Anthropic includes web search tokens in standard counts")
             
             # Extract token usage
             usage = getattr(response, 'usage', {})
@@ -683,7 +727,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             print(f"   Tokens - Input: {input_tokens}, Output: {output_tokens}")
             
             # Return the results
-            return answer, input_tokens, 0, output_tokens  # Claude doesn't distinguish cached tokens
+            return answer, input_tokens, 0, output_tokens, web_search_used, web_search_sources
             
         except Exception as e:
             error_details = traceback.format_exc()
@@ -692,9 +736,9 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             # Check for token limit errors and provide more readable message
             error_str = str(e).lower()
             if "token" in error_str and ("limit" in error_str or "exceed" in error_str or "context" in error_str):
-                return f"ERROR: Token limit exceeded. The input is too large for {model_name}.", input_token_count, 0, 0
+                return f"ERROR: Token limit exceeded. The input is too large for {model_name}.", input_token_count, 0, 0, False, ""
             
-            return f"ERROR: {str(e)}", input_token_count, 0, 0
+            return f"ERROR: {str(e)}", input_token_count, 0, 0, False, ""
 
     except Exception as e:
         error_details = traceback.format_exc()
@@ -726,7 +770,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
                 print(f"   {line[:100]}..." if len(line) > 100 else f"   {line}")
                 
         # Ensure we return something, even if it's just default error values
-        # The function expects a tuple of (str, int, int, int)
+        # The function expects a tuple of (str, int, int, int, bool, str)
         # If an error occurs before 'answer' is set, it will be None.
         # Token counts will be their default (0) if not set.
         # The caller (runner.py) handles exceptions from this function and logs them.
@@ -743,7 +787,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
     
     logging.info(f"Received answer (truncated): '{answer_str[:100]}...'")
     return (answer if answer is not None else f"ERROR: No answer extracted but no direct API error."), \
-           input_tokens, 0, output_tokens
+           input_tokens, 0, output_tokens, web_search_used, web_search_sources
 
 def calculate_cost(
     model_name: str,

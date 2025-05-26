@@ -564,10 +564,7 @@ class Pages {
    */
   renderBenchmarkDetails(details) {
     const detailsContainer = document.getElementById('detailsContainer');
-    
-    // Calculate per-model stats for the table
-    const totalRuns = details.runs ? details.runs.length : 0;
-65    
+
     // Get the ACTUAL total number of prompts in the benchmark
     // This should be consistent across all models - use the maximum found
     let totalPromptsInBenchmark = 0;
@@ -633,8 +630,6 @@ class Pages {
             }
           });
         }
-        
-        const providerColor = Utils.getProviderColor(provider);
         
         // Convert latency to minutes and seconds format
         const formatLatency = (ms) => {
@@ -983,7 +978,11 @@ class Pages {
             
             // Web search indicator
             const webSearchIcon = prompt.web_search_used ? 
-              '<i class="fas fa-globe text-info ms-2" title="Used web search"></i>' : '';
+              `<i class="fas fa-globe text-info ms-2 web-search-icon" 
+                  title="Click to view web search sources" 
+                  style="cursor: pointer;" 
+                  data-web-search-sources="${Utils.escapeHtmlAttribute(prompt.web_search_sources || '')}"
+                  onclick="window.Pages.showWebSearchModal(this)"></i>` : '';
             
             // Show completed prompt
             return `
@@ -1001,13 +1000,13 @@ class Pages {
                 </div>
                 
                 <div class="mb-3">
-                  <div class="fw-bold text-muted mb-1">Question:</div>
+                  <div class="fw-bold text-muted mb-1">Prompt:</div>
                   <div class="p-2 bg-white border rounded small">${Utils.sanitizeHtml(prompt.prompt || 'N/A')}</div>
                 </div>
                 
                 <div>
-                  <div class="fw-bold text-muted mb-1">Answer:</div>
-                  <div class="p-2 bg-white border rounded small" style="white-space: pre-wrap;">${this.formatPromptResponse(prompt.response || 'N/A')}</div>
+                  <div class="fw-bold text-muted mb-1">Response:</div>
+                  <div class="p-2 bg-white border rounded small">${this.formatPromptResponse(prompt.response || 'N/A')}</div>
                 </div>
               </div>
             `;
@@ -1026,12 +1025,12 @@ class Pages {
                 </div>
                 
                 <div class="mb-3">
-                  <div class="fw-bold text-muted mb-1">Question:</div>
+                  <div class="fw-bold text-muted mb-1">Prompt:</div>
                   <div class="p-2 bg-white border rounded small">${Utils.sanitizeHtml(prompt.prompt || 'N/A')}</div>
                 </div>
                 
                 <div>
-                  <div class="fw-bold text-muted mb-1">Answer:</div>
+                  <div class="fw-bold text-muted mb-1">Response:</div>
                   <div class="p-2 bg-white border rounded small text-muted">
                     <i class="fas fa-spinner fa-spin me-2"></i>Processing...
                   </div>
@@ -2737,93 +2736,180 @@ class Pages {
    * @returns {string} Formatted response
    */
   formatPromptResponse(response) {
-    // Check if this is an error response
-    if (response && response.startsWith('ERROR:')) {
-      const errorText = response.substring(6).trim(); // Remove "ERROR:" prefix
+    if (!response) return 'No response';
+    
+    // Check if marked.js is available
+    if (typeof marked !== 'undefined') {
+      try {
+        // Configure marked for security
+        marked.setOptions({
+          breaks: true, // Convert line breaks to <br>
+          gfm: true, // Enable GitHub Flavored Markdown
+          sanitize: false, // We'll sanitize after rendering
+          smartLists: true,
+          smartypants: false
+        });
+        
+        // Render markdown to HTML
+        const htmlContent = marked.parse(response);
+        
+        // Sanitize the HTML output for security
+        return Utils.sanitizeHtml(htmlContent);
+      } catch (error) {
+        console.warn('Error rendering markdown:', error);
+        // Fallback to basic formatting if markdown parsing fails
+        return Utils.sanitizeHtml(response);
+      }
+    } else {
+      // Fallback if marked.js is not available
+      console.warn('Marked.js not available, falling back to basic formatting');
+      return Utils.sanitizeHtml(response);
+    }
+  }
+
+  /**
+   * Show web search sources in a modal
+   * @param {HTMLElement} iconElement - The web search icon that was clicked
+   */
+  showWebSearchModal(iconElement) {
+    const webSearchSources = iconElement.getAttribute('data-web-search-sources') || '';
+    
+    // Format the web search sources for better display
+    const formatWebSearchSources = (sources) => {
+      if (!sources) return '<div class="text-muted text-center py-4">No web search source data available</div>';
       
-      // Check for token limit errors
-      if (errorText.includes('context_length_exceeded') || 
-          errorText.includes('context length') || 
-          errorText.includes('token count') ||
-          errorText.includes('exceeds the maximum limit') ||
-          errorText.includes('token limit')) {
-        return `
-          <div class="alert alert-warning mb-0">
-            <div class="d-flex align-items-start">
-              <i class="fas fa-exclamation-triangle text-warning me-2 mt-1"></i>
-              <div>
-                <strong>Token Limit Exceeded</strong>
-                <p class="mb-2">This model hit its context window limit with the provided documents. This is expected with multiple large PDFs.</p>
-                <small class="text-muted">
-                  <strong>Solutions:</strong>
-                  <br>• Use models with larger context windows (GPT 4.1 series or Gemini models)
-                  <br>• Reduce the number of PDF files
-                  <br>• Use shorter prompts
-                </small>
-                <details class="mt-2">
-                  <summary class="text-muted small" style="cursor: pointer;">Show technical details</summary>
-                  <pre class="small text-muted mt-1 mb-0" style="white-space: pre-wrap;">${Utils.sanitizeHtml(errorText)}</pre>
-                </details>
-              </div>
-            </div>
-          </div>
-        `;
+      // Try to detect if this is structured data (JSON-like) or plain text
+      let formattedSources = sources;
+      
+      // Check if it looks like structured data from Google (contains "Title:", "URL:", etc.)
+      if (sources.includes('Title:') || sources.includes('URL:') || sources.includes('Search queries:')) {
+        // Format Google-style structured sources
+        formattedSources = sources
+          .split('---\n')
+          .map(section => {
+            if (!section.trim()) return '';
+            
+            // Parse each section
+            const lines = section.trim().split('\n');
+            let formatted = '<div class="web-source-item mb-3 p-3 border rounded bg-light">';
+            
+            lines.forEach(line => {
+              const trimmedLine = line.trim();
+              if (trimmedLine.startsWith('Title:')) {
+                const title = trimmedLine.substring(6).trim();
+                formatted += `<h6 class="text-primary mb-2"><i class="fas fa-globe me-2"></i>${Utils.sanitizeHtml(title)}</h6>`;
+              } else if (trimmedLine.startsWith('URL:')) {
+                const url = trimmedLine.substring(4).trim();
+                formatted += `<p class="mb-2"><strong>URL:</strong> <a href="${Utils.sanitizeHtml(url)}" target="_blank" class="text-decoration-none">${Utils.sanitizeHtml(url)}</a></p>`;
+              } else if (trimmedLine.startsWith('Search queries:')) {
+                const queries = trimmedLine.substring(15).trim();
+                formatted += `<p class="mb-2"><strong>Search Queries:</strong> <span class="badge bg-info">${Utils.sanitizeHtml(queries)}</span></p>`;
+              } else if (trimmedLine.startsWith('Search entry point:')) {
+                const content = trimmedLine.substring(19).trim();
+                formatted += `<p class="mb-2"><strong>Search Content:</strong></p><div class="small text-muted bg-white p-2 rounded border">${Utils.sanitizeHtml(content)}</div>`;
+              } else if (trimmedLine && !trimmedLine.startsWith('Web search') && !trimmedLine.startsWith('Function call')) {
+                formatted += `<p class="mb-1 small">${Utils.sanitizeHtml(trimmedLine)}</p>`;
+              }
+            });
+            
+            formatted += '</div>';
+            return formatted;
+          })
+          .filter(section => section.includes('web-source-item'))
+          .join('');
+        
+        if (!formattedSources.trim()) {
+          // Fallback to original formatting if parsing failed
+          formattedSources = `<pre class="bg-light p-3 rounded" style="white-space: pre-wrap; max-height: 400px; overflow-y: auto;">${Utils.sanitizeHtml(sources)}</pre>`;
+        }
+      } else {
+        // For other providers (OpenAI, Anthropic) or unstructured data, use pre formatting
+        formattedSources = `<pre class="bg-light p-3 rounded" style="white-space: pre-wrap; max-height: 400px; overflow-y: auto;">${Utils.sanitizeHtml(sources)}</pre>`;
       }
       
-      // Check for API key errors
-      if (errorText.includes('API key') || 
-          errorText.includes('authentication') || 
-          errorText.includes('unauthorized')) {
-        return `
-          <div class="alert alert-danger mb-0">
-            <div class="d-flex align-items-start">
-              <i class="fas fa-key text-danger me-2 mt-1"></i>
-              <div>
-                <strong>Authentication Error</strong>
-                <p class="mb-1">There's an issue with the API key for this model.</p>
-                <small class="text-muted">Please check that your API keys are correctly configured in the .env file.</small>
+      return formattedSources;
+    };
+    
+    // Create modal HTML
+    const modalHtml = `
+      <div class="modal fade" id="webSearchModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title">
+                <i class="fas fa-globe text-info me-2"></i>
+                Web Search Sources
+              </h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+              <div class="mb-3">
+                <p class="text-muted">
+                  This model used web search to find up-to-date information. 
+                  Below are the sources and search data returned by the API:
+                </p>
+              </div>
+              <div class="web-search-content">
+                ${formatWebSearchSources(webSearchSources)}
               </div>
             </div>
-          </div>
-        `;
-      }
-      
-      // Check for rate limit errors
-      if (errorText.includes('rate limit') || 
-          errorText.includes('too many requests')) {
-        return `
-          <div class="alert alert-info mb-0">
-            <div class="d-flex align-items-start">
-              <i class="fas fa-clock text-info me-2 mt-1"></i>
-              <div>
-                <strong>Rate Limit Exceeded</strong>
-                <p class="mb-1">Too many requests sent to this model's API.</p>
-                <small class="text-muted">Wait a moment and try again, or try a different model.</small>
-              </div>
-            </div>
-          </div>
-        `;
-      }
-      
-      // Generic error formatting
-      return `
-        <div class="alert alert-danger mb-0">
-          <div class="d-flex align-items-start">
-            <i class="fas fa-exclamation-circle text-danger me-2 mt-1"></i>
-            <div>
-              <strong>Error</strong>
-              <details class="mt-1">
-                <summary class="text-muted small" style="cursor: pointer;">Show error details</summary>
-                <pre class="small text-muted mt-1 mb-0" style="white-space: pre-wrap;">${Utils.sanitizeHtml(errorText)}</pre>
-              </details>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" onclick="window.Pages.copyWebSearchSources('${Utils.sanitizeHtml(webSearchSources).replace(/'/g, "\\'")}')">
+                <i class="fas fa-copy me-1"></i>Copy Sources
+              </button>
+              <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
             </div>
           </div>
         </div>
-      `;
+      </div>
+    `;
+
+    // Remove existing modal if any
+    const existingModal = document.getElementById('webSearchModal');
+    if (existingModal) {
+      existingModal.remove();
     }
+
+    // Add modal to DOM
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
     
-    // Not an error, return sanitized response
-    return Utils.sanitizeHtml(response);
+    // Show the modal
+    const modal = new bootstrap.Modal(document.getElementById('webSearchModal'));
+    modal.show();
+
+    // Clean up modal on hide
+    document.getElementById('webSearchModal').addEventListener('hidden.bs.modal', () => {
+      document.getElementById('webSearchModal').remove();
+    });
+  }
+
+  /**
+   * Copy web search sources to clipboard
+   * @param {string} sources - The web search sources text
+   */
+  copyWebSearchSources(sources) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(sources).then(() => {
+        window.Components.showToast('Web search sources copied to clipboard', 'success');
+      }).catch(err => {
+        console.error('Failed to copy to clipboard:', err);
+        window.Components.showToast('Failed to copy to clipboard', 'error');
+      });
+    } else {
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea');
+      textArea.value = sources;
+      document.body.appendChild(textArea);
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        window.Components.showToast('Web search sources copied to clipboard', 'success');
+      } catch (err) {
+        console.error('Failed to copy to clipboard:', err);
+        window.Components.showToast('Failed to copy to clipboard', 'error');
+      }
+      document.body.removeChild(textArea);
+    }
   }
 }
 

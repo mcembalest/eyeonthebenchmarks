@@ -407,14 +407,14 @@ def openai_upload(pdf_path: Path) -> str:
         logging.error(error_msg)
         raise
 
-def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int]:
+def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, bool, str]:
     """
     Send a query to an OpenAI model with multiple file attachments.
     
     Args:
         file_paths: List of paths to files to include
         prompt_text: The question to ask the model
-        model_name: The model to use (e.g., "gpt-4o-mini", "gpt-4o")
+        model_name: The model to use (e.g., "gpt-4o-mini")
         db_path: Path to the database directory
         web_search: Whether to enable web search for this prompt
         
@@ -424,9 +424,11 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
             - standard_input_tokens (int): Tokens used in the input
             - cached_input_tokens (int): Cached tokens used
             - output_tokens (int): Tokens used in the output (includes reasoning tokens)
+            - web_search_used (bool): Whether web search was actually used
+            - web_search_sources (str): Raw web search data as string
     """
     # Check if the model supports web search
-    web_search_supported_models = ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "o3", "o4-mini"]
+    web_search_supported_models = ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"]
     if web_search and model_name not in web_search_supported_models:
         print(f"⚠️ WARNING: Model {model_name} does not support web search. Disabling web search for this request.")
         web_search = False
@@ -445,9 +447,20 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
             "file_id": file_id,
         })
     
+    # Enhance prompt for web search if enabled
+    enhanced_prompt = prompt_text
+    if web_search:
+        # Use OpenAI's official recommended approach for o3/o4-mini models
+        if any(model in model_name.lower() for model in ["o3", "o4"]):
+            # Straightforward prompt as recommended by OpenAI - avoid complex instructions
+            enhanced_prompt = f"Search for the latest information about {prompt_text}. Provide current data and sources."
+        else:
+            # For other models, add a lighter encouragement
+            enhanced_prompt = f"Please use web search if needed to provide current, accurate information for this query.\n\n{prompt_text}"
+    
     content.append({
         "type": "input_text",
-        "text": prompt_text,
+        "text": enhanced_prompt,
     })
     
     # Set up tools for web search if enabled
@@ -460,7 +473,7 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
     
     return openai_ask_internal(content, model_name, tools)
 
-def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] = None) -> Tuple[str, int, int, int]:
+def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] = None) -> Tuple[str, int, int, int, bool, str]:
     """
     Internal function to send a query to OpenAI with prepared content.
     
@@ -470,6 +483,8 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
             - standard_input_tokens (int): Tokens used in the input
             - cached_input_tokens (int): Cached tokens used
             - output_tokens (int): Tokens used in the output (includes reasoning tokens)
+            - web_search_used (bool): Whether web search was actually used
+            - web_search_sources (str): Raw web search data as string
     """
     # Add direct console output for high visibility
     print(f"\n🔄 OPENAI API CALL STARTING - MODEL: {model_name}")
@@ -506,12 +521,29 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
         logging.info(f"Content blocks: {len(content)}, Model: {model_name}")
 
         # Format the API input for Responses API
-        api_input = [
-            {
-                "role": "user",
-                "content": content
-            }
-        ]
+        # For web search to work properly, we need to use a simpler input format
+        if tools:  # If web search is enabled, use simpler format
+            # Extract just the text content for web search compatibility
+            text_content = ""
+            for item in content:
+                if item.get("type") == "input_text":
+                    text_content = item.get("text", "")
+                    break
+            
+            # For web search, we can't include files in the same request
+            # This is a limitation of OpenAI's web search tool
+            if any(item.get("type") == "input_file" for item in content):
+                print("   ⚠️ WARNING: Files cannot be used with web search. Using text-only input.")
+            
+            api_input = text_content
+        else:
+            # Use the complex format for non-web-search requests
+            api_input = [
+                {
+                    "role": "user",
+                    "content": content
+                }
+            ]
         
         logging.info(f"Preparing to make OpenAI API call with model {model_name}")
         
@@ -629,6 +661,8 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
         standard_input_tokens = 0
         cached_input_tokens = 0
         output_tokens = 0
+        web_search_used = False
+        web_search_sources = ""
 
         # Extract the answer text
         try:
@@ -661,6 +695,18 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
             logging.error(f"Failed to extract answer from response. Response structure: {response}")
             raise ValueError("Failed to extract answer from OpenAI response. Please check API response structure.")
 
+        # Detect web search usage by checking for web_search_call blocks
+        try:
+            if hasattr(response, 'output') and response.output:
+                for block in response.output:
+                    if hasattr(block, 'type') and block.type == "web_search_call":
+                        web_search_used = True
+                        logging.info(f"Web search detected: {block.id if hasattr(block, 'id') else 'unknown'}")
+                        print(f"   🌐 Web search used: {block.id if hasattr(block, 'id') else 'unknown'}")
+                        break
+        except Exception as e:
+            logging.error(f"Error detecting web search usage: {str(e)}", exc_info=True)
+        
         # Extract token usage statistics
         try:
             # Log minimal response info
@@ -741,7 +787,21 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
         print(f"=================================================")
         
         logging.info(f"Received answer (truncated): '{str(answer)[:100]}...'")
-        return answer, standard_input_tokens, cached_input_tokens, output_tokens
+
+        # Extract web search sources
+        if web_search_used:
+            web_search_sources = ""
+            for block in response.output:
+                if hasattr(block, 'type') and block.type == "web_search_call":
+                    web_search_sources += f"Web search call ID: {block.id if hasattr(block, 'id') else 'unknown'}\n"
+                    for message_block in response.output:
+                        if hasattr(message_block, 'type') and message_block.type == "message" and hasattr(message_block, 'content'):
+                            for content_block in message_block.content:
+                                if hasattr(content_block, 'type') and content_block.type == "output_text" and hasattr(content_block, 'text'):
+                                    web_search_sources += f"Web search result: {content_block.text}\n"
+                                    break
+        
+        return answer, standard_input_tokens, cached_input_tokens, output_tokens, web_search_used, web_search_sources
             
     except openai.APIError as e:
         logging.error(f"OpenAI API Error: {str(e)}", exc_info=True)

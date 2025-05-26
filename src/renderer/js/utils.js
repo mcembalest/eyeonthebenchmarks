@@ -81,15 +81,114 @@ class Utils {
   }
 
   /**
-   * Sanitize HTML to prevent XSS
+   * Sanitize HTML to prevent XSS while allowing safe markdown tags
    * @param {string} str - String to sanitize
    * @returns {string} Sanitized string
    */
   static sanitizeHtml(str) {
     if (!str) return '';
+    
+    // If the string contains HTML tags (likely from markdown), use advanced sanitization
+    if (str.includes('<') && str.includes('>')) {
+      return Utils.sanitizeMarkdownHtml(str);
+    }
+    
+    // For plain text, use simple escaping
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+  }
+
+  /**
+   * Escape string for use in HTML attributes
+   * @param {string} str - String to escape
+   * @returns {string} Escaped string safe for HTML attributes
+   */
+  static escapeHtmlAttribute(str) {
+    if (!str) return '';
+    
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\n/g, '&#10;')
+      .replace(/\r/g, '&#13;');
+  }
+
+  /**
+   * Sanitize HTML from markdown while allowing safe tags
+   * @param {string} html - HTML string to sanitize
+   * @returns {string} Sanitized HTML string
+   */
+  static sanitizeMarkdownHtml(html) {
+    // Create a temporary div to parse the HTML
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html;
+    
+    // Define allowed tags and attributes
+    const allowedTags = [
+      'p', 'br', 'strong', 'b', 'em', 'i', 'u', 'code', 'pre', 
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+      'ul', 'ol', 'li', 'blockquote', 'hr',
+      'a', 'img', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
+      'del', 'ins', 'mark', 'sub', 'sup'
+    ];
+    
+    const allowedAttributes = {
+      'a': ['href', 'title'],
+      'img': ['src', 'alt', 'title', 'width', 'height'],
+      'code': ['class'],
+      'pre': ['class']
+    };
+    
+    // Recursively clean the DOM tree
+    function cleanNode(node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        return node.textContent;
+      }
+      
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const tagName = node.tagName.toLowerCase();
+        
+        // Remove disallowed tags but keep their content
+        if (!allowedTags.includes(tagName)) {
+          return Array.from(node.childNodes).map(cleanNode).join('');
+        }
+        
+        // Clean attributes
+        const cleanedElement = document.createElement(tagName);
+        const allowedAttrs = allowedAttributes[tagName] || [];
+        
+        for (const attr of node.attributes) {
+          if (allowedAttrs.includes(attr.name)) {
+            // Additional validation for href and src attributes
+            if (attr.name === 'href' || attr.name === 'src') {
+              const value = attr.value.trim();
+              // Only allow http, https, and relative URLs
+              if (value.startsWith('http://') || value.startsWith('https://') || 
+                  value.startsWith('/') || value.startsWith('./') || value.startsWith('../') ||
+                  !value.includes(':')) {
+                cleanedElement.setAttribute(attr.name, value);
+              }
+            } else {
+              cleanedElement.setAttribute(attr.name, attr.value);
+            }
+          }
+        }
+        
+        // Clean child nodes
+        const cleanedContent = Array.from(node.childNodes).map(cleanNode).join('');
+        cleanedElement.innerHTML = cleanedContent;
+        
+        return cleanedElement.outerHTML;
+      }
+      
+      return '';
+    }
+    
+    return Array.from(tempDiv.childNodes).map(cleanNode).join('');
   }
 
   /**

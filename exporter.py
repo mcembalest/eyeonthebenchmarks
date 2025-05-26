@@ -116,14 +116,20 @@ def export_benchmark_detailed(benchmark_id: int, model_names: list, filepath: Pa
     """Export detailed per-prompt results for all models in the benchmark (MVP - no expected answers or scores)."""
     # Get detailed data for the benchmark once
     benchmark_data = load_benchmark_details(benchmark_id)
-    if not benchmark_data or 'prompts_by_model' not in benchmark_data:
+    if not benchmark_data or 'runs' not in benchmark_data:
         return
+    
+    # Organize prompts by model for easier access
+    prompts_by_model = {}
+    for run in benchmark_data['runs']:
+        model_name = run['model_name']
+        prompts_by_model[model_name] = run.get('prompts', [])
     
     # Get all unique prompts across all models (only prompt text, no expected answers)
     all_prompts = set()
-    for model_name, prompts in benchmark_data['prompts_by_model'].items():
+    for model_name, prompts in prompts_by_model.items():
         for prompt in prompts:
-            all_prompts.add(prompt.get('prompt_text', ''))
+            all_prompts.add(prompt.get('prompt', ''))
     
     # Convert to list and sort for consistent ordering
     all_prompts = sorted(list(all_prompts))
@@ -137,7 +143,9 @@ def export_benchmark_detailed(benchmark_id: int, model_names: list, filepath: Pa
                 f"{model} - Standard Input Tokens",
                 f"{model} - Cached Input Tokens",
                 f"{model} - Output Tokens",
-                f"{model} - Latency (ms)"
+                f"{model} - Latency (ms)",
+                f"{model} - Web Search Used",
+                f"{model} - Web Search Sources"
             ])
         
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -151,19 +159,21 @@ def export_benchmark_detailed(benchmark_id: int, model_names: list, filepath: Pa
             
             # Add data for each model
             for model in model_names:
-                model_prompts = benchmark_data['prompts_by_model'].get(model, [])
+                model_prompts = prompts_by_model.get(model, [])
                 prompt_data = next(
                     (p for p in model_prompts 
-                     if p.get('prompt_text') == prompt_text),
+                     if p.get('prompt') == prompt_text),
                     {}
                 )
                 
                 # Extract metrics (MVP - no expected answers or scores)
-                row[f"{model} - Response"] = prompt_data.get('model_answer', prompt_data.get('response', 'N/A'))
+                row[f"{model} - Response"] = prompt_data.get('response', 'N/A')
                 row[f"{model} - Standard Input Tokens"] = prompt_data.get('standard_input_tokens', 'N/A')
                 row[f"{model} - Cached Input Tokens"] = prompt_data.get('cached_input_tokens', 'N/A')
                 row[f"{model} - Output Tokens"] = prompt_data.get('output_tokens', 'N/A')
                 row[f"{model} - Latency (ms)"] = prompt_data.get('prompt_latency', 'N/A')
+                row[f"{model} - Web Search Used"] = 'Yes' if prompt_data.get('web_search_used', False) else 'No'
+                row[f"{model} - Web Search Sources"] = prompt_data.get('web_search_sources', '')
             
             writer.writerow(row)
 

@@ -828,7 +828,10 @@ class AppLogic:
                     SELECT *, 
                            CASE WHEN (SELECT COUNT(*) FROM pragma_table_info('benchmark_prompts') 
                                      WHERE name='web_search_used') > 0 
-                                THEN web_search_used ELSE 0 END as web_search_used
+                                THEN web_search_used ELSE 0 END as web_search_used,
+                           CASE WHEN (SELECT COUNT(*) FROM pragma_table_info('benchmark_prompts') 
+                                     WHERE name='web_search_sources') > 0 
+                                THEN web_search_sources ELSE '' END as web_search_sources
                     FROM benchmark_prompts
                     WHERE benchmark_run_id = ?
                     ORDER BY id
@@ -1104,6 +1107,7 @@ class AppLogic:
                     output_cost = p.get('output_cost', 0.0)
                     total_cost_prompt = p.get('total_cost', 0.0)
                     web_search_used = p.get('web_search_used', False)
+                    web_search_sources = p.get('web_search_sources', '')
 
                     # Use the updated save_benchmark_prompt function with cost tracking
                     save_benchmark_prompt(
@@ -1118,7 +1122,8 @@ class AppLogic:
                         cached_cost=cached_cost,
                         output_cost=output_cost,
                         total_cost=total_cost_prompt,
-                        web_search_used=web_search_used
+                        web_search_used=web_search_used,
+                        web_search_sources=web_search_sources
                     )
 
                 self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] run saved with DB ID: {run_id if 'run_id' in locals() else 'N/A'})")

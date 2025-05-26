@@ -162,7 +162,8 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                     "cached_cost": 0.0,
                     "output_cost": 0.0,
                     "total_cost": 0.0,
-                    "web_search_used": False
+                    "web_search_used": False,
+                    "web_search_sources": ""
                 })
                 continue # Skip to next prompt
                 
@@ -177,15 +178,15 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                 prompt_t0 = perf_counter()
                 
                 if provider == "google":
-                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = google_ask_with_files(
+                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val, actual_web_search_used, web_search_sources = google_ask_with_files(
                         file_paths, prompt_text, model_name, db_path, use_web_search
                     )
                 elif provider == "anthropic":
-                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = anthropic_ask_with_files(
+                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val, actual_web_search_used, web_search_sources = anthropic_ask_with_files(
                         file_paths, prompt_text, model_name, db_path, use_web_search
                     )
                 else:  # openai
-                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = openai_ask_with_files(
+                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val, actual_web_search_used, web_search_sources = openai_ask_with_files(
                         file_paths, prompt_text, model_name, db_path, use_web_search
                     )
                 
@@ -240,7 +241,8 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                     "cached_cost": cached_cost,
                     "output_cost": output_cost,
                     "total_cost": prompt_total_cost,
-                    "web_search_used": use_web_search
+                    "web_search_used": actual_web_search_used,
+                    "web_search_sources": web_search_sources
                 })
                 
                 ans_trunc = ans[:100] + "..." if len(ans) > 100 else ans
@@ -259,7 +261,9 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                         "input_cost": input_cost,
                         "cached_cost": cached_cost,
                         "output_cost": output_cost,
-                        "total_cost": prompt_total_cost
+                        "total_cost": prompt_total_cost,
+                        "web_search_used": actual_web_search_used,
+                        "web_search_sources": web_search_sources
                     })
                 
             except Exception as e:
@@ -285,7 +289,8 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                     "cached_cost": 0.0,
                     "output_cost": 0.0,
                     "total_cost": 0.0,
-                    "web_search_used": False  # Always False on error
+                    "web_search_used": False,  # Always False on error
+                    "web_search_sources": ""
                 })
 
         # Summarize results
@@ -307,7 +312,8 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                 "cached_cost": ipd["cached_cost"],
                 "output_cost": ipd["output_cost"],
                 "total_cost": ipd["total_cost"],
-                "web_search_used": ipd["web_search_used"]
+                "web_search_used": ipd["web_search_used"],
+                "web_search_sources": ipd["web_search_sources"]
             } for ipd in individual_prompt_data
         ]
 

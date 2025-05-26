@@ -105,38 +105,6 @@ response = client.models.generate_content(
     )
 )
 print(response)
-Dynamic threshold
-The dynamic_threshold settings let you control the retrieval behavior, giving you additional control over when Grounding with Google Search is used.
-
-
-from google import genai
-from google.genai import types
-
-client = genai.Client(api_key="GEMINI_API_KEY")
-
-response = client.models.generate_content(
-    model='gemini-1.5-flash',
-    contents="Who won Roland Garros this year?",
-    config=types.GenerateContentConfig(
-        tools=[types.Tool(
-            google_search_retrieval=types.GoogleSearchRetrieval(
-                dynamic_retrieval_config=types.DynamicRetrievalConfig(
-                    mode=types.DynamicRetrievalConfigMode.MODE_DYNAMIC,
-                    dynamic_threshold=0.6))
-        )]
-    )
-)
-print(response)
-Dynamic retrieval
-Note: Dynamic retrieval is only compatible with Gemini 1.5 Flash. For Gemini 2.0, you should use Search as a tool, as shown above.
-Some queries are likely to benefit more from Grounding with Google Search than others. The dynamic retrieval feature gives you additional control over when to use Grounding with Google Search.
-
-If the dynamic retrieval mode is unspecified, Grounding with Google Search is always triggered. If the mode is set to dynamic, the model decides when to use grounding based on a threshold that you can configure. The threshold is a floating-point value in the range [0,1] and defaults to 0.3. If the threshold value is 0, the response is always grounded with Google Search; if it's 1, it never is.
-
-How dynamic retrieval works
-You can use dynamic retrieval in your request to choose when to turn on Grounding with Google Search. This is useful when the prompt doesn't require an answer grounded in Google Search and the model can provide an answer based on its own knowledge without grounding. This helps you manage latency, quality, and cost more effectively.
-
-Before you invoke the dynamic retrieval configuration in your request, understand the following terminology:
 
 Prediction score: When you request a grounded answer, Gemini assigns a prediction score to the prompt. The prediction score is a floating point value in the range [0,1]. Its value depends on whether the prompt can benefit from grounding the answer with the most up-to-date information from Google Search. Thus, if a prompt requires an answer grounded in the most recent facts on the web, it has a higher prediction score. A prompt for which a model-generated answer is sufficient has a lower prediction score.
 
@@ -513,14 +481,14 @@ def google_upload(pdf_path: Path) -> str:
         logging.error(f"Error uploading {pdf_path} to Google: {e}")
         raise Exception(f"Failed to upload PDF to Google: {str(e)}")
 
-def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gemini-2.5-flash-preview-05-20", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int]:
+def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gemini-1.5-flash", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, bool, str]:
     """
     Send a query to a Google Gemini model with multiple file attachments.
     
     Args:
         file_paths: List of paths to files to include
         prompt_text: The question to ask the model
-        model_name: The model to use (e.g., "gemini-2.5-flash")
+        model_name: The model to use (e.g., "gemini-1.5-flash")
         db_path: Path to the database directory
         web_search: Whether to enable web search for this prompt
         
@@ -530,6 +498,8 @@ def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
             - standard_input_tokens (int): Tokens used in the input
             - cached_input_tokens (int): Cached tokens used
             - output_tokens (int): Tokens used in the output (includes thinking tokens)
+            - web_search_used (bool): Whether web search was actually used
+            - web_search_sources (str): Raw web search data as string
     """
     # Build content list with files and prompt
     content_parts = []
@@ -548,7 +518,7 @@ def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
     
     return google_ask_internal(contents, model_name, web_search)
 
-def google_ask_internal(contents: List, model_name: str, web_search: bool = False) -> Tuple[str, int, int, int]:
+def google_ask_internal(contents: List, model_name: str, web_search: bool = False) -> Tuple[str, int, int, int, bool, str]:
     """
     Internal function to send a query to Google with prepared contents.
     
@@ -558,6 +528,8 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
             - standard_input_tokens (int): Tokens used in the input
             - cached_input_tokens (int): Cached tokens used
             - output_tokens (int): Tokens used in the output (includes thinking tokens)
+            - web_search_used (bool): Whether web search was actually used
+            - web_search_sources (str): Raw web search data as string
     """
     # Add direct console output for high visibility
     print(f"\n🔄 GOOGLE API CALL STARTING - MODEL: {model_name}")
@@ -612,15 +584,156 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
             cached_input_tokens = 0  # Google doesn't report cached tokens separately
             output_tokens = tokens_metadata.candidates_token_count
             
-            return response.text, standard_input_tokens, cached_input_tokens, output_tokens
+            # Detect web search usage by checking if tools were used
+            web_search_used = False
+            web_search_queries = 0
+            web_search_content = ""
+            
+            # Only count as web search if we explicitly enabled it AND grounding was found
+            # Google models may automatically use grounding, but we only count it as "web search"
+            # if the user explicitly requested it
+            if web_search:
+                # Check if the response contains web search results and extract content
+                if hasattr(response, 'candidates') and response.candidates:
+                    for candidate in response.candidates:
+                        if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
+                            web_search_used = True
+                            web_search_queries = 1
+                            
+                            # Extract grounding content for token counting and sources
+                            if hasattr(candidate.grounding_metadata, 'grounding_chunks'):
+                                for chunk in candidate.grounding_metadata.grounding_chunks:
+                                    if hasattr(chunk, 'web') and hasattr(chunk.web, 'title'):
+                                        web_search_content += f"Title: {chunk.web.title}\n"
+                                        if hasattr(chunk.web, 'uri'):
+                                            web_search_content += f"URL: {chunk.web.uri}\n"
+                                        web_search_content += "---\n"
+                            
+                            # Extract search entry point content (this contains most of the grounding data)
+                            if hasattr(candidate.grounding_metadata, 'search_entry_point'):
+                                entry_point = candidate.grounding_metadata.search_entry_point
+                                if hasattr(entry_point, 'rendered_content'):
+                                    web_search_content += f"Search entry point:\n{entry_point.rendered_content}\n---\n"
+                            
+                            # Extract web search queries
+                            if hasattr(candidate.grounding_metadata, 'web_search_queries'):
+                                web_search_queries = len(candidate.grounding_metadata.web_search_queries)
+                                web_search_content += f"Search queries: {', '.join(candidate.grounding_metadata.web_search_queries)}\n---\n"
+                        elif hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                            for part in candidate.content.parts:
+                                # Look for function calls or tool usage indicators
+                                if hasattr(part, 'function_call') or (hasattr(part, 'text') and 'search' in str(part.text).lower()[:200]):
+                                    web_search_used = True
+                                    web_search_queries = 1  # Assume 1 search query for now
+                                    web_search_content += f"Function call or search detected in response\n"
+                                    break
+            
+            # Count tokens on web search content if available
+            web_search_tokens = 0
+            if web_search_used and web_search_content:
+                try:
+                    # Use Google's token counting for the search content
+                    search_token_response = client.models.count_tokens(
+                        model=model_name,
+                        contents=web_search_content
+                    )
+                    web_search_tokens = search_token_response.total_tokens
+                except Exception as e:
+                    logging.warning(f"Could not count web search tokens: {e}")
+                    # Rough estimate: ~1 token per 4 characters
+                    web_search_tokens = len(web_search_content) // 4
+            
+            # Log web search detection
+            if web_search_used:
+                if web_search_tokens > 0:
+                    # Google's API does NOT include grounding tokens in prompt_token_count
+                    # We need to add them manually for accurate token counting
+                    standard_input_tokens += web_search_tokens
+                    logging.info(f"Web search detected: {web_search_queries} queries, {web_search_tokens} grounding tokens added to input")
+                    print(f"   🌐 Web search used: {web_search_queries} queries")
+                    print(f"   📊 Grounding tokens: {web_search_tokens} (added to input tokens)")
+                else:
+                    logging.info(f"Web search detected: {web_search_queries} queries")
+                    print(f"   🌐 Web search used: {web_search_queries} queries")
+                    print(f"   📊 Grounding tokens could not be counted")
+            elif not web_search:
+                # If web search was disabled but Google still used automatic grounding,
+                # we should note this but not count it as intentional web search
+                if hasattr(response, 'candidates') and response.candidates:
+                    for candidate in response.candidates:
+                        if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
+                            print(f"   ℹ️  Google used automatic grounding (not counted as web search)")
+                            break
+            
+            # Extract clean response text (not response.text which includes metadata)
+            clean_response_text = ""
+            if hasattr(response, 'candidates') and response.candidates:
+                for candidate in response.candidates:
+                    if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                        for part in candidate.content.parts:
+                            if hasattr(part, 'text'):
+                                clean_response_text += part.text
+            
+            # Debug logging to understand what we're getting
+            logging.info(f"Clean response text extracted: {len(clean_response_text)} characters")
+            if hasattr(response, 'text'):
+                logging.info(f"Raw response.text length: {len(response.text)} characters")
+                logging.info(f"Raw response.text preview: {response.text[:200]}...")
+            
+            # If we couldn't extract clean text, there's a problem with the response structure
+            if not clean_response_text:
+                logging.error("Could not extract clean text from Google response")
+                logging.error(f"Response structure: {type(response)}")
+                if hasattr(response, 'candidates'):
+                    logging.error(f"Candidates: {len(response.candidates) if response.candidates else 0}")
+                    for i, candidate in enumerate(response.candidates or []):
+                        logging.error(f"Candidate {i}: {type(candidate)}")
+                        if hasattr(candidate, 'content'):
+                            logging.error(f"  Content: {type(candidate.content)}")
+                            if hasattr(candidate.content, 'parts'):
+                                logging.error(f"  Parts: {len(candidate.content.parts) if candidate.content.parts else 0}")
+                
+                # Try alternative extraction methods
+                if hasattr(response, 'text') and response.text:
+                    # If response.text exists but contains metadata, try to clean it
+                    raw_text = response.text
+                    
+                    # Remove common metadata patterns that appear in Google responses
+                    # Look for patterns like "SEARCH QUERIES:" and remove everything before the actual content
+                    import re
+                    
+                    # Try to find where the actual content starts after metadata
+                    # Common patterns to remove:
+                    patterns_to_remove = [
+                        r'^.*?SEARCH QUERIES:.*?\n',  # Remove search query metadata
+                        r'^.*?WEB SEARCH.*?\n',       # Remove web search metadata
+                        r'^.*?GROUNDING.*?\n',        # Remove grounding metadata
+                    ]
+                    
+                    cleaned_text = raw_text
+                    for pattern in patterns_to_remove:
+                        cleaned_text = re.sub(pattern, '', cleaned_text, flags=re.IGNORECASE | re.MULTILINE)
+                    
+                    # If we removed some metadata, use the cleaned version
+                    if len(cleaned_text) < len(raw_text) and cleaned_text.strip():
+                        clean_response_text = cleaned_text.strip()
+                        logging.info(f"Used cleaned response.text: {len(clean_response_text)} characters")
+                    else:
+                        # Last resort: use raw text but log the issue
+                        clean_response_text = raw_text
+                        logging.warning("Using raw response.text as fallback - may contain metadata")
+                else:
+                    clean_response_text = "No response text found"
+            
+            return clean_response_text, standard_input_tokens, cached_input_tokens, output_tokens, web_search_used, web_search_content
             
         except Exception as e:
             error_details = str(e)
             logging.error(f"Google API Error: {error_details}")
             # Check for token limit errors and provide more readable message
             if "exceeds maximum input size" in error_details or "exceeds the context size" in error_details:
-                return f"ERROR: Token limit exceeded. Please reduce the input size.", 0, 0, 0
-            return f"ERROR: {error_details}", 0, 0, 0
+                return f"ERROR: Token limit exceeded. Please reduce the input size.", 0, 0, 0, False, ""
+            return f"ERROR: {error_details}", 0, 0, 0, False, ""
             
     except Exception as e:
         print(f"\n❌ GOOGLE API CALL FAILED")

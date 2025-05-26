@@ -159,6 +159,7 @@ def init_db(db_path: Path = Path.cwd()):
             output_cost REAL DEFAULT 0,
             total_cost REAL DEFAULT 0,
             web_search_used BOOLEAN DEFAULT 0,
+            web_search_sources TEXT,
             FOREIGN KEY (benchmark_run_id) REFERENCES {BENCHMARK_RUNS_TABLE}(id)
         )       
     ''')
@@ -172,6 +173,16 @@ def init_db(db_path: Path = Path.cwd()):
             logging.debug("web_search_used column already exists")
         else:
             logging.warning(f"Could not add web_search_used column: {e}")
+
+    # Add web_search_sources column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARK_PROMPTS_TABLE} ADD COLUMN web_search_sources TEXT')
+        logging.info("Added web_search_sources column to benchmark_prompts table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("web_search_sources column already exists")
+        else:
+            logging.warning(f"Could not add web_search_sources column: {e}")
 
     # Benchmark Reports Table
     cursor.execute(f'''
@@ -484,6 +495,7 @@ def save_benchmark_prompt(benchmark_run_id: int, prompt: str, response: str,
                          input_cost: float = 0.0, cached_cost: float = 0.0,
                          output_cost: float = 0.0, total_cost: float = 0.0,
                          web_search_used: bool = False,
+                         web_search_sources: str = "",
                          db_path: Path = Path.cwd()) -> Optional[int]:
     """Save a prompt result (response, latency, tokens, costs) for a benchmark run."""
     db_file = db_path / DB_NAME
@@ -495,14 +507,14 @@ def save_benchmark_prompt(benchmark_run_id: int, prompt: str, response: str,
             INSERT INTO {BENCHMARK_PROMPTS_TABLE} 
             (benchmark_run_id, prompt, response, latency, 
              standard_input_tokens, cached_input_tokens, output_tokens,
-             input_cost, cached_cost, output_cost, total_cost, web_search_used)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             input_cost, cached_cost, output_cost, total_cost, web_search_used, web_search_sources)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (benchmark_run_id, str(prompt), str(response),
               float(latency) if latency is not None else 0.0, 
               int(standard_input_tokens) if standard_input_tokens is not None else 0,
               int(cached_input_tokens) if cached_input_tokens is not None else 0,
               int(output_tokens) if output_tokens is not None else 0,
-              input_cost, cached_cost, output_cost, total_cost, 1 if web_search_used else 0))
+              input_cost, cached_cost, output_cost, total_cost, 1 if web_search_used else 0, web_search_sources))
         
         prompt_id = cursor.lastrowid
         conn.commit()
@@ -628,7 +640,10 @@ def get_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> Opti
                        input_cost, cached_cost, output_cost, total_cost,
                        CASE WHEN (SELECT COUNT(*) FROM pragma_table_info('{BENCHMARK_PROMPTS_TABLE}') 
                                  WHERE name='web_search_used') > 0 
-                            THEN web_search_used ELSE 0 END as web_search_used
+                            THEN web_search_used ELSE 0 END as web_search_used,
+                       CASE WHEN (SELECT COUNT(*) FROM pragma_table_info('{BENCHMARK_PROMPTS_TABLE}') 
+                                 WHERE name='web_search_sources') > 0 
+                            THEN web_search_sources ELSE '' END as web_search_sources
                 FROM {BENCHMARK_PROMPTS_TABLE}
                 WHERE benchmark_run_id = ?
                 ORDER BY id
