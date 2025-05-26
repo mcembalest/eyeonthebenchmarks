@@ -162,11 +162,73 @@ class Pages {
       // Add event listener for load prompt set button
       this.setupComposerEventListeners();
       
+      // Initialize web search toggle
+      this.setupWebSearchToggle();
+      
       console.log('Pages.initComposerPage completed successfully');
     } catch (error) {
       console.error('Error initializing composer page:', error);
       window.Components.showToast('Failed to load models', 'error');
     }
+  }
+
+  /**
+   * Set up web search toggle functionality
+   */
+  setupWebSearchToggle() {
+    const webSearchToggle = document.getElementById('webSearchToggle');
+    const webSearchOptions = document.getElementById('webSearchOptions');
+    const webSearchAllPromptsToggle = document.getElementById('webSearchAllPromptsToggle');
+    const webSearchPromptControls = document.getElementById('webSearchPromptControls');
+    
+    if (!webSearchToggle) return;
+    
+    // When main toggle changes
+    webSearchToggle.addEventListener('change', (e) => {
+      if (e.target.checked) {
+        webSearchOptions.classList.remove('d-none');
+      } else {
+        webSearchOptions.classList.add('d-none');
+      }
+    });
+    
+    // When "all prompts" toggle changes
+    if (webSearchAllPromptsToggle) {
+      webSearchAllPromptsToggle.addEventListener('change', (e) => {
+        if (e.target.checked) {
+          webSearchPromptControls.classList.add('d-none');
+        } else {
+          this.renderWebSearchPromptControls();
+          webSearchPromptControls.classList.remove('d-none');
+        }
+      });
+    }
+  }
+  
+  /**
+   * Render individual web search controls for each prompt
+   */
+  renderWebSearchPromptControls() {
+    const container = document.getElementById('webSearchPromptControls');
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    this.prompts.forEach((prompt, index) => {
+      const promptPreview = prompt.text.substring(0, 30) + (prompt.text.length > 30 ? '...' : '');
+      
+      const control = document.createElement('div');
+      control.className = 'form-check';
+      control.innerHTML = `
+        <input class="form-check-input web-search-prompt-toggle" type="checkbox" 
+               id="webSearchPrompt${index}" data-prompt-index="${index}" checked>
+        <label class="form-check-label" for="webSearchPrompt${index}">
+          Prompt ${index + 1}: <span class="text-muted small">${promptPreview}</span>
+        </label>
+      `;
+      
+      container.appendChild(control);
+    });
   }
 
   /**
@@ -919,13 +981,17 @@ class Pages {
             }
             const promptLatencySeconds = promptLatencyMs / 1000;
             
+            // Web search indicator
+            const webSearchIcon = prompt.web_search_used ? 
+              '<i class="fas fa-globe text-info ms-2" title="Used web search"></i>' : '';
+            
             // Show completed prompt
             return `
               <div class="border rounded p-3 mb-3 bg-light">
                 <div class="d-flex justify-content-between align-items-start mb-2">
                   <h6 class="mb-0 text-primary">
                     <i class="fas fa-check-circle text-success me-2"></i>
-                    Prompt ${index + 1}
+                    Prompt ${index + 1}${webSearchIcon}
                   </h6>
                   <div class="d-flex gap-2">
                     <span class="badge bg-secondary">${promptLatencySeconds.toFixed(3)}s</span>
@@ -1364,6 +1430,16 @@ class Pages {
     });
     
     console.log('Finished rendering prompts. promptsList now has', promptsList.children.length, 'children');
+    
+    // Update web search per-prompt controls if visible
+    const webSearchPromptControls = document.getElementById('webSearchPromptControls');
+    const webSearchAllPromptsToggle = document.getElementById('webSearchAllPromptsToggle');
+    if (webSearchPromptControls && 
+        webSearchAllPromptsToggle && 
+        !webSearchAllPromptsToggle.checked && 
+        !webSearchPromptControls.classList.contains('d-none')) {
+      this.renderWebSearchPromptControls();
+    }
   }
 
   /**
@@ -1427,6 +1503,19 @@ class Pages {
         window.Components.showToast('At least one model must be selected', 'error');
         return;
       }
+      
+      // Get web search settings
+      const webSearchToggle = document.getElementById('webSearchToggle');
+      const webSearchEnabled = webSearchToggle && webSearchToggle.checked;
+      const webSearchAllPromptsToggle = document.getElementById('webSearchAllPromptsToggle');
+      
+      // Get per-prompt web search settings if not using "all prompts" toggle
+      let webSearchPrompts = [];
+      if (webSearchEnabled && webSearchAllPromptsToggle && !webSearchAllPromptsToggle.checked) {
+        webSearchPrompts = Array.from(
+          document.querySelectorAll('.web-search-prompt-toggle:checked')
+        ).map(cb => parseInt(cb.dataset.promptIndex));
+      }
 
       // Validate token limits before running
       window.Components.showToast('Checking token limits...', 'info');
@@ -1473,7 +1562,9 @@ class Pages {
         pdfPaths: this.selectedPdfPaths,
         modelNames: selectedModels,
         benchmarkName,
-        benchmarkDescription: descInput.value.trim()
+        benchmarkDescription: descInput.value.trim(),
+        webSearchEnabled,
+        webSearchPrompts: webSearchEnabled && webSearchPrompts.length > 0 ? webSearchPrompts : undefined
       });
 
       if (result && result.status === 'success') {

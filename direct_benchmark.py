@@ -39,7 +39,7 @@ def emit_completion(data: dict):
     }))
     sys.stdout.flush()
 
-def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name):
+def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name, web_search_enabled=False):
     """
     Run a benchmark using files from the database
     """
@@ -219,7 +219,7 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name):
         # Run the actual benchmark using database files
         print(f"\n🔄 STARTING BENCHMARK WITH MODEL {model_name}...")
         sys.stdout.flush()
-        result = run_benchmark_from_db(prompts, benchmark_id, model_name, on_prompt_complete=on_prompt_complete)
+        result = run_benchmark_from_db(prompts, benchmark_id, model_name, on_prompt_complete=on_prompt_complete, web_search_enabled=web_search_enabled)
         duration = time.time() - t0
         print(f"\n✅ BENCHMARK COMPLETED IN {duration:.2f} SECONDS")
         sys.stdout.flush()
@@ -303,8 +303,8 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name):
 if __name__ == "__main__":
     import sys, json
     
-    if len(sys.argv) != 5:
-        print(f"ERROR: Usage: python {sys.argv[0]} <job_id> <benchmark_id> <prompts_file> <model_name>")
+    if len(sys.argv) < 5:
+        print(f"ERROR: Usage: python {sys.argv[0]} <job_id> <benchmark_id> <prompts_file> <model_name> [web_search_enabled]")
         sys.exit(1)
     
     try:
@@ -313,12 +313,17 @@ if __name__ == "__main__":
         prompts_file = sys.argv[3]
         model_name = sys.argv[4]
         
+        # Check for web search parameter
+        web_search_enabled = False
+        if len(sys.argv) > 5:
+            web_search_enabled = sys.argv[5].lower() == 'true'
+        
         # Load prompts list
         with open(prompts_file, 'r') as f:
             prompts = json.load(f)
         
         # Run the database-based benchmark
-        run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name)
+        run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name, web_search_enabled)
         
     except Exception as e:
         print(f"ERROR: Invalid arguments: {e}")

@@ -157,6 +157,32 @@
                   </div>
                 </div>
                 
+                <!-- Web Search -->
+                <div class="mb-4">
+                  <h6 class="text-muted mb-3">Web Search</h6>
+                  <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="webSearchToggle">
+                    <label class="form-check-label" for="webSearchToggle">
+                      <i class="fas fa-globe me-1"></i>Enable web search
+                    </label>
+                  </div>
+                  <div class="text-muted small mt-1">
+                    Models can search the web for up-to-date information. May incur additional costs.
+                  </div>
+                  
+                  <div id="webSearchOptions" class="mt-2 ms-4 d-none">
+                    <div class="form-check">
+                      <input class="form-check-input" type="checkbox" id="webSearchAllPromptsToggle" checked>
+                      <label class="form-check-label" for="webSearchAllPromptsToggle">
+                        Enable for all prompts
+                      </label>
+                    </div>
+                    <div id="webSearchPromptControls" class="mt-2 d-none">
+                      <!-- Per-prompt toggles will be added here -->
+                    </div>
+                  </div>
+                </div>
+                
                 <!-- Model Selection -->
                 <div class="mb-4">
                   <h6 class="text-muted mb-3">Models</h6>

@@ -24,7 +24,6 @@ AVAILABLE_MODELS = [
     "gpt-4o-mini",
     "gpt-4.1",
     "gpt-4.1-mini",
-    "gpt-4.1-nano",
     "o3",
     "o4-mini"
 ]
@@ -120,10 +119,10 @@ print(response.output_text)"""
 
 """openai context windows
 
-GPT 4.1, mini, and nano
+GPT 4.1 and 4.1-mini
 1,047,576 context window
 
-GPT 4o and mini
+GPT 4o and 4o-mini
 128,000 context window
 
 o3 and o4-mini
@@ -172,14 +171,6 @@ gpt-4.1-mini-2025-04-14
 $0.40
 $0.10
 $1.60"""
-
-"""gpt 4.1 nano pricing
-Model	Input	Cached input	Output
-gpt-4.1-nano
-gpt-4.1-nano-2025-04-14
-$0.10
-$0.025
-$0.40"""
 
 """o3 pricing
 Model	Input	Cached input	Output
@@ -250,7 +241,6 @@ $30.00
 COSTS = {
     "gpt-4.1": {"input": 2.00, "cached": 0.50, "output": 8.00, "search_cost": 0.035},
     "gpt-4.1-mini": {"input": 0.40, "cached": 0.10, "output": 1.60, "search_cost": 0.0275},
-    "gpt-4.1-nano": {"input": 0.10, "cached": 0.025, "output": 0.40, "search_cost": 0.0275},
     "gpt-4o": {"input": 2.50, "cached": 1.25, "output": 10.00, "search_cost": 0.035},
     "gpt-4o-mini": {"input": 0.15, "cached": 0.075, "output": 0.60, "search_cost": 0.0275},
     "o3": {"input": 10.00, "cached": 2.50, "output": 40.00, "search_cost": 0.035},
@@ -417,7 +407,7 @@ def openai_upload(pdf_path: Path) -> str:
         logging.error(error_msg)
         raise
 
-def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd()) -> Tuple[str, int, int, int]:
+def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int]:
     """
     Send a query to an OpenAI model with multiple file attachments.
     
@@ -426,6 +416,7 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
         prompt_text: The question to ask the model
         model_name: The model to use (e.g., "gpt-4o-mini", "gpt-4o")
         db_path: Path to the database directory
+        web_search: Whether to enable web search for this prompt
         
     Returns:
         A tuple containing:
@@ -434,6 +425,12 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
             - cached_input_tokens (int): Cached tokens used
             - output_tokens (int): Tokens used in the output (includes reasoning tokens)
     """
+    # Check if the model supports web search
+    web_search_supported_models = ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "o3", "o4-mini"]
+    if web_search and model_name not in web_search_supported_models:
+        print(f"⚠️ WARNING: Model {model_name} does not support web search. Disabling web search for this request.")
+        web_search = False
+    
     # Ensure all files are uploaded to OpenAI
     file_ids = []
     for file_path in file_paths:
@@ -453,9 +450,17 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
         "text": prompt_text,
     })
     
-    return openai_ask_internal(content, model_name)
+    # Set up tools for web search if enabled
+    tools = []
+    if web_search:
+        tools.append({
+            "type": "web_search_preview",
+            "search_context_size": "medium",  # Default to medium context size
+        })
+    
+    return openai_ask_internal(content, model_name, tools)
 
-def openai_ask_internal(content: List[Dict], model_name: str) -> Tuple[str, int, int, int]:
+def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] = None) -> Tuple[str, int, int, int]:
     """
     Internal function to send a query to OpenAI with prepared content.
     
@@ -538,10 +543,44 @@ def openai_ask_internal(content: List[Dict], model_name: str) -> Tuple[str, int,
             print(f"   API call starting at {time.strftime('%H:%M:%S')}")
             
             # THE ACTUAL API CALL HAPPENS HERE
-            response = client.responses.create(
-                model=model_name, 
-                input=api_input
-            )
+            try:
+                response = client.responses.create(
+                    model=model_name, 
+                    input=api_input,
+                    tools=tools
+                )
+            except openai.APIError as api_error:
+                # Handle specific OpenAI API errors
+                error_str = str(api_error).lower()
+                if "web_search" in error_str or "tool" in error_str:
+                    print(f"\n❌ WEB SEARCH ERROR: {api_error}")
+                    print(f"   Model {model_name} may not support web search or the tool configuration is invalid")
+                    print(f"   Retrying without web search...")
+                    # Retry without web search tools
+                    if tools:
+                        response = client.responses.create(
+                            model=model_name, 
+                            input=api_input,
+                            tools=None
+                        )
+                        print(f"✅ Retry successful without web search")
+                    else:
+                        raise api_error
+                elif "model" in error_str and ("not found" in error_str or "doesn't exist" in error_str):
+                    raise ValueError(f"Model '{model_name}' not found or not accessible. Please check the model name and your account permissions.")
+                elif "rate limit" in error_str:
+                    raise ValueError(f"Rate limit exceeded for OpenAI API. Please wait before making more requests.")
+                elif "authentication" in error_str or "api key" in error_str:
+                    raise ValueError(f"Authentication failed. Please check your OpenAI API key.")
+                else:
+                    raise api_error
+            except Exception as general_error:
+                # Handle other types of errors (timeouts, network issues, etc.)
+                error_str = str(general_error).lower()
+                if "timeout" in error_str:
+                    raise ValueError(f"Request timed out. The model may be taking too long to respond.")
+                else:
+                    raise general_error
             
             elapsed_time = time.time() - start_time
             print(f"\n✅ OPENAI API RESPONSE RECEIVED AFTER {elapsed_time:.2f} SECONDS")
@@ -824,7 +863,7 @@ def get_context_limit_openai(model_name: str) -> int:
     model_lower = model_name.lower()
     
     if any(x in model_lower for x in ["gpt-4.1", "gpt-4-1"]):
-        return 1047576  # GPT 4.1 series
+        return 1047576  # GPT 4.1 series (excluding nano which is deprecated)
     elif any(x in model_lower for x in ["gpt-4o", "gpt-4-o"]):
         return 128000   # GPT 4o series
     elif any(x in model_lower for x in ["o3", "o4"]):

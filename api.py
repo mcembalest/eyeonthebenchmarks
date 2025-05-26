@@ -68,6 +68,7 @@ async def launch_benchmark(payload: dict):
         payload.get("modelNames", []),
         payload.get("benchmarkName", ""),
         payload.get("benchmarkDescription", ""),
+        payload.get("webSearchEnabled", False)
     )
 
 @app.get("/benchmarks/all")
@@ -109,7 +110,6 @@ async def list_models():
         "gpt-4o-mini",
         "gpt-4.1",
         "gpt-4.1-mini",
-        "gpt-4.1-nano",
         "o3",
         "o4-mini",
         "claude-opus-4-20250514",

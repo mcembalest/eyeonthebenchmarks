@@ -77,7 +77,7 @@ response = client.messages.create(
 )
 print(response)
 
-Here’s an example response structure:
+Here's an example response structure:
 
 
 Copy
@@ -163,7 +163,7 @@ When displaying web results or information contained in web results to end users
 
 ​
 Errors
-If an error occurs during web search, you’ll receive a response that takes the following form:
+If an error occurs during web search, you'll receive a response that takes the following form:
 
 
 Copy
@@ -529,15 +529,16 @@ def anthropic_upload(pdf_path: Path) -> str:
         logging.error(error_msg)
         raise
 
-def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "claude-3-5-haiku-20241022", db_path: Path = Path.cwd()) -> Tuple[str, int, int, int]:
+def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "claude-3-5-haiku-20241022", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int]:
     """
-    Send a query to an Anthropic model with multiple file attachments.
+    Send a query to an Anthropic Claude model with multiple file attachments.
     
     Args:
         file_paths: List of paths to files to include
         prompt_text: The question to ask the model
-        model_name: The model to use (e.g., "claude-3-5-haiku-20241022", "claude-sonnet-4-20250514")
+        model_name: The model to use (e.g., "claude-3-5-haiku-20241022")
         db_path: Path to the database directory
+        web_search: Whether to enable web search for this prompt
         
     Returns:
         A tuple containing:
@@ -546,207 +547,164 @@ def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_nam
             - cached_input_tokens (int): Cached tokens used
             - output_tokens (int): Tokens used in the output
     """
-    # Ensure all files are uploaded to Anthropic
-    file_ids = []
-    for file_path in file_paths:
-        file_id = ensure_file_uploaded(file_path, db_path)
-        file_ids.append(file_id)
-    
     # Build content with all files and prompt
     content = []
     
-    # Add text prompt first
+    # Add files
+    for file_path in file_paths:
+        file_id = ensure_file_uploaded(file_path, db_path)
+        content.append({
+            "type": "file",
+            "id": file_id
+        })
+    
+    # Add prompt text
     content.append({
         "type": "text",
         "text": prompt_text
     })
     
-    # Add all document files
-    for file_id in file_ids:
-        content.append({
-  "type": "document",
-  "source": {
-    "type": "file",
-                "file_id": file_id
-            }
-        })
-    
-    return anthropic_ask_internal(content, model_name)
+    return anthropic_ask_internal(content, model_name, web_search)
 
-def anthropic_ask_internal(content: List[Dict], model_name: str) -> Tuple[str, int, int, int]:
+def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: bool = False) -> Tuple[str, int, int, int]:
     """
     Internal function to send a query to Anthropic with prepared content.
+    
+    Returns:
+        A tuple containing:
+            - answer (str): The model's text response
+            - standard_input_tokens (int): Tokens used in the input
+            - cached_input_tokens (int): Cached tokens used
+            - output_tokens (int): Tokens used in the output
     """
     # Add direct console output for high visibility
     print(f"\n🔄 ANTHROPIC API CALL STARTING - MODEL: {model_name}")
-    print(f"   Content blocks: {len(content)}")
     
     # Count files in content
-    file_count = sum(1 for item in content if item.get("type") == "document")
+    file_count = sum(1 for item in content if item.get("type") == "file")
     text_blocks = [item for item in content if item.get("type") == "text"]
     prompt_preview = text_blocks[0]["text"][:50] + "..." if text_blocks else "No text"
     
     print(f"   Files: {file_count}, Prompt: '{prompt_preview}'")
+    if web_search:
+        print("   Web search enabled")
     
     logging.info(f"===== ANTHROPIC_ASK_INTERNAL FUNCTION CALLED =====")
-    logging.info(f"Arguments: content_blocks={len(content)}, model_name={model_name}")
+    logging.info(f"Arguments: content_blocks={len(content)}, model_name={model_name}, web_search={web_search}")
     
-    # Initialize default values for return
-    answer = None
-    standard_input_tokens = 0
-    cached_input_tokens = 0
-    output_tokens = 0
-
     try:
+        import os
+        import traceback
+        from dotenv import load_dotenv
+        
         # Reload environment variables to ensure we have the latest
-        # This was previously inside a nested try, moved out for clarity
-        current_api_key = os.environ.get('ANTHROPIC_API_KEY')
-        if not current_api_key: # Use current_api_key to avoid conflict with global `api_key`
+        load_dotenv()
+        
+        # Check API key
+        api_key = os.environ.get('ANTHROPIC_API_KEY')
+        if not api_key:
             error_msg = "ANTHROPIC_API_KEY environment variable is not set"
             logging.error(error_msg)
-            # This error should be caught by the global check, but good to have robust checks
-            raise ValueError(error_msg) 
+            raise ValueError(error_msg)
             
-        # Log key info without revealing sensitive data
-        key_info = f"Length: {len(current_api_key)}, First 3 chars: {current_api_key[:3]}, Last 3 chars: {current_api_key[-3:]}"
-        logging.info(f"API Key verified: {key_info}")
-        logging.info(f"Content blocks: {len(content)}, Model: {model_name}")
+        # Create the messages structure
+        messages = [
+            {
+                "role": "user",
+                "content": content
+            }
+        ]
         
-        logging.info(f"Preparing to make Anthropic API call with model {model_name}")
+        # Set up tools for web search if enabled
+        tools = None
+        if web_search:
+            tools = [{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 5
+            }]
         
-        # Verify anthropic client is properly initialized
-        client_info = f"Client initialized: {client is not None}"
-        logging.info(client_info)
-        print(f"   Anthropic client initialized: {client is not None}")
-        
-        # Check Anthropic API key first few and last few characters
-        if current_api_key:
-            key_preview = f"{current_api_key[:4]}...{current_api_key[-4:]}" if len(current_api_key) > 8 else "***"
-            print(f"   API Key found: {key_preview} (length: {len(current_api_key)})")
-        else:
-            # This case should ideally not be reached due to earlier checks
-            print(f"   ⚠️ WARNING: No API key found! API call will fail.")
-            
-        # Show model and file details
-        print(f"   Model name: {model_name}")
-        print(f"   Files: {file_count}")
-        
-        # Use the Anthropic Messages API
-        logging.info("Making API call now...")
-        print(f"\n⏳ INITIATING ANTHROPIC API CALL...")
-        print(f"   This may take several seconds, watching for response...")
-        
-        start_time = time.time()
-        print(f"   API call starting at {time.strftime('%H:%M:%S')}")
-        
-        # THE ACTUAL API CALL HAPPENS HERE
-        response = client.messages.create(
-            model=model_name,
-            max_tokens=4096,
-            messages=[
-                {
-                    "role": "user",
-                    "content": content
-                }
-            ]
-        )
-        
-        elapsed_time = time.time() - start_time
-        print(f"\n✅ ANTHROPIC API RESPONSE RECEIVED AFTER {elapsed_time:.2f} SECONDS")
-        print(f"   Model: {model_name}")
-        print(f"   Response received at {time.strftime('%H:%M:%S')}")
-        logging.info(f"API call completed successfully in {elapsed_time:.2f} seconds!")
-        logging.info(f"Response type: {type(response).__name__}")
-        print(f"   Response type: {type(response).__name__}")
-
-        # Extract the answer text
+        # Estimate token count for input
         try:
+            token_count_response = client.messages.count_tokens(
+                model=model_name,
+                messages=messages
+            )
+            input_token_count = token_count_response.input_tokens
+            logging.info(f"Estimated input tokens: {input_token_count}")
+        except Exception as e:
+            logging.warning(f"Could not count tokens: {e}")
+            # Rough token count estimation based on text length and file count
+            input_token_count = 0
+            for item in content:
+                if item.get("type") == "text":
+                    # Rough estimate: ~1 token per 4 characters
+                    input_token_count += len(item.get("text", "")) // 4
+                elif item.get("type") == "file":
+                    # For files, we'll need to estimate since we can't count tokens
+                    # for uploaded files without making the actual API call
+                    # Use file size as rough estimate: ~1 token per 4 bytes
+                    input_token_count += 1000  # Assume 1000 tokens per file as a base estimate
+            
+            logging.info(f"Roughly estimated input tokens: {input_token_count}")
+        
+        # Track request start time for performance monitoring
+        start_time = time.time()
+        
+        # Send message to Anthropic
+        try:
+            response = client.messages.create(
+                model=model_name,
+                max_tokens=2048,
+                temperature=0.2,
+                messages=messages,
+                tools=tools
+            )
+            
+            # Extract text response from Claude
+            answer = ""
             if hasattr(response, 'content') and response.content:
                 for content_block in response.content:
-                    if hasattr(content_block, 'text'):
-                        answer = content_block.text
-                        logging.info("Successfully extracted answer from response.content")
-                        break
+                    if hasattr(content_block, 'text') and content_block.text:
+                        answer += content_block.text
+                    elif hasattr(content_block, 'type') and content_block.type == 'text':
+                        answer += content_block.text
             
-            if not answer and hasattr(response, '__dict__'): # Check __dict__ if no answer
-                logging.info(f"Response structure (dict): {response.__dict__}")
-        except Exception as e_ans:
-            logging.error(f"Error extracting answer: {str(e_ans)}", exc_info=True)
-        
-        if not answer: # Raise error if answer is still not found
-            logging.error(f"Failed to extract answer from response. Response: {response}")
-            # Don't raise here, let it return None and be handled by caller or logged tokens
-            # raise ValueError("Failed to extract answer from Anthropic response.")
+            # Extract token usage
+            usage = getattr(response, 'usage', {})
+            input_tokens = getattr(usage, 'input_tokens', input_token_count)
+            output_tokens = getattr(usage, 'output_tokens', len(answer) // 4)  # Rough estimate if not available
+            
+            # Calculate elapsed time
+            elapsed_time = time.time() - start_time
+            
+            print(f"\n✅ ANTHROPIC API RESPONSE RECEIVED AFTER {elapsed_time:.2f} SECONDS")
+            print(f"   Model: {model_name}")
+            print(f"   Tokens - Input: {input_tokens}, Output: {output_tokens}")
+            
+            # Return the results
+            return answer, input_tokens, 0, output_tokens  # Claude doesn't distinguish cached tokens
+            
+        except Exception as e:
+            error_details = traceback.format_exc()
+            logging.error(f"Anthropic API Error: {e}\n{error_details}")
+            
+            # Check for token limit errors and provide more readable message
+            error_str = str(e).lower()
+            if "token" in error_str and ("limit" in error_str or "exceed" in error_str or "context" in error_str):
+                return f"ERROR: Token limit exceeded. The input is too large for {model_name}.", input_token_count, 0, 0
+            
+            return f"ERROR: {str(e)}", input_token_count, 0, 0
 
-        # Extract token usage statistics
-        try:
-            logging.info(f"Response received from Anthropic API for token extraction")
-            if hasattr(response, 'usage'):
-                logging.info(f"Usage info present in response")
-                
-                if hasattr(response.usage, 'input_tokens'):
-                    standard_input_tokens = response.usage.input_tokens or 0
-                    logging.info(f"Extracted input_tokens: {standard_input_tokens}")
-                
-                # Anthropic differentiates between cache write and cache read tokens
-                cache_write_tokens = 0
-                cache_read_tokens = 0
-                
-                if hasattr(response.usage, 'cache_creation_input_tokens'):
-                    cache_write_tokens = response.usage.cache_creation_input_tokens or 0
-                    logging.info(f"Extracted cache_creation_input_tokens (write): {cache_write_tokens}")
-                
-                if hasattr(response.usage, 'cache_read_input_tokens'):
-                    cache_read_tokens = response.usage.cache_read_input_tokens or 0
-                    logging.info(f"Extracted cache_read_input_tokens (read): {cache_read_tokens}")
-                
-                # Total cached tokens for compatibility with runner.py
-                cached_input_tokens = cache_write_tokens + cache_read_tokens
-                
-                if hasattr(response.usage, 'output_tokens'):
-                    output_tokens = response.usage.output_tokens or 0
-                    logging.info(f"Extracted output_tokens: {output_tokens}")
-                
-                if standard_input_tokens == 0 and hasattr(response.usage, '__dict__'):
-                    usage_dict = response.usage.__dict__
-                    logging.info(f"Usage dictionary: {usage_dict}")
-                    standard_input_tokens = usage_dict.get('input_tokens', 0) or 0
-                    output_tokens = usage_dict.get('output_tokens', 0) or 0
-                    logging.info(f"Used dictionary access for token counts: input={standard_input_tokens}, output={output_tokens}")
-            else:
-                if answer:
-                    output_tokens = max(1, int(len(answer) / 4)) # Rough estimate
-                    logging.info(f"Estimated output tokens from answer length: {output_tokens}")
-            
-            standard_input_tokens = int(standard_input_tokens) if standard_input_tokens is not None else 0
-            cached_input_tokens = int(cached_input_tokens) if cached_input_tokens is not None else 0
-            output_tokens = int(output_tokens) if output_tokens is not None else 0
-            
-            logging.info(f"Final token counts - Standard Input: {standard_input_tokens}, Cached Input: {cached_input_tokens}, Output: {output_tokens}")
-        except Exception as e_token:
-            logging.error(f"Error extracting token usage: {str(e_token)}", exc_info=True)
-            # Continue with default values (0) on error
-
-    except anthropic.APIError as e_api: # Specific Anthropic API errors
-        error_details = f"Anthropic API Error: {str(e_api)}"
-        stack_trace = traceback.format_exc()
-        logging.error(f"{error_details}\n{stack_trace}")
-        print(f"\n❌ ANTHROPIC API CALL FAILED (APIError)")
-        print(f"   Error message: {str(e_api)}")
-        print(f"   Model: {model_name}")
-        # (Error classification messages for APIError can be added here if needed)
-        raise Exception(f"Anthropic API Error: {str(e_api)}") from e_api
-        
-    except Exception as e_main: # Catch-all for other errors during the process
-        error_details = f"Error during Anthropic call process: {str(e_main)}"
-        stack_trace = traceback.format_exc()
-        logging.error(f"{error_details}\n{stack_trace}")
+    except Exception as e:
+        error_details = traceback.format_exc()
+        logging.error(f"Error during Anthropic call process: {e}\n{error_details}")
         
         print(f"\n❌ ANTHROPIC CALL PROCESS FAILED (General Exception)")
-        print(f"   Error message: {str(e_main)}")
+        print(f"   Error message: {str(e)}")
         print(f"   Model: {model_name}")
         
-        error_str = str(e_main).lower()
+        error_str = str(e).lower()
         if "api key" in error_str or "apikey" in error_str or "authentication" in error_str:
             print(f"\n⚠️ AUTHENTICATION ERROR: This appears to be an API key problem")
             print(f"   1. Check that your ANTHROPIC_API_KEY is correctly set in the .env file")
@@ -763,7 +721,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str) -> Tuple[str, i
             print(f"   3. Try using a different model like 'claude-3-5-haiku-20241022'")
             
         print(f"\n   Error traceback (first 3 lines):")
-        for i, line in enumerate(stack_trace.split("\n")[:4]):
+        for i, line in enumerate(error_details.split("\n")[:4]):
             if i > 0: 
                 print(f"   {line[:100]}..." if len(line) > 100 else f"   {line}")
                 
@@ -773,19 +731,19 @@ def anthropic_ask_internal(content: List[Dict], model_name: str) -> Tuple[str, i
         # Token counts will be their default (0) if not set.
         # The caller (runner.py) handles exceptions from this function and logs them.
         # We re-raise the exception so it propagates.
-        raise Exception(f"Error in anthropic_ask_internal: {str(e_main)}") from e_main
+        raise Exception(f"Error in anthropic_ask_internal: {str(e)}") from e
 
     # This block is reached if the main try block completes without an unhandled exception
     # Print prominent results for high visibility in the console
     print(f"\n💬 ANSWER FROM {model_name.upper()}:")
     answer_str = str(answer) if answer is not None else "No answer received"
     print(f"   '{answer_str[:150]}...'" if len(answer_str) > 150 else f"   '{answer_str}'")
-    print(f"   Tokens - Input: {standard_input_tokens}, Cached: {cached_input_tokens}, Output: {output_tokens}")
+    print(f"   Tokens - Input: {input_tokens}, Output: {output_tokens}")
     print(f"=================================================")
     
     logging.info(f"Received answer (truncated): '{answer_str[:100]}...'")
     return (answer if answer is not None else f"ERROR: No answer extracted but no direct API error."), \
-           standard_input_tokens, cached_input_tokens, output_tokens
+           input_tokens, 0, output_tokens
 
 def calculate_cost(
     model_name: str,
@@ -868,8 +826,8 @@ def count_tokens_anthropic(content: List[Dict], model_name: str) -> int:
                     "type": "text",
                     "text": item.get("text", "")
                 })
-            elif item.get("type") == "document":
-                # For documents, we'll need to estimate since we can't count tokens
+            elif item.get("type") == "file":
+                # For files, we'll need to estimate since we can't count tokens
                 # for uploaded files without making the actual API call
                 # Use file size as rough estimate: ~1 token per 4 bytes
                 file_path = Path(item.get("file_path", ""))

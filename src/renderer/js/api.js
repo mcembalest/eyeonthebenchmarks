@@ -111,7 +111,7 @@ class API {
    * @returns {Promise<Object>} Benchmark run result
    */
   async runBenchmark(config) {
-    const { prompts, pdfPaths, modelNames, benchmarkName, benchmarkDescription } = config;
+    const { prompts, pdfPaths, modelNames, benchmarkName, benchmarkDescription, webSearchEnabled, webSearchPrompts } = config;
 
     // Validate required fields
     if (!benchmarkName?.trim()) {
@@ -124,13 +124,30 @@ class API {
       throw new Error('At least one model must be selected');
     }
 
+    // Process web search prompts if specified
+    let processedPrompts = prompts;
+    if (webSearchEnabled && Array.isArray(webSearchPrompts)) {
+      // Mark individual prompts for web search based on webSearchPrompts array
+      processedPrompts = prompts.map((prompt, index) => ({
+        ...prompt,
+        web_search: webSearchPrompts.includes(index)
+      }));
+    } else if (webSearchEnabled) {
+      // If webSearchEnabled is true but no specific prompts are provided, enable for all
+      processedPrompts = prompts.map(prompt => ({
+        ...prompt,
+        web_search: true
+      }));
+    }
+
     try {
       const result = await this.electronAPI.runBenchmark(
-        prompts,
+        processedPrompts,
         pdfPaths || [],
         modelNames,
         benchmarkName.trim(),
-        benchmarkDescription?.trim() || ''
+        benchmarkDescription?.trim() || '',
+        !!webSearchEnabled
       );
 
       // Clear benchmarks cache since we have a new one

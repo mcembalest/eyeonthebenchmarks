@@ -478,9 +478,16 @@ const setupIpcHandlers = () => {
   });
 
   // Run benchmark via HTTP
-  ipcMain.handle('run-benchmark', async (event, { prompts, pdfPaths, modelNames, benchmarkName, benchmarkDescription }) => {
+  ipcMain.handle('run-benchmark', async (event, prompts, pdfPaths, modelNames, benchmarkName, benchmarkDescription, webSearchEnabled) => {
     try {
-      const result = await httpPostJson('/launch', { prompts, pdfPaths, modelNames, benchmarkName, benchmarkDescription });
+      const result = await httpPostJson('/launch', { 
+        prompts, 
+        pdfPaths, 
+        modelNames, 
+        benchmarkName, 
+        benchmarkDescription,
+        webSearchEnabled
+      });
       return { success: result.status === 'success', ...result };
     } catch (err) {
       console.error('Error running benchmark:', err);

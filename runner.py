@@ -68,17 +68,20 @@ def emit_progress(data: dict):
         logging.error(error_msg)
         print(error_msg)
 
-def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd(), on_prompt_complete=None) -> Dict[str, Any]:
+def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_name: str = "gpt-4o-mini", 
+                         db_path: Path = Path.cwd(), on_prompt_complete=None, 
+                         web_search_enabled: bool = False) -> Dict[str, Any]:
     """
     Run a benchmark with prompts (questions only) against multiple files using the specified model.
     
     Args:
-        prompts: List of prompt dictionaries, each with 'prompt_text' (the question).
+        prompts: List of prompt dictionaries, each with 'prompt_text' (the question) and optional 'web_search' (bool).
         file_paths: List of paths to files to include in the benchmark.
         model_name: Name of the model to use.
         db_path: Path to the database directory.
         on_prompt_complete: Optional callback function called after each prompt completes.
                            Called with (prompt_index, prompt_result_dict)
+        web_search_enabled: Whether to enable web search for this benchmark (global setting).
         
     Returns:
         Dictionary with benchmark results (responses, latency, token counts).
@@ -86,7 +89,9 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
     t0 = perf_counter()
     total_prompts = len(prompts) if prompts else 0
     
-    emit_progress({"message": f"Starting benchmark with {len(file_paths)} files and {total_prompts} prompts (MVP - No Scoring)"})
+    emit_progress({"message": f"Starting benchmark with {len(file_paths)} files and {total_prompts} prompts"})
+    if web_search_enabled:
+        emit_progress({"message": "Web search is enabled for this benchmark"})
     
     # Validate files
     for file_path in file_paths:
@@ -138,6 +143,11 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
 
         for i, prompt_item in enumerate(prompts):
             prompt_text = prompt_item.get("prompt_text", "") # Ensure we get a string
+            
+            # Determine if web search should be used for this prompt
+            prompt_web_search = prompt_item.get("web_search", True) # Default to True if not specified
+            use_web_search = web_search_enabled and prompt_web_search
+            
             if not prompt_text:
                 emit_progress({"current": i + 1, "total": total_prompts, "message": "Skipping empty prompt.", "is_warning": True})
                 individual_prompt_data.append({
@@ -151,7 +161,8 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                     "input_cost": 0.0,
                     "cached_cost": 0.0,
                     "output_cost": 0.0,
-                    "total_cost": 0.0
+                    "total_cost": 0.0,
+                    "web_search_used": False
                 })
                 continue # Skip to next prompt
                 
@@ -159,21 +170,23 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
             
             try:
                 progress_message = f"Asking: {prompt_text[:50]}..."
+                if use_web_search:
+                    progress_message += " (with web search)"
                 emit_progress({"current": i + 1, "total": total_prompts, "message": progress_message})
                 
                 prompt_t0 = perf_counter()
                 
                 if provider == "google":
                     ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = google_ask_with_files(
-                        file_paths, prompt_text, model_name, db_path
+                        file_paths, prompt_text, model_name, db_path, use_web_search
                     )
                 elif provider == "anthropic":
                     ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = anthropic_ask_with_files(
-                        file_paths, prompt_text, model_name, db_path
+                        file_paths, prompt_text, model_name, db_path, use_web_search
                     )
                 else:  # openai
                     ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val = openai_ask_with_files(
-                        file_paths, prompt_text, model_name, db_path
+                        file_paths, prompt_text, model_name, db_path, use_web_search
                     )
                 
                 prompt_t1 = perf_counter()
@@ -226,7 +239,8 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                     "input_cost": input_cost,
                     "cached_cost": cached_cost,
                     "output_cost": output_cost,
-                    "total_cost": prompt_total_cost
+                    "total_cost": prompt_total_cost,
+                    "web_search_used": use_web_search
                 })
                 
                 ans_trunc = ans[:100] + "..." if len(ans) > 100 else ans
@@ -251,6 +265,14 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
             except Exception as e:
                 error_msg = f"Error processing prompt '{prompt_text[:30]}...': {e}"
                 emit_progress({"current": i + 1, "total": total_prompts, "message": error_msg, "is_error": True})
+                
+                # Check if this was a web search related error
+                error_str = str(e).lower()
+                web_search_error = "web_search" in error_str or "web search" in error_str or "tool" in error_str
+                
+                if web_search_error and use_web_search:
+                    emit_progress({"current": i + 1, "total": total_prompts, "message": f"Web search failed for this prompt. Error: {str(e)}", "is_warning": True})
+                
                 individual_prompt_data.append({
                     "prompt_text": prompt_text,
                     "prompt_length_chars": prompt_length_chars,
@@ -262,7 +284,8 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                     "input_cost": 0.0,
                     "cached_cost": 0.0,
                     "output_cost": 0.0,
-                    "total_cost": 0.0
+                    "total_cost": 0.0,
+                    "web_search_used": False  # Always False on error
                 })
 
         # Summarize results
@@ -283,7 +306,8 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                 "input_cost": ipd["input_cost"],
                 "cached_cost": ipd["cached_cost"],
                 "output_cost": ipd["output_cost"],
-                "total_cost": ipd["total_cost"]
+                "total_cost": ipd["total_cost"],
+                "web_search_used": ipd["web_search_used"]
             } for ipd in individual_prompt_data
         ]
 
@@ -314,16 +338,19 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
             # "mean_score" removed
         }
 
-def run_benchmark_from_db(prompts: List[Dict], benchmark_id: int, model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd(), on_prompt_complete=None) -> Dict[str, Any]:
+def run_benchmark_from_db(prompts: List[Dict], benchmark_id: int, model_name: str = "gpt-4o-mini", 
+                       db_path: Path = Path.cwd(), on_prompt_complete=None,
+                       web_search_enabled: bool = False) -> Dict[str, Any]:
     """
     Run a benchmark using files from the database (questions only).
     
     Args:
-        prompts: List of prompt dictionaries, each with 'prompt_text'.
+        prompts: List of prompt dictionaries, each with 'prompt_text' and optional 'web_search' (bool).
         benchmark_id: ID of the benchmark in the database.
         model_name: Name of the model to use.
         db_path: Path to the database directory.
         on_prompt_complete: Optional callback function called after each prompt completes.
+        web_search_enabled: Whether to enable web search for this benchmark (global setting).
         
     Returns:
         Dictionary with benchmark results.
@@ -334,6 +361,8 @@ def run_benchmark_from_db(prompts: List[Dict], benchmark_id: int, model_name: st
     # Convert file info to paths
     db_file_paths = [Path(file_info['file_path']) for file_info in files_info]
     
-    emit_progress({"message": f"Running benchmark {benchmark_id} with {len(db_file_paths)} files from DB (MVP - No Scoring)"})
+    emit_progress({"message": f"Running benchmark {benchmark_id} with {len(db_file_paths)} files from DB"})
+    if web_search_enabled:
+        emit_progress({"message": "Web search is enabled for this benchmark"})
     
-    return run_benchmark_with_files(prompts, db_file_paths, model_name, db_path, on_prompt_complete)
+    return run_benchmark_with_files(prompts, db_file_paths, model_name, db_path, on_prompt_complete, web_search_enabled)

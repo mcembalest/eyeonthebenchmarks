@@ -225,9 +225,6 @@ class Utils {
     
     // Handle OpenAI models - be very specific about exact matches
     // Order matters: check more specific patterns first
-    if (name.includes('gpt-4.1-nano')) {
-      return 'assets/gpt-4.1-nano.png';
-    }
     if (name.includes('gpt-4.1-mini')) {
       return 'assets/gpt-4.1-mini.png';
     }
@@ -390,9 +387,6 @@ class Utils {
     
     // Handle OpenAI models with proper naming - order matters!
     // Check more specific patterns first
-    if (name.includes('gpt-4.1-nano')) {
-      return 'GPT-4.1 Nano';
-    }
     if (name.includes('gpt-4.1-mini')) {
       return 'GPT-4.1 Mini';
     }
@@ -409,9 +403,6 @@ class Utils {
       return 'GPT-4 Turbo';
     }
     // Note: We don't have a standalone gpt-4 model in this project
-    if (name.includes('gpt-3.5-turbo')) {
-      return 'GPT-3.5 Turbo';
-    }
     if (name.includes('gpt-3.5')) {
       return 'GPT-3.5';
     }

@@ -111,17 +111,21 @@ class ScriptUiBridge(AppUIBridge):
 
 
 class BenchmarkWorker(threading.Thread): 
-    def __init__(self, job_id, benchmark_id, prompts, pdf_paths, model_name, on_progress=None, on_finished=None): 
+    def __init__(self, job_id, benchmark_id, prompts, pdf_paths, model_name, on_progress=None, on_finished=None, web_search_enabled=False): 
         super().__init__(name=f"BenchmarkWorker-{job_id}-{model_name}", daemon=True)  # Set daemon=True to prevent thread from blocking program exit
         self.job_id = job_id
         self.benchmark_id = benchmark_id
         self.prompts = prompts
-        self.pdf_paths = pdf_paths  # Changed from pdf_path to pdf_paths
-        self.model_name = model_name 
-        self.on_progress = on_progress 
-        self.on_finished = on_finished 
+        self.pdf_paths = pdf_paths
+        self.model_name = model_name
+        self.on_progress = on_progress
+        self.on_finished = on_finished
+        self.web_search_enabled = web_search_enabled
         self.active = True  # Single source of truth for worker state
         self._original_emit_progress_callback = None
+        
+        print(f"BenchmarkWorker initialized with job_id={job_id}, benchmark_id={benchmark_id}, model={model_name}, web_search_enabled={web_search_enabled}")
+        sys.stdout.flush()
         logging.info(f"BenchmarkWorker created: {self.name} with {len(prompts)} prompts for model {model_name}")
      
 
@@ -247,7 +251,8 @@ class BenchmarkWorker(threading.Thread):
             str(self.job_id),
             str(self.benchmark_id),
             prompts_file_path,  # Path to prompts JSON file
-            self.model_name
+            self.model_name,
+            str(self.web_search_enabled).lower()  # Pass web_search_enabled as string 'true'/'false'
         ]
     
         # Run the subprocess
@@ -507,7 +512,7 @@ class AppLogic:
         self._next_job_id += 1
         return job_id
         
-    def launch_benchmark_run(self, prompts: list, pdfPaths: list, modelNames: list, label: str, description: Optional[str] = ""):
+    def launch_benchmark_run(self, prompts: list, pdfPaths: list, modelNames: list, label: str, description: Optional[str] = "", webSearchEnabled: bool = False):
         """
         Launch a benchmark run with the provided prompts, PDF files, and model(s)
         
@@ -517,6 +522,7 @@ class AppLogic:
             modelNames: List of model names to use for this benchmark
             label: User-provided name for this benchmark
             description: Optional description for this benchmark
+            webSearchEnabled: Whether to enable web search for this benchmark
             
         Returns:
             dict: Information about the launched job including job_id and benchmark_id
@@ -644,6 +650,7 @@ class AppLogic:
             description=description or "",
             file_paths=[str(pdf_path) for pdf_path in pdfs_to_run],
             intended_models=modelNames,  # Store the intended models
+            use_web_search=webSearchEnabled,  # Pass web search flag
             db_path=db_dir
         )
         
@@ -713,7 +720,8 @@ class AppLogic:
                 pdf_paths=pdfs_to_run,
                 model_name=model_name, 
                 on_progress=create_progress_callback(job_id, model_name),
-                on_finished=create_finished_callback(job_id, model_name)
+                on_finished=create_finished_callback(job_id, model_name),
+                web_search_enabled=webSearchEnabled
             )
             
             # Store worker using job_id and model_name as composite key
@@ -817,7 +825,11 @@ class AppLogic:
                 
                 # Get prompt data for this run
                 cursor.execute("""
-                    SELECT * FROM benchmark_prompts
+                    SELECT *, 
+                           CASE WHEN (SELECT COUNT(*) FROM pragma_table_info('benchmark_prompts') 
+                                     WHERE name='web_search_used') > 0 
+                                THEN web_search_used ELSE 0 END as web_search_used
+                    FROM benchmark_prompts
                     WHERE benchmark_run_id = ?
                     ORDER BY id
                 """, (run_id,))
@@ -1091,6 +1103,7 @@ class AppLogic:
                     cached_cost = p.get('cached_cost', 0.0)
                     output_cost = p.get('output_cost', 0.0)
                     total_cost_prompt = p.get('total_cost', 0.0)
+                    web_search_used = p.get('web_search_used', False)
 
                     # Use the updated save_benchmark_prompt function with cost tracking
                     save_benchmark_prompt(
@@ -1104,7 +1117,8 @@ class AppLogic:
                         input_cost=input_cost,
                         cached_cost=cached_cost,
                         output_cost=output_cost,
-                        total_cost=total_cost_prompt
+                        total_cost=total_cost_prompt,
+                        web_search_used=web_search_used
                     )
 
                 self.ui_bridge.update_status_bar(f"Benchmark [{job_id}] run saved with DB ID: {run_id if 'run_id' in locals() else 'N/A'})")

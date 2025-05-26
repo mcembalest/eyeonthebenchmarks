@@ -513,104 +513,114 @@ def google_upload(pdf_path: Path) -> str:
         logging.error(f"Error uploading {pdf_path} to Google: {e}")
         raise Exception(f"Failed to upload PDF to Google: {str(e)}")
 
-def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gemini-2.5-flash-preview-05-20", db_path: Path = Path.cwd()) -> Tuple[str, int, int, int]:
+def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gemini-2.5-flash-preview-05-20", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int]:
     """
-    Send a query to a Google model with multiple file attachments.
+    Send a query to a Google Gemini model with multiple file attachments.
     
     Args:
         file_paths: List of paths to files to include
         prompt_text: The question to ask the model
-        model_name: The model to use
+        model_name: The model to use (e.g., "gemini-2.5-flash")
         db_path: Path to the database directory
+        web_search: Whether to enable web search for this prompt
         
     Returns:
         A tuple containing:
             - answer (str): The model's text response
             - standard_input_tokens (int): Tokens used in the input
             - cached_input_tokens (int): Cached tokens used
-            - output_tokens (int): Tokens used in the output
+            - output_tokens (int): Tokens used in the output (includes thinking tokens)
     """
-    # Ensure all files are uploaded to Google
-    file_ids = []
+    # Build content list with files and prompt
+    content_parts = []
+    
+    # Add files to content
     for file_path in file_paths:
-        file_id = ensure_file_uploaded(file_path, db_path)
-        file_ids.append(file_id)
+        # Generate the part for this file
+        part_id = ensure_file_uploaded(file_path, db_path)
+        content_parts.append({"file_data": {"file_uri": part_id, "mime_type": "application/pdf"}})
     
-    # Build contents with all files
-    contents = [prompt_text]
-    for file_id in file_ids:
-        file_obj = client.files.get(name=file_id)
-        contents.append(file_obj)
+    # Add prompt text
+    content_parts.append({"text": prompt_text})
     
-    return google_ask_internal(contents, model_name)
+    # Create the content object
+    contents = [{"parts": content_parts}]
+    
+    return google_ask_internal(contents, model_name, web_search)
 
-def google_ask_internal(contents: List, model_name: str) -> Tuple[str, int, int, int]:
+def google_ask_internal(contents: List, model_name: str, web_search: bool = False) -> Tuple[str, int, int, int]:
     """
     Internal function to send a query to Google with prepared contents.
+    
+    Returns:
+        A tuple containing:
+            - answer (str): The model's text response
+            - standard_input_tokens (int): Tokens used in the input
+            - cached_input_tokens (int): Cached tokens used
+            - output_tokens (int): Tokens used in the output (includes thinking tokens)
     """
+    # Add direct console output for high visibility
+    print(f"\n🔄 GOOGLE API CALL STARTING - MODEL: {model_name}")
+    print(f"   Contents: {len(contents)} items")
+    if web_search:
+        print("   Web search enabled")
+    
+    logging.info(f"===== GOOGLE_ASK_INTERNAL FUNCTION CALLED =====")
+    logging.info(f"Arguments: model_name={model_name}, web_search={web_search}")
+    
     try:
-        print(f"\n🔄 GOOGLE API CALL STARTING - MODEL: {model_name}")
+        # Prepare tools for web search if enabled
+        generation_config = {}
+        tools = []
         
-        # Count files in contents
-        file_count = sum(1 for item in contents if hasattr(item, 'name'))  # Google file objects have 'name' attribute
-        prompt_preview = contents[0][:50] + "..." if isinstance(contents[0], str) else "No text prompt"
+        if web_search:
+            from google.genai.types import Tool, GoogleSearch
+            tools.append(Tool(google_search=GoogleSearch()))
         
-        print(f"   Files: {file_count}, Prompt: '{prompt_preview}'")
-        
-        logging.info(f"Sending prompt to Google using model {model_name}")
-        
-        # Track request start time for performance monitoring
-        start_time = time.time()
-        
-        # Generate content using the specified model
-        response = client.models.generate_content(
-            model=model_name,
-            contents=contents
-        )
-        
-        # Calculate elapsed time
-        elapsed_time = time.time() - start_time
-        
-        print(f"\n✅ GOOGLE API RESPONSE RECEIVED AFTER {elapsed_time:.2f} SECONDS")
-        print(f"   Model: {model_name}")
-        
-        # Extract the response text
-        if response and hasattr(response, 'text'):
-            answer = response.text
-        else:
-            raise Exception("Failed to extract answer from Google response")
-            
-        # Default token values (Google's API doesn't currently provide detailed token info in all models)
-        # In the future, if Google adds the token information, update this section
-        standard_input_tokens = 0
-        cached_input_tokens = 0  # Google doesn't currently indicate cached tokens separately
-        output_tokens = 0
-        
-        # Try to extract token usage if available in the response
+        # Send request to Google API
         try:
-            if hasattr(response, 'usage_metadata'):
-                # Standard input tokens
-                if hasattr(response.usage_metadata, 'prompt_token_count'):
-                    standard_input_tokens = response.usage_metadata.prompt_token_count or 0
-                
-                # Output tokens
-                if hasattr(response.usage_metadata, 'candidates_token_count'):
-                    output_tokens = response.usage_metadata.candidates_token_count or 0
-                    
-                logging.info(f"Extracted token counts - Input: {standard_input_tokens}, Output: {output_tokens}")
+            # Prepare generation config
+            generation_config = {
+                "temperature": 0.2,
+                "top_p": 0.8,
+                "top_k": 40,
+                "max_output_tokens": 2048
+            }
+            
+            # Create generation config
+            from google.genai.types import GenerateContentConfig
+            config = GenerateContentConfig(
+                temperature=generation_config.get("temperature", 0.2),
+                top_p=generation_config.get("top_p", 0.8),
+                top_k=generation_config.get("top_k", 40),
+                max_output_tokens=generation_config.get("max_output_tokens", 2048),
+                tools=tools if web_search else None,
+                response_modalities=["TEXT"]
+            )
+            
+            # Generate content using the client directly
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents, 
+                config=config
+            )
+            
+            # Parse response
+            tokens_metadata = response.usage_metadata
+            
+            standard_input_tokens = tokens_metadata.prompt_token_count
+            cached_input_tokens = 0  # Google doesn't report cached tokens separately
+            output_tokens = tokens_metadata.candidates_token_count
+            
+            return response.text, standard_input_tokens, cached_input_tokens, output_tokens
+            
         except Exception as e:
-            logging.warning(f"Error extracting token usage details: {e}")
-            # Continue with default values (0) in case of any error
-        
-        # Print prominent results for high visibility in the console
-        print(f"\n💬 ANSWER FROM {model_name.upper()}:")
-        print(f"   '{str(answer)[:150]}...'" if len(str(answer)) > 150 else f"   '{str(answer)}'")
-        print(f"   Tokens - Input: {standard_input_tokens}, Cached: {cached_input_tokens}, Output: {output_tokens}")
-        print(f"   Response time: {elapsed_time:.2f} seconds")
-        print(f"=================================================")
-
-        logging.info(f"Received answer (truncated): '{str(answer)[:100]}...'")
-        return answer, standard_input_tokens, cached_input_tokens, output_tokens
+            error_details = str(e)
+            logging.error(f"Google API Error: {error_details}")
+            # Check for token limit errors and provide more readable message
+            if "exceeds maximum input size" in error_details or "exceeds the context size" in error_details:
+                return f"ERROR: Token limit exceeded. Please reduce the input size.", 0, 0, 0
+            return f"ERROR: {error_details}", 0, 0, 0
             
     except Exception as e:
         print(f"\n❌ GOOGLE API CALL FAILED")
