@@ -18,9 +18,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return [];
     }
   },
-  runBenchmark: (prompts, pdfPath, modelNames, benchmarkName, benchmarkDescription) => {
+  runBenchmark: (prompts, pdfPaths, modelNames, benchmarkName, benchmarkDescription) => {
     console.log('Preload: runBenchmark called with name:', benchmarkName, 'desc:', benchmarkDescription);
-    return ipcRenderer.invoke('run-benchmark', { prompts, pdfPath, modelNames, benchmarkName, benchmarkDescription });
+    return ipcRenderer.invoke('run-benchmark', { prompts, pdfPaths, modelNames, benchmarkName, benchmarkDescription });
   },
   getBenchmarkDetails: (id) => ipcRenderer.invoke('get-benchmark-details', id),
   exportBenchmarkToCsv: (id) => ipcRenderer.invoke('export-benchmark-to-csv', id),

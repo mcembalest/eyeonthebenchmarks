@@ -110,12 +110,12 @@ class ScriptUiBridge(AppUIBridge):
 
 
 class BenchmarkWorker(threading.Thread): 
-    def __init__(self, job_id, benchmark_id, prompts, pdf_path, model_name, on_progress=None, on_finished=None): 
+    def __init__(self, job_id, benchmark_id, prompts, pdf_paths, model_name, on_progress=None, on_finished=None): 
         super().__init__(name=f"BenchmarkWorker-{job_id}-{model_name}", daemon=True)  # Set daemon=True to prevent thread from blocking program exit
         self.job_id = job_id
         self.benchmark_id = benchmark_id
         self.prompts = prompts
-        self.pdf_path = pdf_path
+        self.pdf_paths = pdf_paths  # Changed from pdf_path to pdf_paths
         self.model_name = model_name 
         self.on_progress = on_progress 
         self.on_finished = on_finished 
@@ -133,7 +133,7 @@ class BenchmarkWorker(threading.Thread):
         print(f"\n===== BENCHMARK WORKER THREAD STARTING - {self.name} =====")
         print(f"   Model: {self.model_name}")
         print(f"   Job ID: {self.job_id}, Benchmark ID: {self.benchmark_id}")
-        print(f"   PDF: {self.pdf_path}")
+        print(f"   PDFs: {self.pdf_paths}")
         print(f"   Prompts: {len(self.prompts)}")
         sys.stdout.flush()
         
@@ -147,23 +147,24 @@ class BenchmarkWorker(threading.Thread):
         print(f"   Starting basic validation checks...")
         sys.stdout.flush()
         
-        # Only validate PDF path if one was provided
-        if self.pdf_path:
-            if not os.path.exists(self.pdf_path):
-                error_msg = f"PDF file not found: {self.pdf_path}"
-                print(f"   ❌ ERROR: {error_msg}")
-                sys.stdout.flush()
-                
-                if self.on_finished:
-                    self.on_finished({
-                        "error": error_msg,
-                        "status": "failed",
-                        "job_id": self.job_id,
-                        "benchmark_id": self.benchmark_id,
-                        "model_name": self.model_name
-                    })
-                return
-                        
+        # Validate PDF paths if any were provided
+        if self.pdf_paths:
+            for pdf_path in self.pdf_paths:
+                if not os.path.exists(pdf_path):
+                    error_msg = f"PDF file not found: {pdf_path}"
+                    print(f"   ❌ ERROR: {error_msg}")
+                    sys.stdout.flush()
+                    
+                    if self.on_finished:
+                        self.on_finished({
+                            "error": error_msg,
+                            "status": "failed",
+                            "job_id": self.job_id,
+                            "benchmark_id": self.benchmark_id,
+                            "model_name": self.model_name
+                        })
+                    return
+        
         if not self.model_name:
             error_msg = "Model name is required"
             print(f"   ❌ ERROR: {error_msg}")
@@ -505,13 +506,13 @@ class AppLogic:
         self._next_job_id += 1
         return job_id
         
-    def launch_benchmark_run(self, prompts: list, pdfPath: str, modelNames: list, label: str, description: Optional[str] = ""):
+    def launch_benchmark_run(self, prompts: list, pdfPaths: list, modelNames: list, label: str, description: Optional[str] = ""):
         """
-        Launch a benchmark run with the provided prompts, PDF file, and model(s)
+        Launch a benchmark run with the provided prompts, PDF files, and model(s)
         
         Args:
             prompts: List of prompt dictionaries with 'prompt_text' keys
-            pdfPath: Path to the PDF file to run the benchmark against
+            pdfPaths: List of paths to PDF files to run the benchmark against
             modelNames: List of model names to use for this benchmark
             label: User-provided name for this benchmark
             description: Optional description for this benchmark
@@ -521,11 +522,11 @@ class AppLogic:
             
         Raises:
             ValueError: If any input validation fails
-            FileNotFoundError: If the PDF file is not found
+            FileNotFoundError: If any PDF file is not found
             RuntimeError: If there's an error creating the benchmark in the database
         """
         logger = logging.getLogger(__name__)
-        logger.info(f"Launching benchmark run with {len(prompts)} prompts, PDF: {pdfPath}, models: {modelNames}")
+        logger.info(f"Launching benchmark run with {len(prompts)} prompts, PDFs: {pdfPaths}, models: {modelNames}")
         
         # Validate inputs
         if not prompts or not isinstance(prompts, list):
@@ -550,15 +551,18 @@ class AppLogic:
                     "error_type": "validation_error"
                 }
         
-        # Convert to Path and validate if PDF is provided
-        pdf_to_run = None
-        if pdfPath and pdfPath.strip():  # Only process if pdfPath is not empty
-            pdf_to_run = Path(pdfPath).resolve()
-            if not pdf_to_run.exists():
-                error_msg = f"PDF file not found: {pdf_to_run}"
-                logger.error(error_msg)
-                self.ui_bridge.show_message("error", "PDF not found", error_msg)
-                raise FileNotFoundError(error_msg)
+        # Convert to Path objects and validate if PDFs are provided
+        pdfs_to_run = []
+        if pdfPaths and isinstance(pdfPaths, list):
+            for pdfPath in pdfPaths:
+                if pdfPath and str(pdfPath).strip():  # Only process if pdfPath is not empty
+                    pdf_path = Path(pdfPath).resolve()
+                    if not pdf_path.exists():
+                        error_msg = f"PDF file not found: {pdf_path}"
+                        logger.error(error_msg)
+                        self.ui_bridge.show_message("error", "PDF not found", error_msg)
+                        raise FileNotFoundError(error_msg)
+                    pdfs_to_run.append(pdf_path)
             
         if not modelNames:
             error_msg = "No models selected"
@@ -588,7 +592,7 @@ class AppLogic:
             }
         
         # Convert string path to Path object if provided
-        pdf_to_run = Path(pdfPath) if pdfPath and str(pdfPath).strip() else None
+        pdf_to_run = Path(pdfPaths[0]) if pdfPaths and str(pdfPaths[0]).strip() else None
             
         # Validate inputs
         if not prompts:
@@ -637,7 +641,7 @@ class AppLogic:
         benchmark_id = save_benchmark(
             label=label,
             description=description or "",
-            file_paths=[str(pdf_to_run)] if pdf_to_run else [],
+            file_paths=[str(pdf_path) for pdf_path in pdfs_to_run],
             intended_models=modelNames,  # Store the intended models
             db_path=db_dir
         )
@@ -651,7 +655,7 @@ class AppLogic:
         
         # Set the current benchmark ID
         self._current_benchmark_id = benchmark_id
-        self._current_benchmark_file_paths = [str(pdf_to_run)] if pdf_to_run else []
+        self._current_benchmark_file_paths = [str(pdf_path) for pdf_path in pdfs_to_run]
         
         logger.info(f"Successfully created benchmark with ID: {benchmark_id}")
 
@@ -663,7 +667,7 @@ class AppLogic:
             'status': 'starting',
             'label': label,
             'description': description,
-            'pdf_path': str(pdf_to_run),
+            'pdf_paths': self._current_benchmark_file_paths,
             'benchmark_id': benchmark_id,
             'total_models': len(modelNames),
             'completed_models': 0,
@@ -705,7 +709,7 @@ class AppLogic:
                 job_id=job_id,
                 benchmark_id=benchmark_id,
                 prompts=prompts,
-                pdf_path=pdf_to_run,
+                pdf_paths=pdfs_to_run,
                 model_name=model_name, 
                 on_progress=create_progress_callback(job_id, model_name),
                 on_finished=create_finished_callback(job_id, model_name)
@@ -730,7 +734,7 @@ class AppLogic:
             'model_names': modelNames, # This is the list of model names
             'status': 'running', # Optimistically set to running
             'timestamp': self.jobs[job_id]['start_time'], # Already in isoformat
-            'file_paths': [str(pdf_to_run)] # The PDF path used for the launch
+            'file_paths': self._current_benchmark_file_paths # The PDF paths used for the launch
             # Add any other fields the frontend expects for a benchmark list item
         }
 
@@ -889,7 +893,33 @@ class AppLogic:
         if job_id in self.jobs:
             self.jobs[job_id]['models_details'][model_name]['status'] = 'running'
             self.jobs[job_id]['models_details'][model_name]['progress'] = progress_data.get('progress', 0.0)
-            self.ui_bridge.notify_benchmark_progress(job_id, self.jobs[job_id]) 
+            
+            # Handle prompt completion events for real-time updates
+            if progress_data.get('status') == 'prompt_complete':
+                # A prompt has completed - trigger a UI refresh for the benchmark details
+                benchmark_id = self.jobs[job_id].get('benchmark_id')
+                if benchmark_id:
+                    logging.info(f"Prompt {progress_data.get('prompt_index', 0) + 1} completed for model {model_name} in benchmark {benchmark_id}")
+                    
+                    # Notify the UI that benchmark data has changed
+                    self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_DETAILS, {
+                        'benchmark_id': benchmark_id,
+                        'job_id': job_id,
+                        'model_name': model_name,
+                        'prompt_completed': True,
+                        'prompt_index': progress_data.get('prompt_index', 0),
+                        'total_prompts': progress_data.get('total_prompts', 0)
+                    })
+                    
+                    # Also update the progress counter
+                    completed_prompts = progress_data.get('prompt_index', 0) + 1
+                    total_prompts = progress_data.get('total_prompts', 1)
+                    progress_percentage = (completed_prompts / total_prompts) * 100
+                    self.jobs[job_id]['models_details'][model_name]['progress'] = progress_percentage
+                    
+                    logging.info(f"Updated progress for {model_name}: {completed_prompts}/{total_prompts} prompts ({progress_percentage:.1f}%)")
+            
+            self.ui_bridge.notify_benchmark_progress(job_id, self.jobs[job_id])
 
     def handle_run_finished(self, result: dict, job_id: int, model_name_for_run: str):
         worker_key = f"{job_id}_{model_name_for_run}"
@@ -1016,7 +1046,8 @@ class AppLogic:
             # Create a report summary
             report = f"Items: {result.get('items', 'N/A')}, Time: {result.get('elapsed_s', 'N/A')}s"
             logging.info(f"Benchmark summary: {report}")
-            latency = result.get('elapsed_s', 0.0)
+            # Convert latency from seconds to milliseconds for database storage consistency
+            latency = (result.get('elapsed_s', 0.0) * 1000)  # Convert seconds to milliseconds
 
             total_standard_input_tokens = result.get('total_standard_input_tokens', 0)
             total_cached_input_tokens = result.get('total_cached_input_tokens', 0)

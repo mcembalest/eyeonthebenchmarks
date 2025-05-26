@@ -53,14 +53,38 @@ body {
   display: block;
 }
 
+/* Ensure composer page is scrollable */
+#composerContent {
+  overflow-y: auto;
+  min-height: 100vh;
+  height: auto;
+}
+
+#composerContent.active {
+  display: block;
+  overflow-y: auto;
+}
+
+/* Override main overflow when composer is active */
+main:has(#composerContent.active) {
+  overflow: visible !important;
+}
+
+/* Fallback for browsers that don't support :has() */
+body.composer-active main {
+  overflow: visible !important;
+}
+
 /* ===== FIXED LAYOUT FOR COMPOSER PAGE ===== */
 .composer-layout {
   display: flex;
   gap: 1.5rem;
-  height: calc(100vh - 120px); /* Fixed height minus header */
+  min-height: calc(100vh - 120px); /* Use min-height instead of fixed height */
+  max-height: none; /* Remove height restrictions */
   max-width: 1400px;
   margin: 0 auto;
   padding: 1rem;
+  overflow: visible; /* Allow content to overflow naturally */
 }
 
 .composer-left {
@@ -68,7 +92,7 @@ body {
   min-width: 400px;
   display: flex;
   flex-direction: column;
-  height: 100%; /* Ensure full height */
+  min-height: 600px; /* Minimum height instead of fixed height */
 }
 
 .composer-right {
@@ -76,13 +100,14 @@ body {
   min-width: 400px;
   display: flex;
   flex-direction: column;
-  height: 100%; /* Ensure full height */
+  min-height: 600px; /* Minimum height instead of fixed height */
 }
 
-/* Ensure cards take full height */
+/* Ensure cards can grow with content */
 .composer-left .card,
 .composer-right .card {
-  height: 100%;
+  min-height: 600px; /* Minimum height instead of fixed height */
+  height: auto; /* Allow cards to grow with content */
   display: flex;
   flex-direction: column;
 }
@@ -93,7 +118,7 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden; /* Prevent overflow from breaking layout */
+  overflow: visible; /* Allow content to be visible */
 }
 
 /* Fix the scrollable area for prompts */
@@ -102,12 +127,13 @@ body {
   overflow: hidden; /* Container should not scroll */
   display: flex;
   flex-direction: column;
+  min-height: 300px; /* Ensure minimum space for prompts */
 }
 
-/* Make the right panel scrollable */
+/* Make the right panel content visible and scrollable when needed */
 .composer-right .card-body {
-  overflow-y: auto; /* Enable scrolling for the entire right panel */
-  padding-right: 1rem; /* Space for scrollbar */
+  overflow: visible; /* Allow content to be visible */
+  padding-right: 1rem; /* Space for potential scrollbar */
 }
 
 .prompts-list {
@@ -120,26 +146,57 @@ body {
 @media (max-width: 1200px) {
   .composer-layout {
     max-width: 100%;
+    padding: 0.5rem; /* Reduce padding on smaller screens */
+  }
+  
+  .composer-left,
+  .composer-right {
+    min-width: 350px; /* Reduce minimum width */
   }
 }
 
 @media (max-width: 900px) {
   .composer-layout {
     flex-direction: column;
-    height: auto;
+    min-height: auto; /* Remove height restrictions on mobile */
+    gap: 1rem;
   }
   
   .composer-left,
   .composer-right {
     flex: 1 1 auto;
     min-width: 300px;
-    height: auto;
+    min-height: auto; /* Remove height restrictions on mobile */
   }
   
   .composer-left .card,
   .composer-right .card {
     height: auto;
-    min-height: 400px;
+    min-height: 400px; /* Smaller minimum height on mobile */
+  }
+  
+  /* Ensure the page itself is scrollable on mobile */
+  #composerContent {
+    overflow-y: auto;
+    height: auto;
+    min-height: 100vh;
+  }
+}
+
+@media (max-width: 600px) {
+  .composer-layout {
+    padding: 0.25rem;
+    gap: 0.5rem;
+  }
+  
+  .composer-left,
+  .composer-right {
+    min-width: 280px;
+  }
+  
+  .composer-left .card,
+  .composer-right .card {
+    min-height: 300px;
   }
 }
 
@@ -777,3 +834,232 @@ body {
 .progress-log::-webkit-scrollbar-thumb:hover {
   background: #495057;
 }
+
+/* ===== HOME PAGE SCROLLING FIXES ===== */
+#homeContent.active {
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+#homeContent.active .container-fluid {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#homeContent.active .row:last-child {
+  flex: 1;
+  overflow: hidden;
+}
+
+#homeContent.active .row:last-child .col-12 {
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Grid and Table View Containers */
+.benchmarks-container {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0.5rem; /* Space for scrollbar */
+}
+
+.benchmarks-container.grid-view {
+  display: none;
+}
+
+.benchmarks-container.grid-view.active {
+  display: block;
+}
+
+.benchmarks-container.table-view {
+  display: none;
+}
+
+.benchmarks-container.table-view.active {
+  display: block;
+}
+
+/* Scrollbar styling for home page */
+.benchmarks-container::-webkit-scrollbar {
+  width: 8px;
+}
+
+.benchmarks-container::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+.benchmarks-container::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+.benchmarks-container::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* Ensure table view has proper scrolling */
+.benchmarks-container.table-view .table-responsive {
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: auto;
+}
+
+/* Fix grid view spacing and ensure proper flow */
+.benchmarks-container.grid-view .row {
+  margin-left: -0.75rem;
+  margin-right: -0.75rem;
+}
+
+.benchmarks-container.grid-view .row > * {
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+}
+
+/* Basic prompts container styling */
+#promptsContainer {
+  overflow-y: auto;
+  max-height: 70vh;
+  padding: 1rem;
+  background: #f8f9fa;
+  border-radius: 0.375rem;
+  margin: 0.5rem;
+}
+
+#promptSetPromptsList {
+  padding-bottom: 2rem;
+}
+
+/* Ensure prompt items have proper spacing */
+.prompt-item {
+  margin-bottom: 1.5rem;
+  background: #ffffff;
+  border: 1px solid #dee2e6;
+  border-radius: 0.375rem;
+  padding: 1rem;
+}
+
+.prompt-item:last-child {
+  margin-bottom: 3rem;
+}
+
+.prompt-item:hover {
+  border-color: #0d6efd;
+  box-shadow: 0 2px 8px rgba(13, 110, 253, 0.15);
+}
+
+/* ===== PROVIDER AND MODEL IMAGES ===== */
+.provider-image,
+.model-image {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  border-radius: 3px;
+  background: white;
+  padding: 1px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.provider-badge {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: white;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+/* Larger images for model headers */
+.card-header .model-image {
+  width: 28px;
+  height: 28px;
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 2px;
+}
+
+/* Model checkbox images */
+.form-check-label .model-image {
+  width: 18px;
+  height: 18px;
+  border-radius: 2px;
+}
+
+.form-check-label .provider-image {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+}
+
+/* Table row images */
+.table .model-image,
+.table .provider-image {
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+}
+
+/* Fallback styling for when images fail to load */
+.provider-image[src=""],
+.model-image[src=""] {
+  display: none;
+}
+
+/* Ensure images don't break layout */
+.provider-image,
+.model-image {
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+
+/* Small model icons for grid and table views */
+.model-icon-small {
+  width: 30px !important;
+  height: 30px !important;
+  border-radius: 2px;
+  background: white;
+  padding: 1px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
+}
+
+/* Ensure model icon containers don't break layout */
+.card-text .d-flex,
+.table .d-flex {
+  min-height: 20px;
+  align-items: center;
+}
+
+/* Selected files display */
+.selected-files {
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 8px;
+  background-color: #f8f9fa;
+}
+
+.selected-files .d-flex {
+  padding: 2px 0;
+}
+
+.selected-files .btn-sm {
+  padding: 1px 4px;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.selected-files .small {
+  font-size: 0.875rem;
+  word-break: break-all;
+}
+
+

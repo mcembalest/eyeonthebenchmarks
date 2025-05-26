@@ -157,10 +157,13 @@ class Components {
             <i class="fas fa-calendar me-1"></i>
             ${Utils.formatDate(benchmark.created_at || benchmark.timestamp)}
           </p>
-          <p class="card-text text-muted small mb-3">
-            <i class="fas fa-robot me-1"></i>
-            <span title="${modelsText}">${Utils.truncateText(modelsText, 40)}</span>
-          </p>
+          <div class="card-text small mb-3">
+            <div class="d-flex align-items-center flex-wrap gap-1">
+              ${models.length > 0 ? models.map(modelName => 
+                Utils.createModelImage(modelName, 'model-icon-small')
+              ).join('') : '<span class="text-muted">No models</span>'}
+            </div>
+          </div>
           ${benchmark.description ? `
             <p class="card-text small text-muted">
               ${Utils.truncateText(benchmark.description, 80)}
@@ -244,7 +247,11 @@ class Components {
         <small>${Utils.formatDate(benchmark.created_at || benchmark.timestamp)}</small>
       </td>
       <td>
-        <span title="${modelsText}">${Utils.truncateText(modelsText, 30)}</span>
+        <div class="d-flex align-items-center flex-wrap gap-1">
+          ${models.length > 0 ? models.map(modelName => 
+            Utils.createModelImage(modelName, 'model-icon-small')
+          ).join('') : '<span class="text-muted">No models</span>'}
+        </div>
       </td>
       <td>
         <div class="btn-group btn-group-sm" role="group">
@@ -338,15 +345,18 @@ class Components {
     const div = document.createElement('div');
     div.className = 'form-check mb-2';
 
-    const providerColor = Utils.getProviderColor(model.provider);
-    
+    const formattedName = Utils.formatModelName(model.name);
+
     div.innerHTML = `
       <input class="form-check-input" type="checkbox" value="${model.id}" 
              id="model-${model.id}" ${checked ? 'checked' : ''}>
       <label class="form-check-label d-flex justify-content-between align-items-center" 
              for="model-${model.id}">
-        <span>${Utils.sanitizeHtml(model.name)}</span>
-        <span class="badge bg-${providerColor} ms-2">${model.provider.toUpperCase()}</span>
+        <div class="d-flex align-items-center">
+          ${Utils.createModelImage(model.name, 'me-2')}
+          <span>${Utils.sanitizeHtml(formattedName)}</span>
+        </div>
+        ${Utils.createProviderImage(model.provider, 'ms-2')}
       </label>
     `;
 
@@ -453,19 +463,29 @@ class Components {
       `;
     }
 
-    // Update model names
-    const modelsSpan = card.querySelector('.card-body p:nth-child(2) span');
-    if (modelsSpan) {
+    // Update model icons
+    const modelsContainer = card.querySelector('.card-body .d-flex');
+    if (modelsContainer) {
       const models = benchmarkData.model_names || [];
-      const modelsText = models.length > 0 ? models.join(', ') : 'No models';
       
-      modelsSpan.textContent = Utils.truncateText(modelsText, 40);
-      modelsSpan.title = modelsText;
+      if (models.length > 0) {
+        modelsContainer.innerHTML = models.map(modelName => 
+          Utils.createModelImage(modelName, 'model-icon-small')
+        ).join('');
+      } else {
+        modelsContainer.innerHTML = '<span class="text-muted">No models</span>';
+      }
       
-      // Also update the parent paragraph's icon and text for table view
-      const modelsRow = card.querySelector('td:nth-child(4)');
+      // Also update the table view if it exists
+      const modelsRow = card.querySelector('td:nth-child(4) .d-flex');
       if (modelsRow) {
-        modelsRow.innerHTML = `<span title="${modelsText}">${Utils.truncateText(modelsText, 30)}</span>`;
+        if (models.length > 0) {
+          modelsRow.innerHTML = models.map(modelName => 
+            Utils.createModelImage(modelName, 'model-icon-small')
+          ).join('');
+        } else {
+          modelsRow.innerHTML = '<span class="text-muted">No models</span>';
+        }
       }
     }
   }

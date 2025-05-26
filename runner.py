@@ -68,7 +68,7 @@ def emit_progress(data: dict):
         logging.error(error_msg)
         print(error_msg)
 
-def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd()) -> Dict[str, Any]:
+def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd(), on_prompt_complete=None) -> Dict[str, Any]:
     """
     Run a benchmark with prompts (questions only) against multiple files using the specified model.
     
@@ -77,6 +77,8 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
         file_paths: List of paths to files to include in the benchmark.
         model_name: Name of the model to use.
         db_path: Path to the database directory.
+        on_prompt_complete: Optional callback function called after each prompt completes.
+                           Called with (prompt_index, prompt_result_dict)
         
     Returns:
         Dictionary with benchmark results (responses, latency, token counts).
@@ -231,6 +233,21 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                 cost_msg = f" (Cost: ${prompt_total_cost:.6f})" if prompt_total_cost > 0 else ""
                 emit_progress({"current": i + 1, "total": total_prompts, "message": f"Answer: {ans_trunc}{cost_msg}"})
                 
+                if on_prompt_complete:
+                    on_prompt_complete(i, {
+                        "prompt_text": prompt_text,
+                        "prompt_length_chars": prompt_length_chars,
+                        "latency_ms": individual_latency_ms,
+                        "standard_input_tokens": standard_input_tokens_val,
+                        "cached_input_tokens": cached_input_tokens_val,
+                        "output_tokens": output_tokens_val,
+                        "model_answer": ans,
+                        "input_cost": input_cost,
+                        "cached_cost": cached_cost,
+                        "output_cost": output_cost,
+                        "total_cost": prompt_total_cost
+                    })
+                
             except Exception as e:
                 error_msg = f"Error processing prompt '{prompt_text[:30]}...': {e}"
                 emit_progress({"current": i + 1, "total": total_prompts, "message": error_msg, "is_error": True})
@@ -297,7 +314,7 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
             # "mean_score" removed
         }
 
-def run_benchmark_from_db(prompts: List[Dict], benchmark_id: int, model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd()) -> Dict[str, Any]:
+def run_benchmark_from_db(prompts: List[Dict], benchmark_id: int, model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd(), on_prompt_complete=None) -> Dict[str, Any]:
     """
     Run a benchmark using files from the database (questions only).
     
@@ -306,6 +323,7 @@ def run_benchmark_from_db(prompts: List[Dict], benchmark_id: int, model_name: st
         benchmark_id: ID of the benchmark in the database.
         model_name: Name of the model to use.
         db_path: Path to the database directory.
+        on_prompt_complete: Optional callback function called after each prompt completes.
         
     Returns:
         Dictionary with benchmark results.
@@ -318,4 +336,4 @@ def run_benchmark_from_db(prompts: List[Dict], benchmark_id: int, model_name: st
     
     emit_progress({"message": f"Running benchmark {benchmark_id} with {len(db_file_paths)} files from DB (MVP - No Scoring)"})
     
-    return run_benchmark_with_files(prompts, db_file_paths, model_name, db_path)
+    return run_benchmark_with_files(prompts, db_file_paths, model_name, db_path, on_prompt_complete)

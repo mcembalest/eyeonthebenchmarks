@@ -147,11 +147,16 @@
                 <!-- File Upload -->
                 <div class="mb-4">
                   <h6 class="text-muted mb-3">Files for context (optional)</h6>
-                  <div class="d-flex align-items-center">
-                    <button id="selectPdfBtn" class="btn btn-outline-secondary">
-                      <i class="fas fa-file-pdf me-1"></i>Select PDF
-                    </button>
-                    <span id="selectedPdfLabel" class="ms-3 text-muted">No file selected</span>
+                  <div class="d-flex flex-column">
+                    <div class="d-flex gap-2 mb-2">
+                      <button id="selectPdfBtn" class="btn btn-outline-secondary">
+                        <i class="fas fa-file-pdf me-1"></i>Add PDF
+                      </button>
+                      <button id="selectMultiplePdfsBtn" class="btn btn-outline-secondary">
+                        <i class="fas fa-files me-1"></i>Add Multiple PDFs
+                      </button>
+                    </div>
+                    <div id="selectedPdfLabel" class="text-muted">No files selected</div>
                   </div>
                 </div>
                 
@@ -254,7 +259,7 @@
 
               <!-- Prompts Container -->
               <div class="flex-grow-1 p-3" id="promptsContainer" style="overflow-y: auto; min-height: 0;">
-                <div id="promptsList" style="height: auto;">
+                <div id="promptSetPromptsList" style="height: auto;">
                   <!-- Prompts will be added here -->
                 </div>
                 

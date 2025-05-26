@@ -64,7 +64,7 @@ logic = AppLogic(ui_bridge=bridge)
 async def launch_benchmark(payload: dict):
     return logic.launch_benchmark_run(
         payload.get("prompts", []),
-        payload.get("pdfPath", ""),
+        payload.get("pdfPaths", []),
         payload.get("modelNames", []),
         payload.get("benchmarkName", ""),
         payload.get("benchmarkDescription", ""),
@@ -124,6 +124,25 @@ async def list_models():
 async def export_csv(benchmark_id: int):
     import tempfile
     import os
+    import re
+    
+    # Get benchmark details to use the actual name
+    try:
+        benchmark_details = load_benchmark_details(benchmark_id, db_path=Path(__file__).parent)
+        if not benchmark_details:
+            raise HTTPException(status_code=404, detail="Benchmark not found")
+        
+        # Use the actual benchmark name, sanitized for filename
+        benchmark_name = benchmark_details.get('label', f'benchmark_{benchmark_id}')
+        # Sanitize filename by removing/replacing invalid characters
+        safe_name = re.sub(r'[<>:"/\\|?*]', '_', benchmark_name)
+        safe_name = safe_name.strip().replace(' ', '_')
+        if not safe_name:  # Fallback if name becomes empty after sanitization
+            safe_name = f'benchmark_{benchmark_id}'
+            
+    except Exception:
+        # Fallback to generic name if we can't get benchmark details
+        safe_name = f'benchmark_{benchmark_id}'
     
     # Create a temporary file
     with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as temp_file:
@@ -133,13 +152,21 @@ async def export_csv(benchmark_id: int):
         # Use the more detailed export method that accepts a filename
         result = logic.handle_export_benchmark_csv(benchmark_id, temp_filename)
         
-        # Return the file and let FastAPI handle the cleanup
-        response_filename = f"benchmark_{benchmark_id}.csv"
+        # Create an async cleanup function
+        async def cleanup_temp_file():
+            try:
+                if os.path.exists(temp_filename):
+                    os.unlink(temp_filename)
+            except Exception:
+                pass  # Ignore cleanup errors
+        
+        # Return the file with the actual benchmark name
+        response_filename = f"{safe_name}.csv"
         return FileResponse(
             temp_filename, 
             media_type="text/csv", 
             filename=response_filename,
-            background=lambda: os.unlink(temp_filename)  # Clean up temp file after response
+            background=cleanup_temp_file  # Pass the async function directly
         )
     except Exception as e:
         # Clean up temp file if there's an error

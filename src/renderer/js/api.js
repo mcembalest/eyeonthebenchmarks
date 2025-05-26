@@ -111,7 +111,7 @@ class API {
    * @returns {Promise<Object>} Benchmark run result
    */
   async runBenchmark(config) {
-    const { prompts, pdfPath, modelNames, benchmarkName, benchmarkDescription } = config;
+    const { prompts, pdfPaths, modelNames, benchmarkName, benchmarkDescription } = config;
 
     // Validate required fields
     if (!benchmarkName?.trim()) {
@@ -127,7 +127,7 @@ class API {
     try {
       const result = await this.electronAPI.runBenchmark(
         prompts,
-        pdfPath,
+        pdfPaths || [],
         modelNames,
         benchmarkName.trim(),
         benchmarkDescription?.trim() || ''

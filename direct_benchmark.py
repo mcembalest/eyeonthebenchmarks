@@ -85,7 +85,8 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name):
         
         try:
             from runner import run_benchmark_from_db, set_emit_progress_callback
-            print("Successfully imported run_benchmark_from_db function")
+            from file_store import save_benchmark_run, save_benchmark_prompt, update_benchmark_run
+            print("Successfully imported run_benchmark_from_db function and database functions")
             sys.stdout.flush()
         except ImportError as e:
             error_msg = f"Failed to import required modules: {str(e)}"
@@ -99,6 +100,94 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name):
                 "message": error_msg
             })
             return {"success": False, "error": error_msg}
+        
+        # Create benchmark run record first (we'll update totals later)
+        print(f"Creating benchmark run record for model {model_name}...")
+        sys.stdout.flush()
+        
+        # Determine provider based on model name
+        if model_name.startswith("gemini-") or model_name == "imagen-3":
+            provider = "google"
+        elif model_name.startswith("claude-"):
+            provider = "anthropic"
+        else:
+            provider = "openai"
+        
+        # Create the run record with initial values (will be updated when complete)
+        run_id = save_benchmark_run(
+            benchmark_id=benchmark_id,
+            model_name=model_name,
+            provider=provider,
+            report="",  # Will be updated later
+            latency=0.0,  # Will be updated later
+            total_standard_input_tokens=0,  # Will be updated later
+            total_cached_input_tokens=0,  # Will be updated later
+            total_output_tokens=0,  # Will be updated later
+            total_tokens=0,  # Will be updated later
+            total_input_cost=0.0,  # Will be updated later
+            total_cached_cost=0.0,  # Will be updated later
+            total_output_cost=0.0,  # Will be updated later
+            total_cost=0.0  # Will be updated later
+        )
+        
+        if not run_id:
+            error_msg = f"Failed to create benchmark run record for model {model_name}"
+            print(f"ERROR: {error_msg}")
+            sys.stdout.flush()
+            emit_progress({
+                "job_id": job_id,
+                "benchmark_id": benchmark_id,
+                "model_name": model_name,
+                "status": "error",
+                "message": error_msg
+            })
+            return {"success": False, "error": error_msg}
+        
+        print(f"Created benchmark run record with ID: {run_id}")
+        sys.stdout.flush()
+        
+        # Create a callback to save individual prompts as they complete
+        def on_prompt_complete(prompt_index, prompt_result):
+            try:
+                print(f"Saving prompt {prompt_index + 1} result to database...")
+                sys.stdout.flush()
+                
+                # Save the individual prompt result
+                prompt_id = save_benchmark_prompt(
+                    benchmark_run_id=run_id,
+                    prompt=prompt_result["prompt_text"],
+                    response=prompt_result["model_answer"],
+                    latency=prompt_result["latency_ms"],
+                    standard_input_tokens=prompt_result["standard_input_tokens"],
+                    cached_input_tokens=prompt_result["cached_input_tokens"],
+                    output_tokens=prompt_result["output_tokens"],
+                    input_cost=prompt_result["input_cost"],
+                    cached_cost=prompt_result["cached_cost"],
+                    output_cost=prompt_result["output_cost"],
+                    total_cost=prompt_result["total_cost"]
+                )
+                
+                if prompt_id:
+                    print(f"✅ Saved prompt {prompt_index + 1} with ID: {prompt_id}")
+                    
+                    # Emit progress update with prompt completion
+                    emit_progress({
+                        "job_id": job_id,
+                        "benchmark_id": benchmark_id,
+                        "model_name": model_name,
+                        "status": "prompt_complete",
+                        "prompt_index": prompt_index,
+                        "total_prompts": len(prompts),
+                        "message": f"Completed prompt {prompt_index + 1}/{len(prompts)}"
+                    })
+                else:
+                    print(f"❌ Failed to save prompt {prompt_index + 1}")
+                    
+                sys.stdout.flush()
+                
+            except Exception as e:
+                print(f"❌ Error saving prompt {prompt_index + 1}: {str(e)}")
+                sys.stdout.flush()
         
         # Set up a custom progress callback
         def progress_callback(progress_data):
@@ -130,10 +219,40 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name):
         # Run the actual benchmark using database files
         print(f"\n🔄 STARTING BENCHMARK WITH MODEL {model_name}...")
         sys.stdout.flush()
-        result = run_benchmark_from_db(prompts, benchmark_id, model_name)
+        result = run_benchmark_from_db(prompts, benchmark_id, model_name, on_prompt_complete=on_prompt_complete)
         duration = time.time() - t0
         print(f"\n✅ BENCHMARK COMPLETED IN {duration:.2f} SECONDS")
         sys.stdout.flush()
+        
+        # Update the benchmark run record with final totals
+        if result and not result.get("error"):
+            print(f"Updating benchmark run {run_id} with final totals...")
+            sys.stdout.flush()
+            
+            try:
+                # Update the run record with final values
+                success = update_benchmark_run(
+                    run_id=run_id,
+                    latency=result.get("elapsed_s", 0.0) * 1000,  # Convert to ms
+                    total_standard_input_tokens=result.get("total_standard_input_tokens", 0),
+                    total_cached_input_tokens=result.get("total_cached_input_tokens", 0),
+                    total_output_tokens=result.get("total_output_tokens", 0),
+                    total_tokens=result.get("total_tokens", 0),
+                    total_input_cost=result.get("total_input_cost", 0.0),
+                    total_cached_cost=result.get("total_cached_cost", 0.0),
+                    total_output_cost=result.get("total_output_cost", 0.0),
+                    total_cost=result.get("total_cost", 0.0)
+                )
+                
+                if success:
+                    print(f"✅ Updated benchmark run {run_id} with final totals")
+                else:
+                    print(f"❌ Failed to update benchmark run {run_id} with final totals")
+                    
+            except Exception as e:
+                print(f"❌ Error updating benchmark run totals: {str(e)}")
+                
+            sys.stdout.flush()
         
         # Add additional information to result
         result["job_id"] = job_id

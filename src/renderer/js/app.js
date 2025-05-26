@@ -6,6 +6,16 @@ class App {
   constructor() {
     this.initialized = false;
     this.eventListeners = [];
+    
+    this.setupEventListeners();
+    this.setupRealTimeUpdates();
+    
+    // Initialize PDF display
+    requestAnimationFrame(() => {
+      this.updatePdfDisplay();
+    });
+    
+    console.log('App initialized successfully');
   }
 
   /**
@@ -22,12 +32,6 @@ class App {
       if (!window.API || !window.API.isAvailable()) {
         throw new Error('Electron API not available. Please ensure the app is running in Electron.');
       }
-
-      // Set up event listeners
-      this.setupEventListeners();
-
-      // Set up real-time updates
-      this.setupRealTimeUpdates();
 
       // Initialize the home page
       await window.Pages.initHomePage();
@@ -68,7 +72,8 @@ class App {
       // Composer page elements
       { selector: '#importCsvBtn', event: 'click', handler: () => this.handleCsvImport() },
       { selector: '#addPromptBtn', event: 'click', handler: () => window.Pages.addPrompt() },
-      { selector: '#selectPdfBtn', event: 'click', handler: () => this.handlePdfSelection() }
+      { selector: '#selectPdfBtn', event: 'click', handler: () => this.handlePdfSelection() },
+      { selector: '#selectMultiplePdfsBtn', event: 'click', handler: () => this.handleMultiplePdfSelection() }
     ]);
 
     // Global event listeners
@@ -171,21 +176,100 @@ class App {
       });
 
       if (pdfPath) {
-        window.Pages.selectedPdfPath = pdfPath;
-        const fileName = pdfPath.split('/').pop() || pdfPath.split('\\').pop();
-        
-        const label = document.getElementById('selectedPdfLabel');
-        if (label) {
-          label.textContent = fileName;
-          label.className = 'ms-3 text-success';
+        // Add to the array instead of replacing
+        if (!window.Pages.selectedPdfPaths.includes(pdfPath)) {
+          window.Pages.selectedPdfPaths.push(pdfPath);
+          this.updatePdfDisplay();
+          
+          const fileName = pdfPath.split('/').pop() || pdfPath.split('\\').pop();
+          window.Components.showToast(`Added file: ${fileName}`, 'success');
+        } else {
+          window.Components.showToast('File already selected', 'warning');
         }
-
-        window.Components.showToast(`Selected file: ${fileName}`, 'success');
       }
 
     } catch (error) {
       console.error('Error selecting PDF:', error);
       window.Components.showToast(`Failed to select PDF: ${error.message}`, 'error');
+    }
+  }
+
+  /**
+   * Handle multiple PDF file selection
+   */
+  async handleMultiplePdfSelection() {
+    try {
+      const pdfPaths = await window.API.openFileDialog({
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'PDF Files', extensions: ['pdf'] }]
+      });
+
+      if (pdfPaths && Array.isArray(pdfPaths) && pdfPaths.length > 0) {
+        let addedCount = 0;
+        
+        pdfPaths.forEach(pdfPath => {
+          if (!window.Pages.selectedPdfPaths.includes(pdfPath)) {
+            window.Pages.selectedPdfPaths.push(pdfPath);
+            addedCount++;
+          }
+        });
+        
+        this.updatePdfDisplay();
+        
+        if (addedCount > 0) {
+          window.Components.showToast(`Added ${addedCount} file(s)`, 'success');
+        } else {
+          window.Components.showToast('All selected files were already added', 'warning');
+        }
+      }
+
+    } catch (error) {
+      console.error('Error selecting multiple PDFs:', error);
+      window.Components.showToast(`Failed to select PDFs: ${error.message}`, 'error');
+    }
+  }
+
+  /**
+   * Update the PDF display to show all selected files
+   */
+  updatePdfDisplay() {
+    const label = document.getElementById('selectedPdfLabel');
+    if (!label) return;
+
+    if (window.Pages.selectedPdfPaths.length === 0) {
+      label.innerHTML = '<span class="text-muted">No files selected</span>';
+      return;
+    }
+
+    const fileList = window.Pages.selectedPdfPaths.map((path, index) => {
+      const fileName = path.split('/').pop() || path.split('\\').pop();
+      return `
+        <div class="d-flex align-items-center justify-content-between mb-1">
+          <span class="text-success small">${fileName}</span>
+          <button class="btn btn-sm btn-outline-danger ms-2" onclick="window.App.removePdfFile(${index})" title="Remove file">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+      `;
+    }).join('');
+
+    label.innerHTML = `
+      <div class="selected-files">
+        ${fileList}
+        <small class="text-muted">${window.Pages.selectedPdfPaths.length} file(s) selected</small>
+      </div>
+    `;
+  }
+
+  /**
+   * Remove a PDF file from the selection
+   */
+  removePdfFile(index) {
+    if (index >= 0 && index < window.Pages.selectedPdfPaths.length) {
+      const fileName = window.Pages.selectedPdfPaths[index].split('/').pop() || window.Pages.selectedPdfPaths[index].split('\\').pop();
+      window.Pages.selectedPdfPaths.splice(index, 1);
+      this.updatePdfDisplay();
+      window.Components.showToast(`Removed file: ${fileName}`, 'info');
     }
   }
 

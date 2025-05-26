@@ -11,6 +11,7 @@ class DataChangeType(Enum):
     BENCHMARK_COMPLETED = auto()
     BENCHMARK_LIST = auto()
     BENCHMARK_DELETED = auto()  # Added for delete notifications
+    BENCHMARK_DETAILS = auto()  # Added for real-time benchmark detail updates
     COMPOSER_DATA = auto()
 
 class AppUIBridge(Protocol):

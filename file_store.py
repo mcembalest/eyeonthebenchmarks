@@ -1126,3 +1126,81 @@ def get_next_prompt_set_number(db_path: Path = Path.cwd()) -> int:
         return 1
     finally:
         conn.close()
+
+def update_benchmark_run(run_id: int, latency: float = None, 
+                        total_standard_input_tokens: int = None,
+                        total_cached_input_tokens: int = None, 
+                        total_output_tokens: int = None,
+                        total_tokens: int = None, total_input_cost: float = None,
+                        total_cached_cost: float = None, total_output_cost: float = None,
+                        total_cost: float = None, report: str = None,
+                        db_path: Path = Path.cwd()) -> bool:
+    """Update an existing benchmark run with final totals and report."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    try:
+        # Build dynamic update query based on provided parameters
+        update_fields = []
+        update_values = []
+        
+        if latency is not None:
+            update_fields.append("latency = ?")
+            update_values.append(latency)
+        if total_standard_input_tokens is not None:
+            update_fields.append("total_standard_input_tokens = ?")
+            update_values.append(total_standard_input_tokens)
+        if total_cached_input_tokens is not None:
+            update_fields.append("total_cached_input_tokens = ?")
+            update_values.append(total_cached_input_tokens)
+        if total_output_tokens is not None:
+            update_fields.append("total_output_tokens = ?")
+            update_values.append(total_output_tokens)
+        if total_tokens is not None:
+            update_fields.append("total_tokens = ?")
+            update_values.append(total_tokens)
+        if total_input_cost is not None:
+            update_fields.append("total_input_cost = ?")
+            update_values.append(total_input_cost)
+        if total_cached_cost is not None:
+            update_fields.append("total_cached_cost = ?")
+            update_values.append(total_cached_cost)
+        if total_output_cost is not None:
+            update_fields.append("total_output_cost = ?")
+            update_values.append(total_output_cost)
+        if total_cost is not None:
+            update_fields.append("total_cost = ?")
+            update_values.append(total_cost)
+        if report is not None:
+            update_fields.append("report = ?")
+            update_values.append(report)
+        
+        if not update_fields:
+            logging.warning("No fields provided to update for benchmark run")
+            return False
+        
+        # Add the run_id to the end of values for the WHERE clause
+        update_values.append(run_id)
+        
+        query = f'''
+            UPDATE {BENCHMARK_RUNS_TABLE} 
+            SET {", ".join(update_fields)}
+            WHERE id = ?
+        '''
+        
+        cursor.execute(query, update_values)
+        
+        if cursor.rowcount == 0:
+            logging.warning(f"No benchmark run found with ID {run_id}")
+            return False
+        
+        conn.commit()
+        logging.info(f"Updated benchmark run {run_id} with {len(update_fields)} fields")
+        return True
+        
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error when updating benchmark run {run_id}: {e}")
+        return False
+    finally:
+        conn.close()

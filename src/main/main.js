@@ -375,6 +375,13 @@ const setupIpcHandlers = () => {
   // Basic IPC handlers for UI bridge
   ipcMain.handle('open-file-dialog', async (event, options) => {
     const { filePaths } = await dialog.showOpenDialog(mainWindow, options);
+    
+    // If multiSelections was requested, return the full array
+    if (options.properties && options.properties.includes('multiSelections')) {
+      return filePaths.length > 0 ? filePaths : [];
+    }
+    
+    // Otherwise return single file path (backward compatibility)
     return filePaths.length > 0 ? filePaths[0] : null;
   });
   
@@ -471,9 +478,9 @@ const setupIpcHandlers = () => {
   });
 
   // Run benchmark via HTTP
-  ipcMain.handle('run-benchmark', async (event, { prompts, pdfPath, modelNames, benchmarkName, benchmarkDescription }) => {
+  ipcMain.handle('run-benchmark', async (event, { prompts, pdfPaths, modelNames, benchmarkName, benchmarkDescription }) => {
     try {
-      const result = await httpPostJson('/launch', { prompts, pdfPath, modelNames, benchmarkName, benchmarkDescription });
+      const result = await httpPostJson('/launch', { prompts, pdfPaths, modelNames, benchmarkName, benchmarkDescription });
       return { success: result.status === 'success', ...result };
     } catch (err) {
       console.error('Error running benchmark:', err);

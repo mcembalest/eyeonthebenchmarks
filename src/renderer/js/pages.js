@@ -8,9 +8,10 @@ class Pages {
     this.benchmarksData = [];
     this.deletedBenchmarkIds = new Set();
     this.currentView = 'grid'; // 'grid' or 'table'
-    this.selectedPdfPath = null;
+    this.selectedPdfPaths = []; // Changed from selectedPdfPath to array
     this.prompts = [];
     this.selectedModels = [];
+    this.refreshInterval = null; // For auto-refreshing running benchmarks
     
     // Initialize prompt set properties
     this.promptSetPrompts = [];
@@ -28,9 +29,12 @@ class Pages {
    * @param {string} pageId - Page ID to navigate to
    */
   navigateTo(pageId) {
-    // Clear progress tracking when navigating away from details page
+    // Clear refresh interval when navigating away from details page
     if (this.currentPage === 'detailsContent' && pageId !== 'detailsContent') {
-      this.currentProgressBenchmarkId = null;
+      if (this.refreshInterval) {
+        clearInterval(this.refreshInterval);
+        this.refreshInterval = null;
+      }
     }
 
     // Hide all pages
@@ -43,6 +47,16 @@ class Pages {
     if (targetPage) {
       targetPage.classList.add('active');
       this.currentPage = pageId;
+
+      // Manage body classes for page-specific styling
+      document.body.classList.remove('composer-active', 'details-active', 'prompt-set-active');
+      if (pageId === 'composerContent') {
+        document.body.classList.add('composer-active');
+      } else if (pageId === 'detailsContent') {
+        document.body.classList.add('details-active');
+      } else if (pageId === 'promptSetContent') {
+        document.body.classList.add('prompt-set-active');
+      }
 
       // Update header actions
       this.updateHeaderActions(pageId);
@@ -138,6 +152,7 @@ class Pages {
       await this.loadModels();
       
       // Initialize with one empty prompt if none exist
+      // (but don't add if prompts are already loaded, e.g., from a prompt set)
       if (this.prompts.length === 0) {
         this.addPrompt();
       }
@@ -412,17 +427,17 @@ class Pages {
       // Navigate to details page
       this.navigateTo('detailsContent');
       
-      // First check if this benchmark is currently running
+      // Always fetch and show the standard details view (works for both running and completed)
+      const details = await window.API.getBenchmarkDetails(benchmarkId);
+      this.renderBenchmarkDetails(details);
+      
+      // If the benchmark is still running, set up auto-refresh
       const benchmarks = await window.API.getBenchmarks(true);
       const benchmark = benchmarks.find(b => b.id === benchmarkId);
       
       if (benchmark && (benchmark.status === 'running' || benchmark.status === 'in-progress')) {
-        // Show live progress view for running benchmarks
-        this.renderProgressView(benchmark);
-      } else {
-        // Fetch and show completed results
-        const details = await window.API.getBenchmarkDetails(benchmarkId);
-        this.renderBenchmarkDetails(details);
+        // Set up periodic refresh for running benchmarks
+        this.setupAutoRefreshForRunningBenchmark(benchmarkId);
       }
       
     } catch (error) {
@@ -442,97 +457,43 @@ class Pages {
   }
 
   /**
-   * Render live progress view for running benchmarks
-   * @param {Object} benchmark - Benchmark data
+   * Set up auto-refresh for running benchmarks
+   * @param {number} benchmarkId - Benchmark ID
    */
-  renderProgressView(benchmark) {
-    const detailsContainer = document.getElementById('detailsContainer');
+  setupAutoRefreshForRunningBenchmark(benchmarkId) {
+    // Clear any existing refresh interval
+    if (this.refreshInterval) {
+      clearInterval(this.refreshInterval);
+    }
     
-    const models = benchmark.model_names || [];
-    const modelsText = models.length > 0 ? models.join(', ') : 'No models';
-
-    detailsContainer.innerHTML = `
-      <div class="d-flex justify-content-between align-items-center mb-4">
-        <div>
-          <h2 class="mb-1">${Utils.sanitizeHtml(benchmark.label || `Benchmark ${benchmark.id}`)}</h2>
-          <p class="text-muted mb-0">${Utils.sanitizeHtml(benchmark.description || 'No description provided')}</p>
-        </div>
-        <div class="d-flex gap-2">
-          <button id="refreshProgressBtn" class="btn btn-outline-secondary">
-            <i class="fas fa-sync-alt me-1"></i>Refresh
-          </button>
-        </div>
-      </div>
-
-      <!-- Status Banner -->
-      <div class="alert alert-info d-flex align-items-center mb-4">
-        <div class="spinner-border spinner-border-sm text-info me-3" role="status"></div>
-        <div>
-          <h5 class="alert-heading mb-1">Benchmark Running</h5>
-          <p class="mb-0">This benchmark is currently in progress. Progress updates will appear below in real-time.</p>
-        </div>
-      </div>
-
-      <!-- Models Overview -->
-      <div class="row mb-4">
-        <div class="col-md-6">
-          <div class="card">
-            <div class="card-header">
-              <h6 class="mb-0"><i class="fas fa-robot me-2"></i>Models</h6>
-            </div>
-            <div class="card-body">
-              <p class="mb-0">${modelsText}</p>
-              <small class="text-muted">${models.length} model(s) selected</small>
-            </div>
-          </div>
-        </div>
-        <div class="col-md-6">
-          <div class="card">
-            <div class="card-header">
-              <h6 class="mb-0"><i class="fas fa-calendar me-2"></i>Started</h6>
-            </div>
-            <div class="card-body">
-              <p class="mb-0">${Utils.formatDate(benchmark.created_at || benchmark.timestamp)}</p>
-              <small class="text-muted">Benchmark creation time</small>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Progress Log -->
-      <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <h6 class="mb-0"><i class="fas fa-list me-2"></i>Progress Log</h6>
-          <button id="clearLogBtn" class="btn btn-outline-secondary btn-sm">
-            <i class="fas fa-trash me-1"></i>Clear
-          </button>
-        </div>
-        <div class="card-body p-0">
-          <div id="progressLog" class="progress-log" style="height: 300px; max-height: 300px; overflow-y: auto; overflow-x: hidden; padding: 1rem; background-color: #f8f9fa; font-family: 'Courier New', monospace; font-size: 0.875rem; border: none; box-sizing: border-box;">
-            <div class="text-muted">Waiting for progress updates...</div>
-          </div>
-        </div>
-      </div>
-    `;
-
-    // Add event listeners
-    const refreshBtn = document.getElementById('refreshProgressBtn');
-    if (refreshBtn) {
-      refreshBtn.addEventListener('click', () => this.viewBenchmarkDetails(benchmark.id));
-    }
-
-    const clearLogBtn = document.getElementById('clearLogBtn');
-    if (clearLogBtn) {
-      clearLogBtn.addEventListener('click', () => {
-        const progressLog = document.getElementById('progressLog');
-        if (progressLog) {
-          progressLog.innerHTML = '<div class="text-muted">Log cleared. Waiting for new progress updates...</div>';
+    // Set up auto-refresh every 3 seconds
+    this.refreshInterval = setInterval(async () => {
+      try {
+        // Check if we're still on the details page for this benchmark
+        if (this.currentPage !== 'detailsContent') {
+          clearInterval(this.refreshInterval);
+          return;
         }
-      });
-    }
-
-    // Store the current benchmark ID for progress updates
-    this.currentProgressBenchmarkId = benchmark.id;
+        
+        // Fetch updated details
+        const details = await window.API.getBenchmarkDetails(benchmarkId);
+        this.renderBenchmarkDetails(details);
+        
+        // Check if benchmark is complete
+        const benchmarks = await window.API.getBenchmarks(true);
+        const benchmark = benchmarks.find(b => b.id === benchmarkId);
+        
+        if (!benchmark || (benchmark.status !== 'running' && benchmark.status !== 'in-progress')) {
+          // Benchmark is complete, stop auto-refresh
+          clearInterval(this.refreshInterval);
+          this.refreshInterval = null;
+        }
+        
+      } catch (error) {
+        console.error('Error refreshing benchmark details:', error);
+        // Continue trying to refresh even if there's an error
+      }
+    }, 3000); // Refresh every 3 seconds
   }
 
   /**
@@ -542,28 +503,169 @@ class Pages {
   renderBenchmarkDetails(details) {
     const detailsContainer = document.getElementById('detailsContainer');
     
-    // Calculate summary stats
+    // Calculate per-model stats for the table
     const totalRuns = details.runs ? details.runs.length : 0;
-    const totalPrompts = details.runs && details.runs.length > 0 ? details.runs[0].prompts.length : 0;
+65    
+    // Get the ACTUAL total number of prompts in the benchmark
+    // This should be consistent across all models - use the maximum found
+    let totalPromptsInBenchmark = 0;
+    if (details.runs && details.runs.length > 0) {
+      // Find the maximum number of prompts across all runs (should be the same for all models)
+      totalPromptsInBenchmark = Math.max(...details.runs.map(run => {
+        if (run.prompts && run.prompts.length > 0) {
+          return run.prompts.length;
+        }
+        return 0;
+      }), 0);
+      
+      // If no prompts found yet, try to get from intended models or estimate
+      if (totalPromptsInBenchmark === 0) {
+        // For running benchmarks where no prompts are saved yet, we might need to estimate
+        // This is a fallback - ideally we'd store this info in the benchmark record
+        totalPromptsInBenchmark = 0; // Will show "TBD"
+      }
+    }
     
-    let totalCost = 0;
-    let totalTokens = 0;
-    let avgLatency = 0;
+    // Determine if this is a running benchmark
+    const isRunning = details.status === 'running' || details.status === 'in-progress';
     
+    // Deduplicate models and build per-model table data
+    const uniqueModels = new Map();
     if (details.runs && details.runs.length > 0) {
       details.runs.forEach(run => {
-        if (run.prompts) {
-          run.prompts.forEach(prompt => {
-            totalCost += prompt.total_cost || 0;
-            totalTokens += (prompt.standard_input_tokens || 0) + 
-                          (prompt.cached_input_tokens || 0) + 
-                          (prompt.output_tokens || 0);
-            avgLatency += prompt.prompt_latency || 0;
-          });
+        const modelKey = `${run.model_name}_${run.provider}`;
+        if (!uniqueModels.has(modelKey)) {
+          uniqueModels.set(modelKey, run);
         }
       });
-      avgLatency = avgLatency / (totalRuns * totalPrompts) || 0;
     }
+    
+    let modelTableRows = '';
+    if (uniqueModels.size > 0) {
+      modelTableRows = Array.from(uniqueModels.values()).map(run => {
+        const modelName = run.model_name || 'Unknown Model';
+        const provider = run.provider || 'unknown';
+        
+        // Calculate metrics for this specific model based on completed prompts
+        let modelCost = 0;
+        let modelTokens = 0;
+        // Latency is stored in milliseconds in the database (newer runs) or seconds (older runs)
+        // Handle both cases by detecting magnitude
+        let modelLatencyMs = run.latency || 0;
+        // If latency is less than 1000, it's likely stored in seconds (old format)
+        if (modelLatencyMs > 0 && modelLatencyMs < 1000) {
+          modelLatencyMs = modelLatencyMs * 1000; // Convert to milliseconds
+        }
+        let completedPrompts = 0;
+        let totalPromptsForThisModel = 0;
+        
+        if (run.prompts && run.prompts.length > 0) {
+          totalPromptsForThisModel = run.prompts.length;
+          run.prompts.forEach(prompt => {
+            if (prompt.response && prompt.response.trim().length > 0) { // Only count completed prompts
+              modelCost += prompt.total_cost || 0;
+              modelTokens += (prompt.standard_input_tokens || 0) + 
+                            (prompt.cached_input_tokens || 0) + 
+                            (prompt.output_tokens || 0);
+              completedPrompts++;
+            }
+          });
+        }
+        
+        const providerColor = Utils.getProviderColor(provider);
+        
+        // Convert latency to minutes and seconds format
+        const formatLatency = (ms) => {
+          const seconds = Math.round(ms / 1000);
+          const minutes = Math.floor(seconds / 60);
+          const remainingSeconds = seconds % 60;
+          
+          if (minutes > 0) {
+            return `${minutes} min ${remainingSeconds} sec`;
+          } else {
+            return `${remainingSeconds} sec`;
+          }
+        };
+        
+        // Determine status for this model based on actual completion state
+        let statusContent = '';
+        let latencyContent = '';
+        let costContent = '';
+        let tokensContent = '';
+        
+        // A model is considered complete if it has completed all its prompts OR if the benchmark is not running
+        const modelIsComplete = !isRunning || (totalPromptsForThisModel > 0 && completedPrompts === totalPromptsForThisModel);
+        const modelHasStarted = completedPrompts > 0 || totalPromptsForThisModel > 0;
+        
+        if (!modelHasStarted && isRunning) {
+          // Model hasn't started yet
+          statusContent = '<i class="fas fa-spinner fa-spin text-primary me-2"></i>';
+          latencyContent = '<span class="text-muted">Starting...</span>';
+          costContent = '<span class="text-muted">Starting...</span>';
+          tokensContent = '<span class="text-muted">Starting...</span>';
+        } else if (!modelIsComplete && isRunning) {
+          // Model is in progress
+          statusContent = '<i class="fas fa-clock text-warning me-2"></i>';
+          latencyContent = `<span class="text-info">${formatLatency(modelLatencyMs)}</span> <small class="text-muted">(${completedPrompts}/${totalPromptsForThisModel})</small>`;
+          costContent = `<span class="text-info">${Utils.formatCurrency(modelCost)}</span> <small class="text-muted">(partial)</small>`;
+          tokensContent = `<span class="text-info">${Utils.formatNumber(modelTokens)}</span> <small class="text-muted">(partial)</small>`;
+        } else if (modelIsComplete && completedPrompts > 0) {
+          // Model is complete and has results
+          statusContent = '<i class="fas fa-check text-success me-2"></i>';
+          latencyContent = formatLatency(modelLatencyMs);
+          costContent = Utils.formatCurrency(modelCost);
+          tokensContent = Utils.formatNumber(modelTokens);
+        } else {
+          // Model has no data
+          statusContent = '';
+          latencyContent = '<span class="text-muted">No data</span>';
+          costContent = '<span class="text-muted">No data</span>';
+          tokensContent = '<span class="text-muted">No data</span>';
+        }
+        
+        return `
+          <tr>
+            <td>
+              <div class="d-flex align-items-center">
+                ${statusContent}
+                ${Utils.createProviderImage(provider, 'me-2')}
+                ${Utils.createModelImage(modelName, 'me-2')}
+                <strong>${Utils.sanitizeHtml(Utils.formatModelName(modelName))}</strong>
+              </div>
+            </td>
+            <td data-sort="${modelLatencyMs}">
+              ${latencyContent}
+            </td>
+            <td data-sort="${modelCost}">
+              ${costContent}
+            </td>
+            <td data-sort="${modelTokens}">
+              ${tokensContent}
+            </td>
+          </tr>
+        `;
+      }).join('');
+    } else {
+      modelTableRows = `
+        <tr>
+          <td colspan="4" class="text-center text-muted py-3">
+            ${isRunning 
+              ? '<i class="fas fa-spinner fa-spin me-2"></i>Models are starting...' 
+              : 'No model results available'}
+          </td>
+        </tr>
+      `;
+    }
+
+    // Add running indicator to the header if needed (without confusing progress fraction)
+    const runningBanner = isRunning ? `
+      <div class="alert alert-info d-flex align-items-center mb-4">
+        <div class="spinner-border spinner-border-sm text-info me-3" role="status"></div>
+        <div>
+          <strong>Benchmark Running</strong> - Results will update automatically as models complete
+        </div>
+      </div>
+    ` : '';
 
     detailsContainer.innerHTML = `
       <div class="d-flex justify-content-between align-items-center mb-4">
@@ -575,55 +677,27 @@ class Pages {
           <button id="refreshDetailsBtn" class="btn btn-outline-secondary">
             <i class="fas fa-sync-alt me-1"></i>Refresh
           </button>
-          <button id="exportCsvBtn" class="btn btn-success">
-            <i class="fas fa-download me-1"></i>Export CSV
-          </button>
+          ${!isRunning ? `
+            <button id="exportCsvBtn" class="btn btn-success">
+              <i class="fas fa-download me-1"></i>Export CSV
+            </button>
+          ` : ''}
         </div>
       </div>
 
-      <!-- Summary Stats -->
+      ${runningBanner}
+
+      <!-- Basic Info -->
       <div class="row mb-4">
-        <div class="col-md-2">
+        <div class="col-md-4">
           <div class="card text-center">
             <div class="card-body">
-              <h4 class="text-primary mb-1">${totalRuns}</h4>
-              <small class="text-muted">Models</small>
-            </div>
-          </div>
-        </div>
-        <div class="col-md-2">
-          <div class="card text-center">
-            <div class="card-body">
-              <h4 class="text-info mb-1">${totalPrompts}</h4>
+              <h4 class="text-info mb-1">${totalPromptsInBenchmark || 'TBD'}</h4>
               <small class="text-muted">Prompts</small>
             </div>
           </div>
         </div>
-        <div class="col-md-2">
-          <div class="card text-center">
-            <div class="card-body">
-              <h4 class="text-success mb-1">${Utils.formatCurrency(totalCost)}</h4>
-              <small class="text-muted">Total Cost</small>
-            </div>
-          </div>
-        </div>
-        <div class="col-md-2">
-          <div class="card text-center">
-            <div class="card-body">
-              <h4 class="text-warning mb-1">${Utils.formatNumber(totalTokens)}</h4>
-              <small class="text-muted">Tokens</small>
-            </div>
-          </div>
-        </div>
-        <div class="col-md-2">
-          <div class="card text-center">
-            <div class="card-body">
-              <h4 class="text-secondary mb-1">${Math.round(avgLatency)}ms</h4>
-              <small class="text-muted">Avg Latency</small>
-            </div>
-          </div>
-        </div>
-        <div class="col-md-2">
+        <div class="col-md-4">
           <div class="card text-center">
             <div class="card-body">
               <h4 class="text-dark mb-1">${Utils.formatDate(details.created_at).split(',')[0]}</h4>
@@ -631,12 +705,50 @@ class Pages {
             </div>
           </div>
         </div>
+        <div class="col-md-4">
+          <div class="card text-center">
+            <div class="card-body">
+              <h4 class="text-secondary mb-1">${details.status || 'complete'}</h4>
+              <small class="text-muted">Status</small>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <!-- Results -->
+      <!-- Model Performance Table -->
+      <div class="mb-4">
+        <h4 class="mb-3">
+          <i class="fas fa-chart-bar me-2"></i>Model Performance Summary
+        </h4>
+        <div class="table-responsive">
+          <table class="table table-hover" id="modelPerformanceTable">
+            <thead class="table-light">
+              <tr>
+                <th style="cursor: pointer;" data-sort="model">
+                  Model <i class="fas fa-sort text-muted"></i>
+                </th>
+                <th style="cursor: pointer;" data-sort="latency">
+                  Latency <i class="fas fa-sort text-muted"></i>
+                </th>
+                <th style="cursor: pointer;" data-sort="cost">
+                  Cost <i class="fas fa-sort text-muted"></i>
+                </th>
+                <th style="cursor: pointer;" data-sort="tokens">
+                  Tokens <i class="fas fa-sort text-muted"></i>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              ${modelTableRows}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Detailed Results -->
       <div class="results-section">
         <h4 class="mb-3">
-          <i class="fas fa-robot me-2"></i>Model Results
+          <i class="fas me-2"></i>Detailed Results
         </h4>
         <div id="resultsContainer">
           ${this.renderModelResults(details.runs || [])}
@@ -654,6 +766,74 @@ class Pages {
     if (exportBtn) {
       exportBtn.addEventListener('click', () => this.exportBenchmark(details.id));
     }
+
+    // Add table sorting functionality (only if not running to avoid conflicts)
+    if (!isRunning) {
+      this.setupTableSorting();
+    }
+  }
+
+  /**
+   * Set up table sorting functionality
+   */
+  setupTableSorting() {
+    const table = document.getElementById('modelPerformanceTable');
+    if (!table) return;
+
+    const headers = table.querySelectorAll('th[data-sort]');
+    let currentSort = { column: null, direction: 'asc' };
+
+    headers.forEach(header => {
+      header.addEventListener('click', () => {
+        const sortType = header.dataset.sort;
+        const tbody = table.querySelector('tbody');
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+
+        // Update sort direction
+        if (currentSort.column === sortType) {
+          currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+        } else {
+          currentSort.column = sortType;
+          currentSort.direction = 'asc';
+        }
+
+        // Update header icons
+        headers.forEach(h => {
+          const icon = h.querySelector('i');
+          icon.className = 'fas fa-sort text-muted';
+        });
+        
+        const currentIcon = header.querySelector('i');
+        currentIcon.className = currentSort.direction === 'asc' 
+          ? 'fas fa-sort-up text-primary' 
+          : 'fas fa-sort-down text-primary';
+
+        // Sort rows
+        rows.sort((a, b) => {
+          let aVal, bVal;
+
+          if (sortType === 'model') {
+            aVal = a.cells[0].textContent.trim().toLowerCase();
+            bVal = b.cells[0].textContent.trim().toLowerCase();
+          } else {
+            // For numeric columns, use the data-sort attribute
+            const aCell = a.cells[sortType === 'latency' ? 1 : sortType === 'cost' ? 2 : 3];
+            const bCell = b.cells[sortType === 'latency' ? 1 : sortType === 'cost' ? 2 : 3];
+            aVal = parseFloat(aCell.dataset.sort || 0);
+            bVal = parseFloat(bCell.dataset.sort || 0);
+          }
+
+          if (currentSort.direction === 'asc') {
+            return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+          } else {
+            return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
+          }
+        });
+
+        // Re-append sorted rows
+        rows.forEach(row => tbody.appendChild(row));
+      });
+    });
   }
 
   /**
@@ -667,51 +847,156 @@ class Pages {
     }
 
     return runs.map(run => {
-      const modelDisplayName = run.model_name || 'Unknown Model';
+      const modelDisplayName = Utils.formatModelName(run.model_name) || 'Unknown Model';
       const provider = run.provider || 'unknown';
       const runDate = Utils.formatDate(run.run_created_at);
       
-      const runTokens = (run.total_standard_input_tokens || 0) + 
-                       (run.total_cached_input_tokens || 0) + 
-                       (run.total_output_tokens || 0);
-      const runCost = run.prompts ? run.prompts.reduce((sum, p) => sum + (p.total_cost || 0), 0) : 0;
+      // Calculate stats based on completed prompts only
+      let runTokens = 0;
+      let runCost = 0;
+      let completedPrompts = 0;
+      
+      if (run.prompts) {
+        run.prompts.forEach(prompt => {
+          if (prompt.response) { // Only count completed prompts
+            runTokens += (prompt.standard_input_tokens || 0) + 
+                        (prompt.cached_input_tokens || 0) + 
+                        (prompt.output_tokens || 0);
+            runCost += prompt.total_cost || 0;
+            completedPrompts++;
+          }
+        });
+      }
       
       const providerColor = Utils.getProviderColor(provider);
       
-      const promptsHtml = run.prompts ? run.prompts.map((prompt, index) => `
-        <div class="border rounded p-3 mb-3 bg-light">
-          <div class="d-flex justify-content-between align-items-start mb-2">
-            <h6 class="mb-0 text-primary">Prompt ${index + 1}</h6>
-            <div class="d-flex gap-2">
-              <span class="badge bg-secondary">${prompt.prompt_latency || 0}ms</span>
-              <span class="badge bg-info">${(prompt.standard_input_tokens || 0) + (prompt.cached_input_tokens || 0)}→${prompt.output_tokens || 0} tokens</span>
-              ${prompt.total_cost ? `<span class="badge bg-success">${Utils.formatCurrency(prompt.total_cost)}</span>` : ''}
-            </div>
-          </div>
+      // Determine if this run is still in progress
+      const totalPrompts = run.prompts ? run.prompts.length : 0;
+      const isRunning = completedPrompts < totalPrompts && totalPrompts > 0;
+      const hasResults = completedPrompts > 0;
+      
+      // Latency handling - support both old (seconds) and new (milliseconds) formats
+      let totalLatencyMs = run.latency || 0;
+      // If latency is less than 1000, it's likely stored in seconds (old format)
+      if (totalLatencyMs > 0 && totalLatencyMs < 1000) {
+        totalLatencyMs = totalLatencyMs * 1000; // Convert to milliseconds
+      }
+      
+      // Convert latency to minutes and seconds format for model totals
+      const formatModelLatency = (ms) => {
+        const seconds = Math.round(ms / 1000);
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = seconds % 60;
+        
+        if (minutes > 0) {
+          return `${minutes} min ${remainingSeconds} sec`;
+        } else {
+          return `${remainingSeconds} sec`;
+        }
+      };
+      
+      // Generate prompts HTML with status indicators
+      let promptsHtml = '';
+      if (run.prompts && run.prompts.length > 0) {
+        promptsHtml = run.prompts.map((prompt, index) => {
+          const isCompleted = prompt.response && prompt.response.trim().length > 0;
           
-          <div class="mb-3">
-            <div class="fw-bold text-muted mb-1">Question:</div>
-            <div class="p-2 bg-white border rounded small">${Utils.sanitizeHtml(prompt.prompt || 'N/A')}</div>
-          </div>
-          
-          <div>
-            <div class="fw-bold text-muted mb-1">Answer:</div>
-            <div class="p-2 bg-white border rounded small" style="white-space: pre-wrap;">${Utils.sanitizeHtml(prompt.response || 'N/A')}</div>
-          </div>
-        </div>
-      `).join('') : '<div class="text-muted">No prompts available</div>';
+          if (isCompleted) {
+            // Individual prompt latency is stored in milliseconds in database (newer runs) or seconds (older runs)
+            // Handle both cases by detecting magnitude
+            let promptLatencyMs = prompt.prompt_latency || 0;
+            // If latency is less than 1000, it's likely stored in seconds (old format)
+            if (promptLatencyMs > 0 && promptLatencyMs < 1000) {
+              promptLatencyMs = promptLatencyMs * 1000; // Convert to milliseconds
+            }
+            const promptLatencySeconds = promptLatencyMs / 1000;
+            
+            // Show completed prompt
+            return `
+              <div class="border rounded p-3 mb-3 bg-light">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                  <h6 class="mb-0 text-primary">
+                    <i class="fas fa-check-circle text-success me-2"></i>
+                    Prompt ${index + 1}
+                  </h6>
+                  <div class="d-flex gap-2">
+                    <span class="badge bg-secondary">${promptLatencySeconds.toFixed(3)}s</span>
+                    <span class="badge bg-info">${(prompt.standard_input_tokens || 0) + (prompt.cached_input_tokens || 0)}→${prompt.output_tokens || 0} tokens</span>
+                    ${prompt.total_cost ? `<span class="badge bg-success">${Utils.formatCurrency(prompt.total_cost)}</span>` : ''}
+                  </div>
+                </div>
+                
+                <div class="mb-3">
+                  <div class="fw-bold text-muted mb-1">Question:</div>
+                  <div class="p-2 bg-white border rounded small">${Utils.sanitizeHtml(prompt.prompt || 'N/A')}</div>
+                </div>
+                
+                <div>
+                  <div class="fw-bold text-muted mb-1">Answer:</div>
+                  <div class="p-2 bg-white border rounded small" style="white-space: pre-wrap;">${Utils.sanitizeHtml(prompt.response || 'N/A')}</div>
+                </div>
+              </div>
+            `;
+          } else {
+            // Show pending/running prompt
+            return `
+              <div class="border rounded p-3 mb-3 bg-light opacity-75">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                  <h6 class="mb-0 text-muted">
+                    <i class="fas fa-clock text-warning me-2"></i>
+                    Prompt ${index + 1}
+                  </h6>
+                  <div class="d-flex gap-2">
+                    <span class="badge bg-warning">Pending</span>
+                  </div>
+                </div>
+                
+                <div class="mb-3">
+                  <div class="fw-bold text-muted mb-1">Question:</div>
+                  <div class="p-2 bg-white border rounded small">${Utils.sanitizeHtml(prompt.prompt || 'N/A')}</div>
+                </div>
+                
+                <div>
+                  <div class="fw-bold text-muted mb-1">Answer:</div>
+                  <div class="p-2 bg-white border rounded small text-muted">
+                    <i class="fas fa-spinner fa-spin me-2"></i>Processing...
+                  </div>
+                </div>
+              </div>
+            `;
+          }
+        }).join('');
+      } else {
+        promptsHtml = '<div class="text-muted text-center py-4"><i class="fas fa-spinner fa-spin me-2"></i>Waiting for prompts to start...</div>';
+      }
+
+      // Determine header status and styling
+      let headerClass = 'bg-primary';
+      let statusText = 'Run completed';
+      
+      if (isRunning) {
+        headerClass = 'bg-warning';
+        statusText = `Running (${completedPrompts}/${totalPrompts} completed)`;
+      } else if (!hasResults) {
+        headerClass = 'bg-secondary';
+        statusText = 'Waiting to start';
+      }
 
       return `
         <div class="card mb-4 shadow-sm">
-          <div class="card-header bg-primary text-white">
+          <div class="card-header ${headerClass} text-white">
             <div class="d-flex justify-content-between align-items-center">
-              <div>
-                <h5 class="mb-0">${Utils.sanitizeHtml(modelDisplayName)}</h5>
-                <small class="opacity-75">Run completed: ${runDate}</small>
+              <div class="d-flex align-items-center">
+                ${Utils.createModelImage(modelDisplayName, 'me-2')}
+                <div>
+                  <h5 class="mb-0">${Utils.sanitizeHtml(modelDisplayName)}</h5>
+                  <small class="opacity-75">${statusText}${runDate ? ` • ${runDate}` : ''}</small>
+                </div>
               </div>
               <div class="d-flex gap-2 align-items-center">
-                <span class="badge bg-${providerColor} fs-6">${provider.toUpperCase()}</span>
-                <span class="badge bg-light text-dark fs-6">${run.latency || 0}s total</span>
+                ${Utils.createProviderImage(provider, 'provider-badge')}
+                ${hasResults ? `<span class="badge bg-light text-dark fs-6">${formatModelLatency(totalLatencyMs)} total</span>` : ''}
+                ${isRunning ? '<i class="fas fa-spinner fa-spin"></i>' : ''}
               </div>
             </div>
           </div>
@@ -720,32 +1005,35 @@ class Pages {
             <div class="row mb-3">
               <div class="col-md-3">
                 <div class="text-center p-2 bg-light rounded">
-                  <div class="h4 mb-0 text-primary">${run.prompts ? run.prompts.length : 0}</div>
-                  <small class="text-muted">Prompts</small>
+                  <div class="h4 mb-0 text-primary">${completedPrompts}${totalPrompts > 0 ? `/${totalPrompts}` : ''}</div>
+                  <small class="text-muted">Prompts ${isRunning ? 'Completed' : 'Total'}</small>
                 </div>
               </div>
               <div class="col-md-3">
                 <div class="text-center p-2 bg-light rounded">
-                  <div class="h4 mb-0 text-info">${Utils.formatNumber(runTokens)}</div>
-                  <small class="text-muted">Total Tokens</small>
+                  <div class="h4 mb-0 text-info">${hasResults ? Utils.formatNumber(runTokens) : '—'}</div>
+                  <small class="text-muted">Tokens${isRunning ? ' (so far)' : ''}</small>
                 </div>
               </div>
               <div class="col-md-3">
                 <div class="text-center p-2 bg-light rounded">
-                  <div class="h4 mb-0 text-success">${Utils.formatCurrency(runCost)}</div>
-                  <small class="text-muted">Total Cost</small>
+                  <div class="h4 mb-0 text-success">${hasResults ? Utils.formatCurrency(runCost) : '—'}</div>
+                  <small class="text-muted">Cost${isRunning ? ' (so far)' : ''}</small>
                 </div>
               </div>
               <div class="col-md-3">
                 <div class="text-center p-2 bg-light rounded">
-                  <div class="h4 mb-0 text-warning">${(run.latency || 0).toFixed(2)}s</div>
-                  <small class="text-muted">Avg Latency</small>
+                  <div class="h4 mb-0 text-warning">${hasResults ? formatModelLatency(totalLatencyMs) : '—'}</div>
+                  <small class="text-muted">Latency${isRunning ? ' (partial)' : ''}</small>
                 </div>
               </div>
             </div>
             
             <div class="mt-3">
-              <h6 class="text-muted mb-3">Detailed Results:</h6>
+              <h6 class="text-muted mb-3">
+                Detailed Results:
+                ${isRunning ? `<span class="badge bg-info ms-2">${completedPrompts}/${totalPrompts} completed</span>` : ''}
+              </h6>
               ${promptsHtml}
             </div>
           </div>
@@ -933,8 +1221,7 @@ class Pages {
         modelList.appendChild(
           window.Components.createEmptyState(
             'No Models Available',
-            'No models could be loaded from the system.',
-            'fas fa-robot'
+            'No models could be loaded from the system.'
           )
         );
         return;
@@ -1026,12 +1313,17 @@ class Pages {
    * Render prompts list
    */
   renderPrompts() {
+    console.log('renderPrompts called with', this.prompts.length, 'prompts');
     const promptsList = document.getElementById('promptsList');
-    if (!promptsList) return;
+    if (!promptsList) {
+      console.error('promptsList element not found!');
+      return;
+    }
 
     promptsList.innerHTML = '';
 
     if (this.prompts.length === 0) {
+      console.log('No prompts to render, showing empty state');
       promptsList.appendChild(
         window.Components.createEmptyState(
           'No Prompts',
@@ -1042,7 +1334,9 @@ class Pages {
       return;
     }
 
-    this.prompts.forEach(prompt => {
+    console.log('Rendering', this.prompts.length, 'prompts...');
+    this.prompts.forEach((prompt, index) => {
+      console.log(`Rendering prompt ${index + 1}:`, prompt.text.substring(0, 30) + '...');
       const promptElement = window.Components.createPromptInput(
         prompt.text,
         (element) => {
@@ -1052,12 +1346,18 @@ class Pages {
 
       // Update prompt text on change
       const textarea = promptElement.querySelector('.prompt-input');
-      textarea.addEventListener('input', (e) => {
-        prompt.text = e.target.value;
-      });
+      if (textarea) {
+        textarea.addEventListener('input', (e) => {
+          prompt.text = e.target.value;
+        });
+      } else {
+        console.warn('No textarea found in prompt element for prompt', index + 1);
+      }
 
       promptsList.appendChild(promptElement);
     });
+    
+    console.log('Finished rendering prompts. promptsList now has', promptsList.children.length, 'children');
   }
 
   /**
@@ -1131,7 +1431,7 @@ class Pages {
       // Run benchmark
       const result = await window.API.runBenchmark({
         prompts,
-        pdfPath: this.selectedPdfPath,
+        pdfPaths: this.selectedPdfPaths,
         modelNames: selectedModels,
         benchmarkName,
         benchmarkDescription: descInput.value.trim()
@@ -1169,8 +1469,6 @@ class Pages {
    */
   handleProgress(data) {
     console.log('🔄 Pages.handleProgress called with data:', data);
-    console.log('🔄 Current progress benchmark ID:', this.currentProgressBenchmarkId);
-    console.log('🔄 Data benchmark ID:', data.benchmark_id);
     
     // Update benchmark status in the home view
     if (data.benchmark_id) {
@@ -1183,13 +1481,7 @@ class Pages {
       }
     }
 
-    // If we're currently viewing progress for this benchmark, update the log
-    if (this.currentProgressBenchmarkId && data.benchmark_id === this.currentProgressBenchmarkId) {
-      console.log('🔄 Adding progress log entry for matching benchmark');
-      this.addProgressLogEntry(data);
-    } else {
-      console.log('🔄 Not adding progress log entry - benchmark ID mismatch or no current progress benchmark');
-    }
+    // No longer using progress log - the details view auto-refreshes instead
   }
 
   /**
@@ -1216,80 +1508,6 @@ class Pages {
   }
 
   /**
-   * Add an entry to the progress log
-   * @param {Object} data - Progress data
-   */
-  addProgressLogEntry(data) {
-    console.log('📝 addProgressLogEntry called with data:', data);
-    const progressLog = document.getElementById('progressLog');
-    if (!progressLog) {
-      console.log('📝 progressLog element not found!');
-      return;
-    }
-
-    console.log('📝 progressLog element found, current innerHTML length:', progressLog.innerHTML.length);
-
-    // Clear the "waiting" message if it exists
-    if (progressLog.innerHTML.includes('Waiting for progress updates')) {
-      console.log('📝 Clearing waiting message');
-      progressLog.innerHTML = '';
-    }
-
-    const timestamp = new Date().toLocaleTimeString();
-    const logEntry = document.createElement('div');
-    logEntry.className = 'progress-entry mb-2';
-    
-    // Determine entry style based on content
-    let entryClass = 'text-dark';
-    let icon = 'fas fa-info-circle';
-    
-    if (data.message) {
-      const message = data.message.toLowerCase();
-      if (message.includes('error') || message.includes('failed')) {
-        entryClass = 'text-danger';
-        icon = 'fas fa-exclamation-triangle';
-      } else if (message.includes('complete') || message.includes('success')) {
-        entryClass = 'text-success';
-        icon = 'fas fa-check-circle';
-      } else if (message.includes('starting') || message.includes('running')) {
-        entryClass = 'text-primary';
-        icon = 'fas fa-play-circle';
-      }
-    }
-
-    // Format the log entry
-    let content = `<span class="text-muted">[${timestamp}]</span> `;
-    
-    if (data.model_name) {
-      content += `<span class="badge bg-secondary me-2">${data.model_name}</span>`;
-    }
-    
-    if (data.current && data.total) {
-      const percentage = Math.round((data.current / data.total) * 100);
-      content += `<span class="badge bg-info me-2">${data.current}/${data.total} (${percentage}%)</span>`;
-    }
-    
-    content += `<i class="${icon} me-1"></i>`;
-    content += `<span class="${entryClass}">${Utils.sanitizeHtml(data.message || 'Progress update')}</span>`;
-
-    logEntry.innerHTML = content;
-    progressLog.appendChild(logEntry);
-    
-    console.log('📝 Progress log entry added:', content);
-    
-    // Auto-scroll to bottom
-    progressLog.scrollTop = progressLog.scrollHeight;
-    
-    // Limit log entries to prevent memory issues (keep last 100 entries)
-    const entries = progressLog.querySelectorAll('.progress-entry');
-    if (entries.length > 100) {
-      entries[0].remove();
-    }
-    
-    console.log('📝 Progress log now has', entries.length, 'entries');
-  }
-
-  /**
    * Handle benchmark completion
    * @param {Object} data - Completion data
    */
@@ -1303,49 +1521,6 @@ class Pages {
       // Refresh benchmark data to get the latest model information
       console.log('Benchmark completed, refreshing benchmark data...');
       this.refreshBenchmarkData(data.benchmark_id);
-    }
-
-    // If we're currently viewing progress for this benchmark, add completion message
-    if (this.currentProgressBenchmarkId && data.benchmark_id === this.currentProgressBenchmarkId) {
-      // Add completion entry to log
-      this.addProgressLogEntry({
-        message: data.all_models_complete 
-          ? `✅ All models completed! Total time: ${data.elapsed_s || 0}s`
-          : `✓ Model ${data.model_name} completed! Time: ${data.elapsed_s || 0}s`,
-        model_name: data.model_name,
-        status: 'complete'
-      });
-
-      // If all models are complete, show option to view results
-      if (data.all_models_complete) {
-        const progressLog = document.getElementById('progressLog');
-        if (progressLog) {
-          const completionDiv = document.createElement('div');
-          completionDiv.className = 'alert alert-success mt-3';
-          completionDiv.innerHTML = `
-            <div class="d-flex justify-content-between align-items-center">
-              <div>
-                <h6 class="alert-heading mb-1">🎉 Benchmark Complete!</h6>
-                <p class="mb-0">All models have finished processing. You can now view the detailed results.</p>
-              </div>
-              <button id="viewResultsBtn" class="btn btn-success">
-                <i class="fas fa-chart-bar me-1"></i>View Results
-              </button>
-            </div>
-          `;
-          progressLog.appendChild(completionDiv);
-          progressLog.scrollTop = progressLog.scrollHeight;
-
-          // Add event listener for view results button
-          const viewResultsBtn = document.getElementById('viewResultsBtn');
-          if (viewResultsBtn) {
-            viewResultsBtn.addEventListener('click', () => {
-              this.currentProgressBenchmarkId = null; // Clear progress tracking
-              this.viewBenchmarkDetails(data.benchmark_id); // This will now show results
-            });
-          }
-        }
-      }
     }
 
     // Refresh the home page benchmark list to show updated status
@@ -1410,7 +1585,7 @@ class Pages {
                     <div class="card-footer bg-transparent">
                       <div class="btn-group w-100" role="group">
                         <button class="btn btn-outline-primary" onclick="window.Pages.editPromptSet(${promptSet.id})">
-                          <i class="fas fa-edit"></i> Edit
+                          <i class="fas fa-eye"></i> View/Edit
                         </button>
                         <button class="btn btn-outline-success" onclick="window.Pages.usePromptSetInBenchmark(${promptSet.id})">
                           <i class="fas fa-play"></i> Use in Benchmark
@@ -1459,9 +1634,9 @@ class Pages {
 
     // Show the original creation form
     promptSetContent.innerHTML = `
-      <div class="container-fluid h-100">
-        <div class="d-flex justify-content-between align-items-center mb-3">
-          <h3>Create New Prompt Set</h3>
+      <div class="container-fluid">
+        <div class="d-flex justify-content-between align-items-center mb-3 p-3">
+          <h3 id="promptSetFormHeader">Create New Prompt Set</h3>
           <button class="btn btn-outline-secondary" onclick="window.Pages.showPromptSetsList()">
             <i class="fas fa-arrow-left"></i> Back to Prompt Sets
           </button>
@@ -1536,7 +1711,7 @@ class Pages {
 
             <!-- Prompts Container -->
             <div class="flex-grow-1 p-3" id="promptsContainer" style="overflow-y: auto; min-height: 0;">
-              <div id="promptsList" style="height: auto;">
+              <div id="promptSetPromptsList" style="height: auto;">
                 <!-- Prompts will be added here -->
               </div>
               
@@ -1567,10 +1742,22 @@ class Pages {
   resetPromptSetForm() {
     document.getElementById('promptSetName').value = '';
     document.getElementById('promptSetDescription').value = '';
-    document.getElementById('promptsList').innerHTML = '';
+    document.getElementById('promptSetPromptsList').innerHTML = '';
     document.getElementById('changeNameBtn').style.display = 'none';
     document.getElementById('autoNameNotice').style.display = 'none';
     document.getElementById('deletePromptSetBtn').style.display = 'none';
+    
+    // Reset save button text
+    const saveBtn = document.getElementById('savePromptSetBtn');
+    if (saveBtn) {
+      saveBtn.innerHTML = '<i class="fas fa-save"></i> Save Prompt Set';
+    }
+    
+    // Reset header text
+    const header = document.getElementById('promptSetFormHeader');
+    if (header) {
+      header.textContent = 'Create New Prompt Set';
+    }
     
     // Reset current prompt set tracking
     this.currentPromptSetId = null;
@@ -1662,9 +1849,9 @@ class Pages {
    * Render a single prompt item
    */
   renderPromptItem(prompt) {
-    const promptsList = document.getElementById('promptsList');
+    const promptsList = document.getElementById('promptSetPromptsList');
     if (!promptsList) {
-      console.error('promptsList not found!');
+      console.error('promptSetPromptsList not found!');
       return;
     }
     
@@ -1818,104 +2005,64 @@ class Pages {
    * Render all prompts
    */
   renderAllPrompts() {
-    const promptsList = document.getElementById('promptsList');
+    const promptsList = document.getElementById('promptSetPromptsList');
     if (!promptsList) {
       return;
     }
     
-    // Recreate the promptsList element to ensure proper rendering
-    const promptsContainer = document.getElementById('promptsContainer');
-    if (promptsContainer) {
-      // Remove the old promptsList
-      const oldPromptsList = document.getElementById('promptsList');
-      if (oldPromptsList) {
-        oldPromptsList.remove();
-      }
+    // Clear existing prompts
+    promptsList.innerHTML = '';
+    
+    // Render all prompts
+    this.promptSetPrompts.forEach((prompt, index) => {
+      const promptDiv = document.createElement('div');
+      promptDiv.className = 'prompt-item';
+      promptDiv.setAttribute('data-prompt-id', prompt.id);
       
-      // Create a completely new promptsList element
-      const newPromptsList = document.createElement('div');
-      newPromptsList.id = 'promptsList';
-      newPromptsList.style.cssText = `
-        width: 100% !important;
-        height: 450px !important;
-        min-height: 450px !important;
-        background: white !important;
-        border: 1px solid #dee2e6 !important;
-        border-radius: 0.375rem !important;
-        padding: 1rem !important;
-        display: block !important;
-        position: relative !important;
-        overflow: auto !important;
-        box-sizing: border-box !important;
+      promptDiv.innerHTML = `
+        <div class="d-flex justify-content-between align-items-start mb-3">
+          <strong class="text-primary">Prompt ${prompt.order_index + 1}</strong>
+          <div class="btn-group btn-group-sm" role="group">
+            <button class="btn btn-outline-secondary move-up-btn" ${prompt.order_index === 0 ? 'disabled' : ''} title="Move up">
+              <i class="fas fa-arrow-up"></i>
+            </button>
+            <button class="btn btn-outline-secondary move-down-btn" ${prompt.order_index === this.promptSetPrompts.length - 1 ? 'disabled' : ''} title="Move down">
+              <i class="fas fa-arrow-down"></i>
+            </button>
+            <button class="btn btn-outline-danger delete-prompt-btn" title="Delete prompt">
+              <i class="fas fa-trash"></i>
+            </button>
+          </div>
+        </div>
+        <textarea class="form-control prompt-textarea" rows="3" placeholder="Enter your prompt here..." style="resize: vertical;">${prompt.prompt_text || ''}</textarea>
       `;
       
-      // Append to container
-      promptsContainer.appendChild(newPromptsList);
+      // Add event listeners - this is crucial for saving changes
+      const textarea = promptDiv.querySelector('.prompt-textarea');
+      if (textarea) {
+        textarea.oninput = (e) => {
+          prompt.prompt_text = e.target.value;
+          console.log(`Updated prompt ${prompt.id}:`, e.target.value.substring(0, 50) + '...');
+        };
+      }
       
-      // Render all prompts to new container
-      this.promptSetPrompts.forEach((prompt, index) => {
-        const promptDiv = document.createElement('div');
-        promptDiv.className = 'prompt-item';
-        promptDiv.setAttribute('data-prompt-id', prompt.id);
-        
-        promptDiv.style.cssText = `
-          background: #ffffff !important;
-          border: 1px solid #dee2e6 !important;
-          border-radius: 0.375rem !important;
-          margin-bottom: 1rem !important;
-          padding: 1rem !important;
-          display: block !important;
-          position: relative !important;
-          box-sizing: border-box !important;
-          transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out !important;
-        `;
-        
-        promptDiv.innerHTML = `
-          <div class="d-flex justify-content-between align-items-start mb-3">
-            <strong class="text-primary">Prompt ${prompt.order_index + 1}</strong>
-            <div class="btn-group btn-group-sm" role="group">
-              <button class="btn btn-outline-secondary move-up-btn" ${prompt.order_index === 0 ? 'disabled' : ''} title="Move up">
-                <i class="fas fa-arrow-up"></i>
-              </button>
-              <button class="btn btn-outline-secondary move-down-btn" ${prompt.order_index === this.promptSetPrompts.length - 1 ? 'disabled' : ''} title="Move down">
-                <i class="fas fa-arrow-down"></i>
-              </button>
-              <button class="btn btn-outline-danger delete-prompt-btn" title="Delete prompt">
-                <i class="fas fa-trash"></i>
-              </button>
-            </div>
-          </div>
-          <textarea class="form-control prompt-textarea" rows="3" placeholder="Enter your prompt here..." style="resize: vertical;">${prompt.prompt_text || ''}</textarea>
-        `;
-        
-        // Add event listeners
-        const textarea = promptDiv.querySelector('.prompt-textarea');
-        if (textarea) {
-          textarea.oninput = (e) => {
-            prompt.prompt_text = e.target.value;
-          };
-        }
-        
-        const deleteBtn = promptDiv.querySelector('.delete-prompt-btn');
-        if (deleteBtn) {
-          deleteBtn.onclick = () => this.deletePrompt(prompt.id);
-        }
-        
-        const moveUpBtn = promptDiv.querySelector('.move-up-btn');
-        if (moveUpBtn) {
-          moveUpBtn.onclick = () => this.movePrompt(prompt.id, -1);
-        }
-        
-        const moveDownBtn = promptDiv.querySelector('.move-down-btn');
-        if (moveDownBtn) {
-          moveDownBtn.onclick = () => this.movePrompt(prompt.id, 1);
-        }
-        
-        newPromptsList.appendChild(promptDiv);
-      });
+      const deleteBtn = promptDiv.querySelector('.delete-prompt-btn');
+      if (deleteBtn) {
+        deleteBtn.onclick = () => this.deletePrompt(prompt.id);
+      }
       
-      return; // Exit early since we recreated everything
-    }
+      const moveUpBtn = promptDiv.querySelector('.move-up-btn');
+      if (moveUpBtn) {
+        moveUpBtn.onclick = () => this.movePrompt(prompt.id, -1);
+      }
+      
+      const moveDownBtn = promptDiv.querySelector('.move-down-btn');
+      if (moveDownBtn) {
+        moveDownBtn.onclick = () => this.movePrompt(prompt.id, 1);
+      }
+      
+      promptsList.appendChild(promptDiv);
+    });
   }
 
   /**
@@ -1923,8 +2070,7 @@ class Pages {
    */
   updatePromptsDisplay() {
     const emptyState = document.getElementById('emptyPromptsState');
-    const promptsList = document.getElementById('promptsList');
-    const promptsContainer = document.getElementById('promptsContainer');
+    const promptsList = document.getElementById('promptSetPromptsList');
     
     if (this.promptSetPrompts.length === 0) {
       if (emptyState) emptyState.style.display = 'block';
@@ -1932,22 +2078,6 @@ class Pages {
     } else {
       if (emptyState) emptyState.style.display = 'none';
       if (promptsList) promptsList.style.display = 'block';
-      
-      // Apply clean styling to the container
-      if (promptsContainer) {
-        promptsContainer.style.cssText = `
-          position: relative !important;
-          width: 100% !important;
-          height: 500px !important;
-          min-height: 500px !important;
-          background: #f8f9fa !important;
-          border-radius: 0.375rem !important;
-          overflow: hidden !important;
-          padding: 1rem !important;
-          display: block !important;
-          box-sizing: border-box !important;
-        `;
-      }
       
       // Render all prompts
       this.renderAllPrompts();
@@ -2141,15 +2271,28 @@ class Pages {
           description,
           prompts
         });
+        window.Components.showToast(`Prompt set "${finalName}" updated successfully!`, 'success');
       } else {
         // Create new
         result = await window.API.createPromptSet(finalName, description, prompts);
         this.currentPromptSetId = result.prompt_set_id;
         document.getElementById('deletePromptSetBtn').style.display = 'block';
+        
+        // Update UI to reflect that we're now editing an existing prompt set
+        const saveBtn = document.getElementById('savePromptSetBtn');
+        if (saveBtn) {
+          saveBtn.innerHTML = '<i class="fas fa-save"></i> Update Prompt Set';
+        }
+        
+        const header = document.getElementById('promptSetFormHeader');
+        if (header) {
+          header.textContent = `Edit Prompt Set: ${finalName}`;
+        }
+        
+        window.Components.showToast(`Prompt set "${finalName}" created successfully!`, 'success');
       }
 
       document.getElementById('autoNameNotice').style.display = 'none';
-      window.Components.showToast(`Prompt set "${finalName}" saved successfully!`, 'success');
       
     } catch (error) {
       console.error('Error saving prompt set:', error);
@@ -2208,18 +2351,37 @@ class Pages {
         document.getElementById('promptSetName').value = promptSet.name;
         document.getElementById('promptSetDescription').value = promptSet.description || '';
         
-        // Load prompts
-        this.promptSetPrompts = promptSet.prompts.map(p => ({
-          ...p,
-          isNew: false
+        // Load prompts with proper structure for editing
+        this.promptSetPrompts = promptSet.prompts.map((p, index) => ({
+          id: Date.now() + index, // Generate unique IDs for editing
+          prompt_text: p.prompt_text,
+          order_index: index,
+          isNew: false, // Mark as existing prompts
+          original_id: p.id // Keep reference to original ID if needed
         }));
         
-        // Update UI
+        // Update UI state
         this.currentPromptSetId = promptSetId;
         document.getElementById('deletePromptSetBtn').style.display = 'block';
         document.getElementById('autoNameNotice').style.display = 'none';
         
+        // Update the save button text to reflect editing
+        const saveBtn = document.getElementById('savePromptSetBtn');
+        if (saveBtn) {
+          saveBtn.innerHTML = '<i class="fas fa-save"></i> Update Prompt Set';
+        }
+        
+        // Update the header to show we're editing
+        const header = document.getElementById('promptSetFormHeader');
+        if (header) {
+          header.textContent = `Edit Prompt Set: ${promptSet.name}`;
+        }
+        
+        // Render the prompts
         this.updatePromptsDisplay();
+        
+        // Show success message
+        window.Components.showToast(`Loaded "${promptSet.name}" for editing`, 'success');
       }, 100);
       
     } catch (error) {
@@ -2233,30 +2395,62 @@ class Pages {
    */
   async usePromptSetInBenchmark(promptSetId) {
     try {
+      console.log('usePromptSetInBenchmark called with promptSetId:', promptSetId);
       const promptSet = await window.API.getPromptSetDetails(promptSetId);
+      console.log('Loaded prompt set:', promptSet);
       
       // Navigate to composer page
       this.navigateTo('composerContent');
       
-      // Wait for the page to load
-      setTimeout(() => {
-        // Clear existing prompts
-        this.prompts = [];
-        
-        // Load prompts from the prompt set
-        promptSet.prompts.forEach(prompt => {
-          this.prompts.push({
-            id: Utils.generateId(),
-            text: prompt.prompt_text
-          });
+      // Wait for the page to load and be fully initialized
+      await new Promise(resolve => {
+        const checkReady = () => {
+          const promptsList = document.getElementById('promptsList');
+          if (promptsList && this.currentPage === 'composerContent') {
+            console.log('Composer page is ready, loading prompts...');
+            resolve();
+          } else {
+            console.log('Waiting for composer page to be ready...');
+            setTimeout(checkReady, 50);
+          }
+        };
+        checkReady();
+      });
+      
+      // Clear existing prompts
+      this.prompts = [];
+      console.log('Cleared existing prompts');
+      
+      // Load prompts from the prompt set
+      promptSet.prompts.forEach((prompt, index) => {
+        console.log(`Loading prompt ${index + 1}:`, prompt.prompt_text.substring(0, 50) + '...');
+        this.prompts.push({
+          id: Utils.generateId(),
+          text: prompt.prompt_text
         });
+      });
+      
+      console.log('Total prompts loaded:', this.prompts.length);
+      
+      // Render the prompts
+      this.renderPrompts();
+      console.log('Prompts rendered');
+      
+      // Verify prompts are actually displayed
+      setTimeout(() => {
+        const promptsList = document.getElementById('promptsList');
+        const promptElements = promptsList ? promptsList.querySelectorAll('.prompt-input') : [];
+        console.log('Verification: Found', promptElements.length, 'prompt elements in DOM');
         
-        // Render the prompts
-        this.renderPrompts();
-        
-        // Show success message
-        window.Components.showToast(`Loaded ${promptSet.prompts.length} prompts from "${promptSet.name}"`, 'success');
+        if (promptElements.length !== this.prompts.length) {
+          console.warn('Mismatch: Expected', this.prompts.length, 'prompts but found', promptElements.length, 'in DOM');
+          // Try rendering again
+          this.renderPrompts();
+        }
       }, 100);
+      
+      // Show success message
+      window.Components.showToast(`Loaded ${promptSet.prompts.length} prompts from "${promptSet.name}"`, 'success');
       
     } catch (error) {
       console.error('Error loading prompt set for benchmark:', error);
