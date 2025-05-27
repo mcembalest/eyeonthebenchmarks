@@ -615,6 +615,21 @@ class Pages {
         if (modelLatencyMs > 0 && modelLatencyMs < 1000) {
           modelLatencyMs = modelLatencyMs * 1000; // Convert to milliseconds
         }
+        
+        // If run.latency is 0 or missing, calculate it from individual prompt latencies
+        if (modelLatencyMs === 0 && run.prompts && run.prompts.length > 0) {
+          run.prompts.forEach(prompt => {
+            if (prompt.response && prompt.response.trim().length > 0) { // Only count completed prompts
+              let promptLatencyMs = prompt.prompt_latency || 0;
+              // Handle both milliseconds and seconds format for prompt latency
+              if (promptLatencyMs > 0 && promptLatencyMs < 1000) {
+                promptLatencyMs = promptLatencyMs * 1000; // Convert to milliseconds
+              }
+              modelLatencyMs += promptLatencyMs;
+            }
+          });
+        }
+        
         let completedPrompts = 0;
         let totalPromptsForThisModel = 0;
         
@@ -947,6 +962,20 @@ class Pages {
         totalLatencyMs = totalLatencyMs * 1000; // Convert to milliseconds
       }
       
+      // If run.latency is 0 or missing, calculate it from individual prompt latencies
+      if (totalLatencyMs === 0 && run.prompts && run.prompts.length > 0) {
+        run.prompts.forEach(prompt => {
+          if (prompt.response && prompt.response.trim().length > 0) { // Only count completed prompts
+            let promptLatencyMs = prompt.prompt_latency || 0;
+            // Handle both milliseconds and seconds format for prompt latency
+            if (promptLatencyMs > 0 && promptLatencyMs < 1000) {
+              promptLatencyMs = promptLatencyMs * 1000; // Convert to milliseconds
+            }
+            totalLatencyMs += promptLatencyMs;
+          }
+        });
+      }
+      
       // Convert latency to minutes and seconds format for model totals
       const formatModelLatency = (ms) => {
         const seconds = Math.round(ms / 1000);
@@ -976,13 +1005,17 @@ class Pages {
             }
             const promptLatencySeconds = promptLatencyMs / 1000;
             
-            // Web search indicator
-            const webSearchIcon = prompt.web_search_used ? 
-              `<i class="fas fa-globe text-info ms-2 web-search-icon" 
-                  title="Click to view web search sources" 
-                  style="cursor: pointer;" 
-                  data-web-search-sources="${Utils.escapeHtmlAttribute(prompt.web_search_sources || '')}"
-                  onclick="window.Pages.showWebSearchModal(this)"></i>` : '';
+            // Web search indicator as a clickable badge
+            const webSearchBadge = prompt.web_search_used ? 
+              `<button class="badge bg-info text-white web-search-badge" 
+                      title="Click to view web search sources" 
+                      style="border: none; cursor: pointer; transition: all 0.2s ease;" 
+                      data-web-search-sources="${Utils.escapeHtmlAttribute(prompt.web_search_sources || '')}"
+                      onclick="window.Pages.showWebSearchModal(this)"
+                      onmouseover="this.style.backgroundColor='#0a58ca'"
+                      onmouseout="this.style.backgroundColor='#0dcaf0'">
+                <i class="fas fa-globe me-1"></i>Web Search Results
+              </button>` : '';
             
             // Show completed prompt
             return `
@@ -990,9 +1023,10 @@ class Pages {
                 <div class="d-flex justify-content-between align-items-start mb-2">
                   <h6 class="mb-0 text-primary">
                     <i class="fas fa-check-circle text-success me-2"></i>
-                    Prompt ${index + 1}${webSearchIcon}
+                    Prompt ${index + 1}
                   </h6>
-                  <div class="d-flex gap-2">
+                  <div class="d-flex gap-2 align-items-center">
+                    ${webSearchBadge}
                     <span class="badge bg-secondary">${promptLatencySeconds.toFixed(3)}s</span>
                     <span class="badge bg-info">${(prompt.standard_input_tokens || 0) + (prompt.cached_input_tokens || 0)}→${prompt.output_tokens || 0} tokens</span>
                     ${prompt.total_cost ? `<span class="badge bg-success">${Utils.formatCurrency(prompt.total_cost)}</span>` : ''}
@@ -1064,10 +1098,6 @@ class Pages {
                   <h5 class="mb-0">${Utils.sanitizeHtml(modelDisplayName)}</h5>
                   <small class="opacity-75">${statusText}${runDate ? ` • ${runDate}` : ''}</small>
                 </div>
-              </div>
-              <div class="d-flex gap-2 align-items-center">
-                ${hasResults ? `<span class="badge bg-light text-dark fs-6">${formatModelLatency(totalLatencyMs)} total</span>` : ''}
-                ${isRunning ? '<i class="fas fa-spinner fa-spin"></i>' : ''}
               </div>
             </div>
           </div>

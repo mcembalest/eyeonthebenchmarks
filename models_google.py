@@ -594,14 +594,14 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
             # if the user explicitly requested it
             if web_search:
                 # Check if the response contains web search results and extract content
-                if hasattr(response, 'candidates') and response.candidates:
+                if hasattr(response, 'candidates') and response.candidates is not None:
                     for candidate in response.candidates:
                         if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
                             web_search_used = True
                             web_search_queries = 1
                             
                             # Extract grounding content for token counting and sources
-                            if hasattr(candidate.grounding_metadata, 'grounding_chunks'):
+                            if hasattr(candidate.grounding_metadata, 'grounding_chunks') and candidate.grounding_metadata.grounding_chunks:
                                 for chunk in candidate.grounding_metadata.grounding_chunks:
                                     if hasattr(chunk, 'web') and hasattr(chunk.web, 'title'):
                                         web_search_content += f"Title: {chunk.web.title}\n"
@@ -610,19 +610,19 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
                                         web_search_content += "---\n"
                             
                             # Extract search entry point content (this contains most of the grounding data)
-                            if hasattr(candidate.grounding_metadata, 'search_entry_point'):
+                            if hasattr(candidate.grounding_metadata, 'search_entry_point') and candidate.grounding_metadata.search_entry_point:
                                 entry_point = candidate.grounding_metadata.search_entry_point
                                 if hasattr(entry_point, 'rendered_content'):
                                     web_search_content += f"Search entry point:\n{entry_point.rendered_content}\n---\n"
                             
                             # Extract web search queries
-                            if hasattr(candidate.grounding_metadata, 'web_search_queries'):
+                            if hasattr(candidate.grounding_metadata, 'web_search_queries') and candidate.grounding_metadata.web_search_queries:
                                 web_search_queries = len(candidate.grounding_metadata.web_search_queries)
                                 web_search_content += f"Search queries: {', '.join(candidate.grounding_metadata.web_search_queries)}\n---\n"
-                        elif hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                        elif hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
                             for part in candidate.content.parts:
                                 # Look for function calls or tool usage indicators
-                                if hasattr(part, 'function_call') or (hasattr(part, 'text') and 'search' in str(part.text).lower()[:200]):
+                                if hasattr(part, 'function_call') or (hasattr(part, 'text') and part.text and 'search' in str(part.text).lower()[:200]):
                                     web_search_used = True
                                     web_search_queries = 1  # Assume 1 search query for now
                                     web_search_content += f"Function call or search detected in response\n"
@@ -659,7 +659,7 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
             elif not web_search:
                 # If web search was disabled but Google still used automatic grounding,
                 # we should note this but not count it as intentional web search
-                if hasattr(response, 'candidates') and response.candidates:
+                if hasattr(response, 'candidates') and response.candidates is not None:
                     for candidate in response.candidates:
                         if hasattr(candidate, 'grounding_metadata') and candidate.grounding_metadata:
                             print(f"   ℹ️  Google used automatic grounding (not counted as web search)")
@@ -667,11 +667,11 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
             
             # Extract clean response text (not response.text which includes metadata)
             clean_response_text = ""
-            if hasattr(response, 'candidates') and response.candidates:
+            if hasattr(response, 'candidates') and response.candidates is not None:
                 for candidate in response.candidates:
-                    if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                    if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
                         for part in candidate.content.parts:
-                            if hasattr(part, 'text'):
+                            if hasattr(part, 'text') and part.text:
                                 clean_response_text += part.text
             
             # Debug logging to understand what we're getting
@@ -686,12 +686,13 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
                 logging.error(f"Response structure: {type(response)}")
                 if hasattr(response, 'candidates'):
                     logging.error(f"Candidates: {len(response.candidates) if response.candidates else 0}")
-                    for i, candidate in enumerate(response.candidates or []):
-                        logging.error(f"Candidate {i}: {type(candidate)}")
-                        if hasattr(candidate, 'content'):
-                            logging.error(f"  Content: {type(candidate.content)}")
-                            if hasattr(candidate.content, 'parts'):
-                                logging.error(f"  Parts: {len(candidate.content.parts) if candidate.content.parts else 0}")
+                    if response.candidates:
+                        for i, candidate in enumerate(response.candidates):
+                            logging.error(f"Candidate {i}: {type(candidate)}")
+                            if hasattr(candidate, 'content') and candidate.content:
+                                logging.error(f"  Content: {type(candidate.content)}")
+                                if hasattr(candidate.content, 'parts'):
+                                    logging.error(f"  Parts: {len(candidate.content.parts) if candidate.content.parts else 0}")
                 
                 # Try alternative extraction methods
                 if hasattr(response, 'text') and response.text:
@@ -723,7 +724,9 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
                         clean_response_text = raw_text
                         logging.warning("Using raw response.text as fallback - may contain metadata")
                 else:
-                    clean_response_text = "No response text found"
+                    # If we still have no response text, return a helpful error message
+                    clean_response_text = "ERROR: Gemini API returned invalid response structure. This typically happens when the model encounters an internal error or when the content violates content policies. Please try running this prompt again."
+                    logging.error("No response text could be extracted from Gemini response")
             
             return clean_response_text, standard_input_tokens, cached_input_tokens, output_tokens, web_search_used, web_search_content
             

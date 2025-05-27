@@ -310,15 +310,17 @@ class Components {
    */
   createPromptInput(value = '', onRemove = null) {
     const promptDiv = document.createElement('div');
-    promptDiv.className = 'prompt-item mb-3 p-3 border rounded bg-light';
+    promptDiv.className = 'prompt-item mb-2 p-2 border rounded bg-light';
 
     promptDiv.innerHTML = `
       <div class="d-flex align-items-start">
         <div class="flex-grow-1 me-2">
           <textarea class="form-control prompt-input" rows="2" 
-                    placeholder="Enter your prompt here...">${Utils.sanitizeHtml(value)}</textarea>
+                    placeholder="Enter your prompt here..." 
+                    style="min-height: 60px; resize: vertical;">${Utils.sanitizeHtml(value)}</textarea>
         </div>
-        <button class="btn btn-outline-danger btn-sm remove-prompt-btn" type="button">
+        <button class="btn btn-outline-danger btn-sm remove-prompt-btn" type="button" 
+                style="flex-shrink: 0; padding: 0.25rem 0.5rem;">
           <i class="fas fa-times"></i>
         </button>
       </div>

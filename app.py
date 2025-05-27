@@ -12,6 +12,9 @@ import sys
 import sqlite3
 import pandas as pd
 
+# Increase CSV field size limit to handle large web search data
+csv.field_size_limit(500000)  # 500KB limit for large web search data
+
 # --- Basic Logger Setup ---
 logger = logging.getLogger(__name__)
 
@@ -30,7 +33,7 @@ logging.basicConfig(level=logging.INFO,
 logging.getLogger('models_openai').setLevel(logging.DEBUG)
 
 # Import the CSV exporter
-from exporter import export_benchmark_to_csv
+# from exporter import export_benchmark_to_csv
 
 from file_store import (
     init_db as init_file_store_db,
@@ -479,14 +482,6 @@ class AppLogic:
         # Store DB file path for later use (e.g., CSV export)
         self.db_path = str(db_file)
 
-    def handle_export_benchmark_csv(self, benchmark_id: int):
-        exports_dir = Path.cwd() / "exports"
-        os.makedirs(exports_dir, exist_ok=True)
-        
-        csv_path = export_benchmark_to_csv(benchmark_id, exports_dir)
-        
-        self.ui_bridge.show_message("Success", "CSV Export", f"Benchmark exported to:\n{csv_path}")
-
     def _ensure_directories_exist(self):
         files_dir = Path.cwd() / "files"
         if not files_dir.exists():
@@ -825,13 +820,7 @@ class AppLogic:
                 
                 # Get prompt data for this run
                 cursor.execute("""
-                    SELECT *, 
-                           CASE WHEN (SELECT COUNT(*) FROM pragma_table_info('benchmark_prompts') 
-                                     WHERE name='web_search_used') > 0 
-                                THEN web_search_used ELSE 0 END as web_search_used,
-                           CASE WHEN (SELECT COUNT(*) FROM pragma_table_info('benchmark_prompts') 
-                                     WHERE name='web_search_sources') > 0 
-                                THEN web_search_sources ELSE '' END as web_search_sources
+                    SELECT *
                     FROM benchmark_prompts
                     WHERE benchmark_run_id = ?
                     ORDER BY id
@@ -866,15 +855,22 @@ class AppLogic:
                 raise ValueError(error_msg)
                 
             df = pd.DataFrame(all_prompts_data)
+            logging.info(f"DataFrame columns before filtering: {list(df.columns)}")
             
-            # Define column order with model_name first, including cost columns
+            # Define column order with model_name first, including cost columns and web search data
             cols_order = ['model_name', 'prompt_text', 'model_answer', 'latency',
                           'standard_input_tokens', 'cached_input_tokens', 'output_tokens',
-                          'input_cost', 'cached_cost', 'output_cost', 'total_cost']
+                          'input_cost', 'cached_cost', 'output_cost', 'total_cost',
+                          'web_search_used', 'web_search_sources']
             
             # Only keep relevant columns in order
             cols_to_export = [c for c in cols_order if c in df.columns]
+            logging.info(f"Columns to export: {cols_to_export}")
             df = df[cols_to_export]
+            
+            # Convert web_search_used from 1/0 to True/False for better readability
+            if 'web_search_used' in df.columns:
+                df['web_search_used'] = df['web_search_used'].map({1: 'True', 0: 'False', '1': 'True', '0': 'False'})
              
             # Ensure the directory exists (skip if saving to current dir)
             dirpath = os.path.dirname(filename)
