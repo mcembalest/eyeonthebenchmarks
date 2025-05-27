@@ -12,9 +12,10 @@ from models_anthropic import count_tokens_anthropic, get_context_limit_anthropic
 from models_google import count_tokens_google, get_context_limit_google
 
 
-def validate_token_limits(prompts: List[Dict], pdf_paths: List[str], model_names: List[str]) -> Dict[str, Any]:
+def validate_token_limits_with_upload(prompts: List[Dict], pdf_paths: List[str], model_names: List[str]) -> Dict[str, Any]:
     """
-    Validate that prompts + PDFs don't exceed context limits for the selected models.
+    Validate token limits by uploading files first, then counting tokens accurately.
+    This function ensures files are uploaded to providers before token counting.
     
     Args:
         prompts: List of prompt dictionaries with 'prompt_text' keys
@@ -28,7 +29,7 @@ def validate_token_limits(prompts: List[Dict], pdf_paths: List[str], model_names
             "warnings": List[str],
             "model_results": {
                 "model_name": {
-                    "estimated_tokens": int,
+                    "actual_tokens": int,
                     "context_limit": int,
                     "will_exceed": bool,
                     "provider": str
@@ -49,7 +50,7 @@ def validate_token_limits(prompts: List[Dict], pdf_paths: List[str], model_names
         try:
             provider = get_provider_from_model(model_name)
             
-            # Estimate tokens for each prompt + all PDFs
+            # Count tokens for each prompt + all PDFs (ensuring upload first)
             max_tokens_for_model = 0
             
             for prompt in prompts:
@@ -61,7 +62,7 @@ def validate_token_limits(prompts: List[Dict], pdf_paths: List[str], model_names
                     for pdf_path in pdf_path_objects:
                         content.append({"type": "input_file", "file_path": str(pdf_path)})
                     
-                    estimated_tokens = count_tokens_openai(content, model_name)
+                    actual_tokens = count_tokens_openai(content, model_name)
                     context_limit = get_context_limit_openai(model_name)
                     
                 elif provider == "anthropic":
@@ -69,14 +70,15 @@ def validate_token_limits(prompts: List[Dict], pdf_paths: List[str], model_names
                     for pdf_path in pdf_path_objects:
                         content.append({"type": "file", "file_path": str(pdf_path)})
                     
-                    estimated_tokens = count_tokens_anthropic(content, model_name)
+                    actual_tokens = count_tokens_anthropic(content, model_name)
                     context_limit = get_context_limit_anthropic(model_name)
                     
                 elif provider == "google":
+                    # For Google: upload files first, then count tokens
                     contents = [prompt_text]
                     contents.extend(pdf_path_objects)
                     
-                    estimated_tokens = count_tokens_google(contents, model_name)
+                    actual_tokens = count_tokens_google(contents, model_name)
                     context_limit = get_context_limit_google(model_name)
                     
                 else:
@@ -84,13 +86,13 @@ def validate_token_limits(prompts: List[Dict], pdf_paths: List[str], model_names
                     continue
                 
                 # Track the maximum tokens needed for any prompt with this model
-                max_tokens_for_model = max(max_tokens_for_model, estimated_tokens)
+                max_tokens_for_model = max(max_tokens_for_model, actual_tokens)
             
             # Check if this model will exceed its context limit
             will_exceed = max_tokens_for_model > context_limit
             
             results["model_results"][model_name] = {
-                "estimated_tokens": max_tokens_for_model,
+                "actual_tokens": max_tokens_for_model,
                 "context_limit": context_limit,
                 "will_exceed": will_exceed,
                 "provider": provider
@@ -99,12 +101,87 @@ def validate_token_limits(prompts: List[Dict], pdf_paths: List[str], model_names
             if will_exceed:
                 results["valid"] = False
                 results["warnings"].append(
-                    f"{model_name}: Estimated {max_tokens_for_model:,} tokens exceeds limit of {context_limit:,} tokens"
+                    f"{model_name}: {max_tokens_for_model:,} tokens exceeds limit of {context_limit:,} tokens"
                 )
                 
         except Exception as e:
             logging.error(f"Error validating tokens for model {model_name}: {e}")
-            results["warnings"].append(f"{model_name}: Could not validate token count - {str(e)}")
+            results["warnings"].append(f"{model_name}: Token validation failed - {str(e)}")
+            results["valid"] = False
+    
+    return results
+
+
+def validate_token_limits(prompts: List[Dict], pdf_paths: List[str], model_names: List[str]) -> Dict[str, Any]:
+    """
+    Legacy function - DEPRECATED. Use validate_token_limits_with_upload instead.
+    This function relies on estimates and may not be accurate.
+    
+    Args:
+        prompts: List of prompt dictionaries with 'prompt_text' keys
+        pdf_paths: List of PDF file paths
+        model_names: List of model names to check
+        
+    Returns:
+        Dictionary with validation results (ESTIMATED):
+        {
+            "valid": bool,
+            "warnings": List[str],
+            "model_results": {
+                "model_name": {
+                    "estimated_tokens": int,
+                    "context_limit": int,
+                    "will_exceed": bool,
+                    "provider": str
+                }
+            }
+        }
+    """
+    logging.warning("Using DEPRECATED validate_token_limits with estimates. Use validate_token_limits_with_upload for accurate results.")
+    
+    results = {
+        "valid": True,
+        "warnings": ["⚠️ Using estimated token counts - may not be accurate"],
+        "model_results": {}
+    }
+    
+    # Convert PDF paths to Path objects
+    pdf_path_objects = [Path(path) for path in pdf_paths]
+    
+    for model_name in model_names:
+        try:
+            provider = get_provider_from_model(model_name)
+            context_limit = 0
+            
+            if provider == "openai":
+                context_limit = get_context_limit_openai(model_name)
+            elif provider == "anthropic":
+                context_limit = get_context_limit_anthropic(model_name)
+            elif provider == "google":
+                context_limit = get_context_limit_google(model_name)
+            
+            # Very rough estimate: 1000 tokens per prompt + 10000 per PDF
+            estimated_tokens = len(prompts) * 1000 + len(pdf_path_objects) * 10000
+            
+            # Check if this model will exceed its context limit
+            will_exceed = estimated_tokens > context_limit
+            
+            results["model_results"][model_name] = {
+                "estimated_tokens": estimated_tokens,
+                "context_limit": context_limit,
+                "will_exceed": will_exceed,
+                "provider": provider
+            }
+            
+            if will_exceed:
+                results["valid"] = False
+                results["warnings"].append(
+                    f"{model_name}: Estimated {estimated_tokens:,} tokens may exceed limit of {context_limit:,} tokens"
+                )
+                
+        except Exception as e:
+            logging.error(f"Error estimating tokens for model {model_name}: {e}")
+            results["warnings"].append(f"{model_name}: Could not estimate token count - {str(e)}")
     
     return results
 

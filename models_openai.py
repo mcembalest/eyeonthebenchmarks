@@ -747,54 +747,58 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
                     output_tokens = response.usage.output_tokens or 0
                     logging.info(f"Extracted output_tokens: {output_tokens}")
                 
-                # Fall back to dictionary-style access if attributes aren't found
-                if standard_input_tokens == 0 and hasattr(response.usage, 'get') and callable(response.usage.get):
-                    standard_input_tokens = response.usage.get('input_tokens', 0) or 0
-                    output_tokens = response.usage.get('output_tokens', 0) or 0
-                    logging.info(f"Used dictionary access for token counts: input={standard_input_tokens}, output={output_tokens}")
+                # CRITICAL: Extract reasoning tokens from output_tokens_details
+                reasoning_tokens = 0
+                if hasattr(response.usage, 'output_tokens_details'):
+                    logging.info(f"output_tokens_details present: {response.usage.output_tokens_details}")
+                    if hasattr(response.usage.output_tokens_details, 'reasoning_tokens'):
+                        reasoning_tokens = response.usage.output_tokens_details.reasoning_tokens or 0
+                        logging.info(f"Extracted reasoning_tokens: {reasoning_tokens}")
+                
+                # Log comprehensive token breakdown
+                logging.info(f"OpenAI token breakdown:")
+                logging.info(f"  - Input tokens: {standard_input_tokens}")
+                logging.info(f"  - Cached tokens: {cached_input_tokens}")
+                logging.info(f"  - Output tokens: {output_tokens}")
+                logging.info(f"  - Reasoning tokens: {reasoning_tokens}")
+                
+                # Check if we have total_tokens for verification
+                total_from_api = getattr(response.usage, 'total_tokens', None)
+                calculated_total = standard_input_tokens + cached_input_tokens + output_tokens
+                
+                if total_from_api and abs(calculated_total - total_from_api) > 5:
+                    logging.warning(f"Token calculation mismatch: calculated {calculated_total} vs API total {total_from_api}")
+                    print(f"   ⚠️ Token calculation mismatch: {calculated_total} vs {total_from_api}")
+                
+                # Print detailed token breakdown
+                print(f"   📊 OpenAI token details:")
+                print(f"       Input: {standard_input_tokens}, Cached: {cached_input_tokens}")
+                print(f"       Output: {output_tokens}")
+                if reasoning_tokens > 0:
+                    print(f"       Reasoning: {reasoning_tokens} (included in output)")
+                if total_from_api:
+                    print(f"       API Total: {total_from_api}")
+                
+                # If no tokens found via direct access, this is an API structure issue
+                if standard_input_tokens == 0 and output_tokens == 0:
+                    raise ValueError(f"OpenAI API response missing expected token usage fields. Response structure may have changed.")
                     
-                # Additional fallback for new API version structure
-                if standard_input_tokens == 0 and hasattr(response.usage, '__dict__'):
-                    usage_dict = response.usage.__dict__
-                    logging.info(f"Usage dictionary: {usage_dict}")
-                    if 'prompt_tokens' in usage_dict:  # Legacy field name
-                        standard_input_tokens = usage_dict.get('prompt_tokens', 0) or 0
-                        logging.info(f"Extracted prompt_tokens from dict: {standard_input_tokens}")
-                    if 'completion_tokens' in usage_dict:  # Legacy field name
-                        output_tokens = usage_dict.get('completion_tokens', 0) or 0
-                        logging.info(f"Extracted completion_tokens from dict: {output_tokens}")
-                    if 'total_tokens' in usage_dict and standard_input_tokens == 0 and output_tokens == 0:
-                        # If we only have total tokens, assume split of 75% input, 25% output
-                        total = usage_dict.get('total_tokens', 0) or 0
-                        standard_input_tokens = int(total * 0.75)
-                        output_tokens = total - standard_input_tokens
-                        logging.info(f"Estimated from total_tokens: input={standard_input_tokens}, output={output_tokens}")
             else:
-                # Try to extract token info from the entire response if no usage field
-                if hasattr(response, '__dict__'):
-                    resp_dict = response.__dict__
-                    logging.info(f"Response dictionary keys: {resp_dict.keys()}")
-                    # Look for any field that might contain token counts
-                    for key in resp_dict.keys():
-                        if 'token' in key.lower() or 'usage' in key.lower():
-                            logging.info(f"Potential token info field: {key} = {resp_dict[key]}")
-                            
-                # Last resort: try to estimate tokens from answer length
-                if standard_input_tokens == 0 and output_tokens == 0 and answer:
-                    # Very rough estimation - about 4 chars per token for English text
-                    output_tokens = max(1, int(len(answer) / 4))
-                    logging.info(f"Estimated output tokens from answer length: {output_tokens}")
-                    # We have no way to estimate input tokens without the prompt text
+                raise ValueError(f"OpenAI API response missing usage metadata. Cannot determine token counts.")
             
             # Ensure all token counts are valid integers
             standard_input_tokens = int(standard_input_tokens) if standard_input_tokens is not None else 0
             cached_input_tokens = int(cached_input_tokens) if cached_input_tokens is not None else 0
             output_tokens = int(output_tokens) if output_tokens is not None else 0
+            reasoning_tokens = int(reasoning_tokens) if reasoning_tokens is not None else 0
             
-            logging.info(f"Final token counts - Standard Input: {standard_input_tokens}, Cached Input: {cached_input_tokens}, Output: {output_tokens}")
+            if standard_input_tokens == 0 and output_tokens == 0:
+                raise ValueError(f"All token counts are zero. This indicates an API response parsing issue.")
+            
+            logging.info(f"Final token counts - Input: {standard_input_tokens}, Cached: {cached_input_tokens}, Output: {output_tokens}, Reasoning: {reasoning_tokens}")
         except Exception as e:
             logging.error(f"Error extracting token usage: {str(e)}", exc_info=True)
-            # Continue with default values (0) on error, but log the exception
+            raise Exception(f"Failed to extract token usage from OpenAI response: {str(e)}") from e
 
         # Print prominent results for high visibility in the console
         print(f"\n💬 ANSWER FROM {model_name.upper()}:")
@@ -885,46 +889,53 @@ def calculate_cost(
 
 def count_tokens_openai(content: List[Dict], model_name: str) -> int:
     """
-    Count tokens for OpenAI models using tiktoken.
+    OpenAI token counting for multimodal content (files + text).
+    
+    IMPORTANT: OpenAI does not provide a pre-request token counting API for multimodal content.
+    Token counts can only be obtained AFTER the response via usage metadata.
+    
+    This function raises an exception to indicate that pre-request token counting
+    is not available, but actual token counts will be captured after the response.
     
     Args:
         content: List of content blocks (text and files)
         model_name: OpenAI model name
         
     Returns:
-        Estimated token count
+        This function will raise an exception for multimodal content
+        
+    Raises:
+        Exception: Always raised to indicate limitation
     """
+    # Check if we have any files in the content
+    has_files = any(item.get("type") in ["input_file", "file"] for item in content)
+    
+    if has_files:
+        # OpenAI doesn't support pre-request token counting for files
+        # But actual tokens will be counted after response completion
+        raise Exception(
+            f"OpenAI does not support pre-request token counting for multimodal content. "
+            f"Actual token counts will be available after response completion via usage metadata. "
+            f"This is a known limitation of the OpenAI API."
+        )
+    
+    # For text-only content, we can use tiktoken
     try:
-        # Get the appropriate encoding for the model
-        if "gpt-4" in model_name.lower() or "o3" in model_name.lower() or "o4" in model_name.lower():
-            encoding = tiktoken.encoding_for_model("gpt-4")
-        else:
-            encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        import tiktoken
+        enc = tiktoken.encoding_for_model(model_name)
         
         total_tokens = 0
-        
         for item in content:
             if item.get("type") == "input_text":
-                # Count text tokens
                 text = item.get("text", "")
-                total_tokens += len(encoding.encode(text))
-            elif item.get("type") == "input_file":
-                # For files, we need to estimate based on file size
-                # PDF files typically have ~1 token per 4 characters when converted to text
-                # This is a rough estimate - actual token count may vary
-                file_path = Path(item.get("file_path", ""))
-                if file_path.exists():
-                    file_size_bytes = file_path.stat().st_size
-                    # Very rough estimate: 1 token per 4 bytes for PDF text content
-                    estimated_tokens = file_size_bytes // 4
-                    total_tokens += estimated_tokens
+                total_tokens += len(enc.encode(text))
         
+        logging.info(f"OpenAI text-only token count for {model_name}: {total_tokens}")
         return total_tokens
         
     except Exception as e:
-        logging.warning(f"Error counting tokens for OpenAI model {model_name}: {e}")
-        # Return a conservative high estimate if we can't count properly
-        return 100000
+        logging.error(f"Error counting text tokens for OpenAI model {model_name}: {e}")
+        raise Exception(f"Text-only token counting failed for OpenAI model {model_name}: {e}") from e
 
 def get_context_limit_openai(model_name: str) -> int:
     """
@@ -945,4 +956,4 @@ def get_context_limit_openai(model_name: str) -> int:
     elif any(x in model_lower for x in ["o3", "o4"]):
         return 200000   # o3/o4 series
     else:
-        return 128000   # Default/conservative estimate
+        raise ValueError(f"Unknown OpenAI model: {model_name}. Cannot determine context limit.")

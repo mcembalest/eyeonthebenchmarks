@@ -533,17 +533,26 @@ def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
     # Build content list with files and prompt
     content_parts = []
     
-    # Add files to content
+    # Add files to content using file objects directly
     for file_path in file_paths:
-        # Generate the part for this file
-        part_id = ensure_file_uploaded(file_path, db_path)
-        content_parts.append({"file_data": {"file_uri": part_id, "mime_type": "application/pdf"}})
+        # Upload file and get file object
+        file_id = ensure_file_uploaded(file_path, db_path)
+        
+        # Use the file object directly - Google expects this format
+        # According to Google docs: contents=[myfile, "prompt text"]
+        try:
+            client = ensure_google_client()
+            uploaded_file = client.files.get(name=file_id)
+            content_parts.append(uploaded_file)
+        except Exception as e:
+            logging.error(f"Error retrieving file object for {file_path}: {e}")
+            raise Exception(f"Failed to retrieve file object for {file_path}: {e}")
     
     # Add prompt text
-    content_parts.append({"text": prompt_text})
+    content_parts.append(prompt_text)
     
-    # Create the content object
-    contents = [{"parts": content_parts}]
+    # Create the content object - Google expects a simple list
+    contents = content_parts
     
     return google_ask_internal(contents, model_name, web_search)
 
@@ -613,12 +622,79 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
                 config=config
             )
             
-            # Parse response
+            # Parse response - USE TOTAL_TOKEN_COUNT FOR ACCURATE BILLING
             tokens_metadata = response.usage_metadata
             
+            # Use total_token_count as the authoritative source for billing
+            total_tokens_used = tokens_metadata.total_token_count
+            
+            # Get individual components for detailed reporting
             standard_input_tokens = tokens_metadata.prompt_token_count
-            cached_input_tokens = 0  # Google doesn't report cached tokens separately
             output_tokens = tokens_metadata.candidates_token_count
+            
+            # Calculate any additional tokens (thinking, tool use, etc.)
+            additional_tokens = total_tokens_used - (standard_input_tokens + output_tokens)
+            
+            # Check for specific token types we might be missing
+            thinking_tokens = getattr(tokens_metadata, 'thoughts_token_count', 0) or 0
+            tool_use_tokens = getattr(tokens_metadata, 'tool_use_prompt_token_count', 0) or 0
+            cached_content_tokens = getattr(tokens_metadata, 'cached_content_token_count', 0) or 0
+            
+            # Log detailed token breakdown for transparency
+            logging.info(f"Google token breakdown:")
+            logging.info(f"  - Prompt tokens: {standard_input_tokens}")
+            logging.info(f"  - Output tokens: {output_tokens}")
+            logging.info(f"  - Thinking tokens: {thinking_tokens}")
+            logging.info(f"  - Tool use tokens: {tool_use_tokens}")
+            logging.info(f"  - Cached content tokens: {cached_content_tokens}")
+            logging.info(f"  - Additional tokens: {additional_tokens}")
+            logging.info(f"  - TOTAL (authoritative): {total_tokens_used}")
+            
+            print(f"   📊 Google token details:")
+            print(f"       Prompt: {standard_input_tokens}, Output: {output_tokens}")
+            if thinking_tokens > 0:
+                print(f"       Thinking: {thinking_tokens}")
+            if tool_use_tokens > 0:
+                print(f"       Tool use: {tool_use_tokens}")
+            if cached_content_tokens > 0:
+                print(f"       Cached: {cached_content_tokens}")
+            if additional_tokens > 0:
+                print(f"       Other: {additional_tokens}")
+            print(f"       TOTAL: {total_tokens_used}")
+            
+            # For our return values, we need to split the total appropriately
+            # Google's total_token_count includes cached content, so we need to be careful not to double-count
+            
+            # Cached content tokens are already included in total_token_count but reported separately
+            cached_input_tokens = cached_content_tokens or 0
+            
+            # The non-cached prompt tokens
+            non_cached_prompt_tokens = standard_input_tokens - cached_input_tokens
+            
+            # Add thinking tokens to output (they're generated during response creation)
+            adjusted_output_tokens = output_tokens + thinking_tokens
+            
+            # Add tool use tokens to non-cached input
+            adjusted_input_tokens = non_cached_prompt_tokens + (tool_use_tokens or 0)
+            
+            # Verify our adjusted totals match the authoritative total
+            calculated_total = adjusted_input_tokens + cached_input_tokens + adjusted_output_tokens
+            if abs(calculated_total - total_tokens_used) > 5:  # Allow small rounding differences
+                logging.warning(f"Token calculation mismatch: calculated {calculated_total} vs actual {total_tokens_used}")
+                print(f"   ⚠️ Token calculation mismatch: {calculated_total} vs {total_tokens_used}")
+                
+                # If there's still a significant mismatch, distribute the difference
+                difference = total_tokens_used - calculated_total
+                adjusted_output_tokens += difference
+                
+                # Recalculate
+                calculated_total = adjusted_input_tokens + cached_input_tokens + adjusted_output_tokens
+                print(f"   🔧 Adjusted: {calculated_total} (added {difference} to output)")
+            
+            # Update our variables for the rest of the function
+            standard_input_tokens = adjusted_input_tokens
+            cached_input_tokens = cached_input_tokens
+            output_tokens = adjusted_output_tokens
             
             # Detect web search usage by checking if tools were used
             web_search_used = False
@@ -862,20 +938,20 @@ def calculate_cost(
 def count_tokens_google(contents: List, model_name: str) -> int:
     """
     Count tokens for Google models using their count_tokens API.
+    NOTE: Files must be uploaded to Google before token counting can occur.
     
     Args:
-        contents: List of content (text and file objects)
+        contents: List of content (text and file objects or paths)
         model_name: Google model name
         
     Returns:
-        Estimated token count
+        Actual token count from Google's API
     """
     try:
         # Ensure client is available
         client = ensure_google_client()
         
-        # For files that haven't been uploaded yet, we need to estimate
-        estimated_tokens = 0
+        # Process contents and ensure all files are uploaded
         actual_contents = []
         
         for item in contents:
@@ -886,61 +962,33 @@ def count_tokens_google(contents: List, model_name: str) -> int:
                 # Already uploaded file object - can count directly
                 actual_contents.append(item)
             elif isinstance(item, Path):
-                # File path - estimate tokens based on file size
+                # File path - must upload first before counting
                 if item.exists():
-                    file_size_bytes = item.stat().st_size
-                    # More accurate estimate for different file types
-                    if item.suffix.lower() == '.pdf':
-                        # PDFs: estimate based on typical text density
-                        # A 530KB PDF (9 pages) should be around 100k+ tokens
-                        # Use a more realistic ratio: ~1 token per 3-4 bytes for PDF content
-                        estimated_tokens += file_size_bytes // 3
-                    else:
-                        # Text files: ~1 token per 4 bytes
-                        estimated_tokens += file_size_bytes // 4
+                    logging.info(f"Uploading {item.name} to Google for token counting")
+                    # Upload file and get the file object for token counting
+                    uploaded_file = client.files.upload(
+                        file=item,
+                        config=dict(mime_type='application/pdf')
+                    )
+                    actual_contents.append(uploaded_file)
+                else:
+                    raise FileNotFoundError(f"File not found: {item}")
+            else:
+                raise ValueError(f"Unsupported content type for token counting: {type(item)}")
         
-        # Count tokens for actual content if we have any
-        if actual_contents:
-            try:
-                response = client.models.count_tokens(
-                    model=model_name,
-                    contents=actual_contents
-                )
-                return response.total_tokens + estimated_tokens
-            except Exception as count_error:
-                logging.warning(f"Failed to count tokens via API: {count_error}")
-                # Fall through to manual estimation
+        # Use Google's count_tokens API with uploaded files
+        response = client.models.count_tokens(
+            model=model_name,
+            contents=actual_contents
+        )
         
-        # If we only have estimated tokens or API failed, return the estimate
-        if estimated_tokens > 0:
-            return estimated_tokens
-        else:
-            # Last resort: estimate from text content
-            total_chars = 0
-            for item in contents:
-                if isinstance(item, str):
-                    total_chars += len(item)
-            return max(total_chars // 4, 100)  # At least 100 tokens
+        logging.info(f"Google token count for {model_name}: {response.total_tokens}")
+        return response.total_tokens
             
     except Exception as e:
-        logging.warning(f"Error counting tokens for Google model {model_name}: {e}")
-        # Provide a more reasonable estimate based on file sizes if we have them
-        total_estimated = 0
-        for item in contents:
-            if isinstance(item, str):
-                # Rough estimate: ~1 token per 4 characters for text
-                total_estimated += len(item) // 4
-            elif isinstance(item, Path) and item.exists():
-                # Rough estimate based on file type
-                file_size_bytes = item.stat().st_size
-                if item.suffix.lower() == '.pdf':
-                    # More aggressive estimate for PDFs - they contain a lot of text
-                    total_estimated += file_size_bytes // 3  # ~1 token per 3 bytes
-                else:
-                    total_estimated += file_size_bytes // 4
-        
-        # If we still have no estimate, return a reasonable minimum
-        return max(total_estimated, 100)
+        logging.error(f"Error counting tokens for Google model {model_name}: {e}")
+        # DO NOT FALLBACK - fail fast instead
+        raise Exception(f"Token counting failed for Google model {model_name}: {e}") from e
 
 def get_context_limit_google(model_name: str) -> int:
     """

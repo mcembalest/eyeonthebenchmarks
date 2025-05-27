@@ -53,7 +53,9 @@ def ensure_anthropic_client():
 AVAILABLE_MODELS = [
     "claude-3-7-sonnet-20250219",
     "claude-sonnet-4-20250514",
+    "claude-sonnet-4-20250514-thinking",
     "claude-opus-4-20250514",
+    "claude-opus-4-20250514-thinking",
     "claude-3-5-haiku-20241022"
 ]
 
@@ -64,7 +66,19 @@ COSTS = {
         "cached_read": 1.50,
         "output": 75.00
     },
+    "claude-opus-4-20250514-thinking": {
+        "input": 15.00,
+        "cached_write": 18.75,
+        "cached_read": 1.50,
+        "output": 75.00
+    },
     "claude-sonnet-4-20250514": {
+        "input": 3.00,
+        "cached_write": 3.75,
+        "cached_read": 0.30,
+        "output": 15.00
+    },
+    "claude-sonnet-4-20250514-thinking": {
         "input": 3.00,
         "cached_write": 3.75,
         "cached_read": 0.30,
@@ -558,6 +572,16 @@ def anthropic_upload(pdf_path: Path) -> str:
         logging.error(error_msg)
         raise
 
+def is_thinking_model(model_name: str) -> bool:
+    """Check if this is a thinking variant of a model."""
+    return model_name.endswith("-thinking")
+
+def get_base_model_name(model_name: str) -> str:
+    """Get the base model name (without -thinking suffix)."""
+    if is_thinking_model(model_name):
+        return model_name.replace("-thinking", "")
+    return model_name
+
 def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "claude-3-5-haiku-20241022", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, bool, str]:
     """
     Send a query to an Anthropic Claude model with multiple file attachments.
@@ -565,7 +589,7 @@ def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_nam
     Args:
         file_paths: List of paths to files to include
         prompt_text: The question to ask the model
-        model_name: The model to use (e.g., "claude-3-5-haiku-20241022")
+        model_name: The model to use (e.g., "claude-3-5-haiku-20241022" or "claude-sonnet-4-20250514-thinking")
         db_path: Path to the database directory
         web_search: Whether to enable web search for this prompt
         
@@ -581,13 +605,26 @@ def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_nam
     # Build content with all files and prompt
     content = []
     
-    # Add files
+    # Add files using base64 encoding (Anthropic's format)
     for file_path in file_paths:
-        file_id = ensure_file_uploaded(file_path, db_path)
-        content.append({
-            "type": "file",
-            "id": file_id
-        })
+        # Read file and encode as base64
+        import base64
+        try:
+            with open(file_path, "rb") as pdf_file:
+                pdf_base64 = base64.standard_b64encode(pdf_file.read()).decode("utf-8")
+            
+            content.append({
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": pdf_base64
+                }
+            })
+            logging.info(f"Added {file_path.name} as base64-encoded document")
+        except Exception as e:
+            logging.error(f"Error encoding file {file_path}: {e}")
+            raise Exception(f"Failed to encode file {file_path}: {e}")
     
     # Add prompt text
     content.append({
@@ -610,11 +647,17 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             - web_search_used (bool): Whether web search was actually used
             - web_search_sources (str): Raw web search data as string
     """
+    # Detect if this is a thinking model
+    thinking_enabled = is_thinking_model(model_name)
+    base_model_name = get_base_model_name(model_name)
+    
     # Add direct console output for high visibility
     print(f"\n🔄 ANTHROPIC API CALL STARTING - MODEL: {model_name}")
+    if thinking_enabled:
+        print(f"   🧠 Thinking enabled (base model: {base_model_name})")
     
     # Count files in content
-    file_count = sum(1 for item in content if item.get("type") == "file")
+    file_count = sum(1 for item in content if item.get("type") in ["file", "document"])
     text_blocks = [item for item in content if item.get("type") == "text"]
     prompt_preview = text_blocks[0]["text"][:50] + "..." if text_blocks else "No text"
     
@@ -623,7 +666,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
         print("   Web search enabled")
     
     logging.info(f"===== ANTHROPIC_ASK_INTERNAL FUNCTION CALLED =====")
-    logging.info(f"Arguments: content_blocks={len(content)}, model_name={model_name}, web_search={web_search}")
+    logging.info(f"Arguments: content_blocks={len(content)}, model_name={model_name}, thinking_enabled={thinking_enabled}, web_search={web_search}")
     
     try:
         import os
@@ -657,12 +700,21 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
                 "max_uses": 5
             }]
         
-        # Estimate token count for input
+        # Estimate token count for input (use base model name for API calls)
         try:
-            token_count_response = client.messages.count_tokens(
-                model=model_name,
-                messages=messages
-            )
+            token_count_params = {
+                "model": base_model_name,
+                "messages": messages
+            }
+            
+            # Add thinking configuration for token counting if thinking is enabled
+            if thinking_enabled:
+                token_count_params["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": 4096  # Match API call budget
+                }
+            
+            token_count_response = client.messages.count_tokens(**token_count_params)
             input_token_count = token_count_response.input_tokens
             logging.info(f"Estimated input tokens: {input_token_count}")
         except Exception as e:
@@ -686,13 +738,23 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
         
         # Send message to Anthropic
         try:
-            # Prepare API call parameters
+            # Prepare API call parameters (use base model name for API)
             api_params = {
-                "model": model_name,
-                "max_tokens": 2048,
-                "temperature": 0.2,
+                "model": base_model_name,  # Use base model name for API call
+                "max_tokens": 8192 if thinking_enabled else 2048,  # Higher max_tokens for thinking models
+                "temperature": 1.0 if thinking_enabled else 0.2,  # Anthropic requires temperature=1 for thinking
                 "messages": messages
             }
+            
+            # Add thinking configuration if thinking is enabled
+            if thinking_enabled:
+                api_params["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": 4096  # Must be less than max_tokens (8192)
+                }
+                logging.info(f"Thinking enabled with 4096 thinking budget, 8192 max_tokens, and temperature=1.0")
+            else:
+                logging.info(f"Regular model with 2048 max_tokens and temperature=0.2")
             
             # Only add tools if web search is enabled
             if web_search and tools:
@@ -700,8 +762,9 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             
             response = client.messages.create(**api_params)
             
-            # Extract text response from Claude
+            # Extract text response from Claude and track thinking tokens
             answer = ""
+            thinking_tokens = 0
             web_search_used = False
             web_search_queries = 0
             web_search_sources = ""
@@ -712,6 +775,13 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
                         answer += content_block.text
                     elif hasattr(content_block, 'type') and content_block.type == 'text':
                         answer += content_block.text
+                    elif hasattr(content_block, 'type') and content_block.type == 'thinking':
+                        # Found thinking content - extract thinking tokens
+                        thinking_text = getattr(content_block, 'thinking', '')
+                        if thinking_text:
+                            # Rough estimate: ~1 token per 4 characters for thinking content
+                            thinking_tokens += len(thinking_text) // 4
+                            logging.info(f"Found thinking block with ~{len(thinking_text) // 4} estimated tokens")
                     elif hasattr(content_block, 'type') and content_block.type == 'tool_use':
                         # Check if this is a web search tool use
                         if hasattr(content_block, 'name') and 'web_search' in content_block.name:
@@ -761,6 +831,10 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             print(f"\n✅ ANTHROPIC API RESPONSE RECEIVED AFTER {elapsed_time:.2f} SECONDS")
             print(f"   Model: {model_name}")
             print(f"   Tokens - Input: {input_tokens}, Output: {output_tokens}")
+            if thinking_enabled and thinking_tokens > 0:
+                print(f"   🧠 Thinking tokens detected: {thinking_tokens} (included in output)")
+            elif thinking_enabled:
+                print(f"   🧠 Thinking enabled but no thinking tokens detected")
             
             # Return the results
             return answer, input_tokens, 0, output_tokens, web_search_used, web_search_sources
@@ -888,17 +962,22 @@ def calculate_cost(
 def count_tokens_anthropic(content: List[Dict], model_name: str) -> int:
     """
     Count tokens for Anthropic models using their count_tokens API.
+    Note: Anthropic's token counting API does NOT support file sources, only base64.
     
     Args:
         content: List of content blocks (text and documents)
-        model_name: Anthropic model name
+        model_name: Anthropic model name (may include -thinking suffix)
         
     Returns:
-        Estimated token count
+        Actual token count from Anthropic's API
     """
     try:
         # Ensure client is available
         client = ensure_anthropic_client()
+        
+        # Handle thinking models
+        thinking_enabled = is_thinking_model(model_name)
+        base_model_name = get_base_model_name(model_name)
         
         # Convert content to Anthropic format for token counting
         anthropic_content = []
@@ -909,51 +988,68 @@ def count_tokens_anthropic(content: List[Dict], model_name: str) -> int:
                     "type": "text",
                     "text": item.get("text", "")
                 })
+            elif item.get("type") == "document":
+                # Document with base64 source - already in correct format
+                anthropic_content.append(item)
             elif item.get("type") == "file":
-                # For files, we'll need to estimate since we can't count tokens
-                # for uploaded files without making the actual API call
-                # Use file size as rough estimate: ~1 token per 4 bytes
-                file_path = Path(item.get("file_path", ""))
-                if file_path.exists():
-                    file_size_bytes = file_path.stat().st_size
-                    estimated_tokens = file_size_bytes // 4
-                    # Add to a text block for counting purposes
-                    anthropic_content.append({
-                        "type": "text", 
-                        "text": "x" * estimated_tokens  # Placeholder text for token estimation
-                    })
+                # For token counting, we MUST use base64 (file sources not supported)
+                file_path = item.get("file_path")
+                if file_path:
+                    file_path_obj = Path(file_path)
+                    if file_path_obj.exists():
+                        # Read file and encode as base64 for token counting
+                        import base64
+                        with open(file_path_obj, "rb") as f:
+                            pdf_base64 = base64.standard_b64encode(f.read()).decode("utf-8")
+                        
+                        anthropic_content.append({
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": pdf_base64
+                            }
+                        })
+                    else:
+                        raise FileNotFoundError(f"File not found: {file_path}")
+                elif item.get("id"):
+                    # File ID provided but we can't use it for token counting
+                    # We need the original file path to read and encode as base64
+                    raise ValueError("Token counting requires file_path, not just file_id. Anthropic's count_tokens API doesn't support file sources.")
+                else:
+                    raise ValueError("File content missing file_path")
+            else:
+                raise ValueError(f"Unsupported content type: {item.get('type')}")
         
         if not anthropic_content:
             return 0
             
-        # Use Anthropic's count_tokens API
-        response = client.messages.count_tokens(
-            model=model_name,
-            messages=[{
+        # Use Anthropic's count_tokens API with base64 content
+        token_count_params = {
+            "model": base_model_name,  # Use base model name for API call
+            "messages": [{
                 "role": "user",
                 "content": anthropic_content
             }]
-        )
+        }
         
+        # Add thinking configuration if thinking is enabled
+        if thinking_enabled:
+            token_count_params["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": 4096  # Match API call budget
+            }
+            logging.info(f"Token counting with thinking enabled for {model_name}")
+        
+        response = client.messages.count_tokens(**token_count_params)
+        
+        logging.info(f"Anthropic token count for {model_name}: {response.input_tokens}")
         return response.input_tokens
         
     except Exception as e:
-        logging.warning(f"Error counting tokens for Anthropic model {model_name}: {e}")
-        # Provide a more reasonable estimate based on file sizes if we have them
-        total_estimated = 0
-        for item in content:
-            if item.get("type") == "text":
-                # Rough estimate: ~1 token per 4 characters for text
-                total_estimated += len(item.get("text", "")) // 4
-            elif item.get("type") == "file":
-                # Rough estimate: ~1 token per 4 bytes for PDF text content
-                file_path = Path(item.get("file_path", ""))
-                if file_path.exists():
-                    file_size_bytes = file_path.stat().st_size
-                    total_estimated += file_size_bytes // 4
-        
-        # If we still have no estimate, return a conservative fallback
-        return max(total_estimated, 10000)  # More reasonable than 150k
+        logging.error(f"Error counting tokens for Anthropic model {model_name}: {e}")
+        # DO NOT FALLBACK - fail fast instead
+        raise Exception(f"Token counting failed for Anthropic model {model_name}: {e}") from e
 
 def get_context_limit_anthropic(model_name: str) -> int:
     """

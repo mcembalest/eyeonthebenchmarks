@@ -322,79 +322,83 @@ class Utils {
     
     const name = modelName.toLowerCase();
     
+    // Handle thinking variants - use base model image
+    const isThinking = name.endsWith('-thinking');
+    const baseName = isThinking ? name.replace('-thinking', '') : name;
+    
     // Handle OpenAI models - be very specific about exact matches
     // Order matters: check more specific patterns first
-    if (name.includes('gpt-4.1-mini')) {
+    if (baseName.includes('gpt-4.1-mini')) {
       return 'assets/gpt-4.1-mini.png';
     }
-    if (name.includes('gpt-4.1')) {
+    if (baseName.includes('gpt-4.1')) {
       return 'assets/gpt-4.1.png';
     }
-    if (name.includes('gpt-4o-mini')) {
+    if (baseName.includes('gpt-4o-mini')) {
       return 'assets/gpt-4o-mini.png';
     }
-    if (name.includes('gpt-4o')) {
+    if (baseName.includes('gpt-4o')) {
       return 'assets/gpt-4o.png';
     }
-    if (name.includes('gpt-4-turbo')) {
+    if (baseName.includes('gpt-4-turbo')) {
       return 'assets/gpt-4-turbo.png';
     }
     // Note: We don't have a standalone gpt-4 model in this project
-    if (name.includes('gpt-3.5')) {
+    if (baseName.includes('gpt-3.5')) {
       return 'assets/gpt-3.5.png';
     }
     
     // Handle o-series models (separate from gpt-4o)
-    if (name === 'o3' || name.includes('o3-mini')) {
+    if (baseName === 'o3' || baseName.includes('o3-mini')) {
       return 'assets/o3.png';
     }
-    if (name === 'o4-mini' || name.includes('o4-mini')) {
+    if (baseName === 'o4-mini' || baseName.includes('o4-mini')) {
       return 'assets/o4-mini.png';
     }
-    if (name.includes('o1')) {
+    if (baseName.includes('o1')) {
       return 'assets/o1.png';
     }
     
     // Handle Claude models - match exact API names with date suffixes
-    if (name.includes('claude-opus-4')) {
+    if (baseName.includes('claude-opus-4')) {
       return 'assets/claude-opus-4.png';
     }
-    if (name.includes('claude-sonnet-4')) {
+    if (baseName.includes('claude-sonnet-4')) {
       return 'assets/claude-sonnet-4.png';
     }
-    if (name.includes('claude-3-7-sonnet')) {
+    if (baseName.includes('claude-3-7-sonnet')) {
       return 'assets/claude-3.7-sonnet.png';
     }
-    if (name.includes('claude-3-5-haiku')) {
+    if (baseName.includes('claude-3-5-haiku')) {
       return 'assets/claude-3.5-haiku.png';
     }
-    if (name.includes('claude-3.5') || name.includes('claude-3-5')) {
+    if (baseName.includes('claude-3.5') || baseName.includes('claude-3-5')) {
       return 'assets/claude-3.5.png';
     }
-    if (name.includes('claude-3.7') || name.includes('claude-3-7')) {
+    if (baseName.includes('claude-3.7') || baseName.includes('claude-3-7')) {
       return 'assets/claude-3.7-sonnet.png';
     }
-    if (name.includes('claude-3')) {
+    if (baseName.includes('claude-3')) {
       return 'assets/claude-3.png';
     }
-    if (name.includes('claude')) {
+    if (baseName.includes('claude')) {
       return 'assets/claude.png';
     }
     
     // Handle Gemini models - match exact API names with preview suffixes
-    if (name.includes('gemini-2.5-flash')) {
+    if (baseName.includes('gemini-2.5-flash')) {
       return 'assets/gemini-2.5-flash.png';
     }
-    if (name.includes('gemini-2.5-pro')) {
+    if (baseName.includes('gemini-2.5-pro')) {
       return 'assets/gemini-2.5-pro.png';
     }
-    if (name.includes('gemini-2.5')) {
+    if (baseName.includes('gemini-2.5')) {
       return 'assets/gemini-2.5.png';
     }
-    if (name.includes('gemini-1.5')) {
+    if (baseName.includes('gemini-1.5')) {
       return 'assets/gemini-1.5.png';
     }
-    if (name.includes('gemini')) {
+    if (baseName.includes('gemini')) {
       return 'assets/gemini.png';
     }
     
@@ -411,13 +415,17 @@ class Utils {
     
     const name = modelName.toLowerCase();
     
-    if (name.includes('gpt') || name.includes('o1') || name.includes('o3') || name.includes('o4')) {
+    // Handle thinking variants - use base model for provider detection
+    const isThinking = name.endsWith('-thinking');
+    const baseName = isThinking ? name.replace('-thinking', '') : name;
+    
+    if (baseName.includes('gpt') || baseName.includes('o1') || baseName.includes('o3') || baseName.includes('o4')) {
       return 'openai';
     }
-    if (name.includes('claude')) {
+    if (baseName.includes('claude')) {
       return 'anthropic';
     }
-    if (name.includes('gemini')) {
+    if (baseName.includes('gemini')) {
       return 'google';
     }
     
@@ -484,83 +492,88 @@ class Utils {
     
     const name = modelId.toLowerCase();
     
+    // Handle thinking variants first
+    const isThinking = name.endsWith('-thinking');
+    const baseName = isThinking ? name.replace('-thinking', '') : name;
+    
     // Handle OpenAI models with proper naming - order matters!
     // Check more specific patterns first
-    if (name.includes('gpt-4.1-mini')) {
-      return 'GPT-4.1 Mini';
+    if (baseName.includes('gpt-4.1-mini')) {
+      return isThinking ? 'GPT-4.1 Mini (+ Thinking)' : 'GPT-4.1 Mini';
     }
-    if (name.includes('gpt-4.1')) {
-      return 'GPT-4.1';
+    if (baseName.includes('gpt-4.1')) {
+      return isThinking ? 'GPT-4.1 (+ Thinking)' : 'GPT-4.1';
     }
-    if (name.includes('gpt-4o-mini')) {
-      return 'GPT-4o Mini'; // Four-oh Mini
+    if (baseName.includes('gpt-4o-mini')) {
+      return isThinking ? 'GPT-4o Mini (+ Thinking)' : 'GPT-4o Mini'; // Four-oh Mini
     }
-    if (name.includes('gpt-4o')) {
-      return 'GPT-4o'; // Four-oh
+    if (baseName.includes('gpt-4o')) {
+      return isThinking ? 'GPT-4o (+ Thinking)' : 'GPT-4o'; // Four-oh
     }
-    if (name.includes('gpt-4-turbo')) {
-      return 'GPT-4 Turbo';
+    if (baseName.includes('gpt-4-turbo')) {
+      return isThinking ? 'GPT-4 Turbo (+ Thinking)' : 'GPT-4 Turbo';
     }
     // Note: We don't have a standalone gpt-4 model in this project
-    if (name.includes('gpt-3.5')) {
-      return 'GPT-3.5';
+    if (baseName.includes('gpt-3.5')) {
+      return isThinking ? 'GPT-3.5 (+ Thinking)' : 'GPT-3.5';
     }
     
     // Handle o-series models (different from gpt-4o)
-    if (name === 'o3' || name === 'o3-mini') {
-      return name.toUpperCase(); // O3, O3-MINI
+    if (baseName === 'o3' || baseName === 'o3-mini') {
+      return isThinking ? `${baseName.toUpperCase()} (+ Thinking)` : baseName.toUpperCase(); // O3, O3-MINI
     }
-    if (name === 'o4-mini') {
-      return 'O4 Mini';
+    if (baseName === 'o4-mini') {
+      return isThinking ? 'O4 Mini (+ Thinking)' : 'O4 Mini';
     }
-    if (name === 'o1' || name === 'o1-mini' || name === 'o1-preview') {
-      return name.toUpperCase().replace('-', ' '); // O1, O1 MINI, O1 PREVIEW
+    if (baseName === 'o1' || baseName === 'o1-mini' || baseName === 'o1-preview') {
+      const formatted = baseName.toUpperCase().replace('-', ' '); // O1, O1 MINI, O1 PREVIEW
+      return isThinking ? `${formatted} (+ Thinking)` : formatted;
     }
     
     // Handle Claude models
-    if (name.includes('claude-3.5-sonnet') || name.includes('claude-3-5-sonnet')) {
-      return 'Claude 3.5 Sonnet';
+    if (baseName.includes('claude-3.5-sonnet') || baseName.includes('claude-3-5-sonnet')) {
+      return isThinking ? 'Claude 3.5 Sonnet (+ Thinking)' : 'Claude 3.5 Sonnet';
     }
-    if (name.includes('claude-3.5-haiku') || name.includes('claude-3-5-haiku')) {
-      return 'Claude 3.5 Haiku';
+    if (baseName.includes('claude-3.5-haiku') || baseName.includes('claude-3-5-haiku')) {
+      return isThinking ? 'Claude 3.5 Haiku (+ Thinking)' : 'Claude 3.5 Haiku';
     }
-    if (name.includes('claude-3.7-sonnet') || name.includes('claude-3-7-sonnet')) {
-      return 'Claude 3.7 Sonnet';
+    if (baseName.includes('claude-3.7-sonnet') || baseName.includes('claude-3-7-sonnet')) {
+      return isThinking ? 'Claude 3.7 Sonnet (+ Thinking)' : 'Claude 3.7 Sonnet';
     }
-    if (name.includes('claude-sonnet-4')) {
-      return 'Claude Sonnet 4';
+    if (baseName.includes('claude-sonnet-4')) {
+      return isThinking ? 'Claude Sonnet 4 (+ Thinking)' : 'Claude Sonnet 4';
     }
-    if (name.includes('claude-opus-4')) {
-      return 'Claude Opus 4';
+    if (baseName.includes('claude-opus-4')) {
+      return isThinking ? 'Claude Opus 4 (+ Thinking)' : 'Claude Opus 4';
     }
-    if (name.includes('claude-3-sonnet')) {
-      return 'Claude 3 Sonnet';
+    if (baseName.includes('claude-3-sonnet')) {
+      return isThinking ? 'Claude 3 Sonnet (+ Thinking)' : 'Claude 3 Sonnet';
     }
-    if (name.includes('claude-3-haiku')) {
-      return 'Claude 3 Haiku';
+    if (baseName.includes('claude-3-haiku')) {
+      return isThinking ? 'Claude 3 Haiku (+ Thinking)' : 'Claude 3 Haiku';
     }
-    if (name.includes('claude-3-opus')) {
-      return 'Claude 3 Opus';
+    if (baseName.includes('claude-3-opus')) {
+      return isThinking ? 'Claude 3 Opus (+ Thinking)' : 'Claude 3 Opus';
     }
     
     // Handle Gemini models
-    if (name.includes('gemini-2.5-flash')) {
-      return 'Gemini 2.5 Flash';
+    if (baseName.includes('gemini-2.5-flash')) {
+      return isThinking ? 'Gemini 2.5 Flash (+ Thinking)' : 'Gemini 2.5 Flash';
     }
-    if (name.includes('gemini-2.5-pro')) {
-      return 'Gemini 2.5 Pro';
+    if (baseName.includes('gemini-2.5-pro')) {
+      return isThinking ? 'Gemini 2.5 Pro (+ Thinking)' : 'Gemini 2.5 Pro';
     }
-    if (name.includes('gemini-1.5-pro')) {
-      return 'Gemini 1.5 Pro';
+    if (baseName.includes('gemini-1.5-pro')) {
+      return isThinking ? 'Gemini 1.5 Pro (+ Thinking)' : 'Gemini 1.5 Pro';
     }
-    if (name.includes('gemini-1.5-flash')) {
-      return 'Gemini 1.5 Flash';
+    if (baseName.includes('gemini-1.5-flash')) {
+      return isThinking ? 'Gemini 1.5 Flash (+ Thinking)' : 'Gemini 1.5 Flash';
     }
-    if (name.includes('gemini-pro')) {
-      return 'Gemini Pro';
+    if (baseName.includes('gemini-pro')) {
+      return isThinking ? 'Gemini Pro (+ Thinking)' : 'Gemini Pro';
     }
-    if (name.includes('gemini-flash')) {
-      return 'Gemini Flash';
+    if (baseName.includes('gemini-flash')) {
+      return isThinking ? 'Gemini Flash (+ Thinking)' : 'Gemini Flash';
     }
     
     // Fallback: capitalize first letter of each word
