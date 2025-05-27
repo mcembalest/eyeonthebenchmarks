@@ -161,10 +161,16 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name, web_
                     standard_input_tokens=prompt_result["standard_input_tokens"],
                     cached_input_tokens=prompt_result["cached_input_tokens"],
                     output_tokens=prompt_result["output_tokens"],
+                    thinking_tokens=prompt_result.get("thinking_tokens", 0),
+                    reasoning_tokens=prompt_result.get("reasoning_tokens", 0),
                     input_cost=prompt_result["input_cost"],
                     cached_cost=prompt_result["cached_cost"],
                     output_cost=prompt_result["output_cost"],
-                    total_cost=prompt_result["total_cost"]
+                    thinking_cost=prompt_result.get("thinking_cost", 0.0),
+                    reasoning_cost=prompt_result.get("reasoning_cost", 0.0),
+                    total_cost=prompt_result["total_cost"],
+                    web_search_used=prompt_result.get("web_search_used", False),
+                    web_search_sources=prompt_result.get("web_search_sources", "")
                 )
                 
                 if prompt_id:

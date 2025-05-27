@@ -52,6 +52,7 @@ def ensure_anthropic_client():
 
 AVAILABLE_MODELS = [
     "claude-3-7-sonnet-20250219",
+    "claude-3-7-sonnet-20250219-thinking",
     "claude-sonnet-4-20250514",
     "claude-sonnet-4-20250514-thinking",
     "claude-opus-4-20250514",
@@ -85,6 +86,12 @@ COSTS = {
         "output": 15.00
     },
     "claude-3-7-sonnet-20250219": {
+        "input": 3.00,
+        "cached_write": 3.75,
+        "cached_read": 0.30,
+        "output": 15.00
+    },
+    "claude-3-7-sonnet-20250219-thinking": {
         "input": 3.00,
         "cached_write": 3.75,
         "cached_read": 0.30,
@@ -582,14 +589,14 @@ def get_base_model_name(model_name: str) -> str:
         return model_name.replace("-thinking", "")
     return model_name
 
-def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "claude-3-5-haiku-20241022", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, bool, str]:
+def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "claude-3-5-haiku-20241022", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, int, bool, str]:
     """
     Send a query to an Anthropic Claude model with multiple file attachments.
     
     Args:
         file_paths: List of paths to files to include
         prompt_text: The question to ask the model
-        model_name: The model to use (e.g., "claude-3-5-haiku-20241022" or "claude-sonnet-4-20250514-thinking")
+        model_name: The model to use (e.g., "claude-3-5-haiku-20241022")
         db_path: Path to the database directory
         web_search: Whether to enable web search for this prompt
         
@@ -597,34 +604,44 @@ def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_nam
         A tuple containing:
             - answer (str): The model's text response
             - standard_input_tokens (int): Tokens used in the input
-            - cached_input_tokens (int): Cached tokens used
-            - output_tokens (int): Tokens used in the output
+            - cached_input_tokens (int): Cached tokens used (always 0 for Anthropic for now)
+            - output_tokens (int): Tokens used in the output (includes thinking tokens for billing)
+            - thinking_tokens (int): Thinking tokens used (for tracking, included in output_tokens)
             - web_search_used (bool): Whether web search was actually used
             - web_search_sources (str): Raw web search data as string
     """
     # Build content with all files and prompt
     content = []
     
-    # Add files using base64 encoding (Anthropic's format)
-    for file_path in file_paths:
-        # Read file and encode as base64
-        import base64
-        try:
-            with open(file_path, "rb") as pdf_file:
-                pdf_base64 = base64.standard_b64encode(pdf_file.read()).decode("utf-8")
-            
-            content.append({
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": "application/pdf",
-                    "data": pdf_base64
-                }
-            })
-            logging.info(f"Added {file_path.name} as base64-encoded document")
-        except Exception as e:
-            logging.error(f"Error encoding file {file_path}: {e}")
-            raise Exception(f"Failed to encode file {file_path}: {e}")
+    # Only add files if web search is not enabled or if the prompt specifically references document content
+    # This prevents accidentally including old files when doing web search-only queries
+    should_include_files = not web_search or any(keyword in prompt_text.lower() for keyword in [
+        'document', 'pdf', 'file', 'report', 'analysis', 'in the document', 'according to the document'
+    ])
+    
+    if should_include_files and file_paths:
+        # Add files using base64 encoding (Anthropic's format)
+        for file_path in file_paths:
+            # Read file and encode as base64
+            import base64
+            try:
+                with open(file_path, "rb") as pdf_file:
+                    pdf_base64 = base64.standard_b64encode(pdf_file.read()).decode("utf-8")
+                
+                content.append({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": pdf_base64
+                    }
+                })
+                logging.info(f"Added {file_path.name} as base64-encoded document")
+            except Exception as e:
+                logging.error(f"Error encoding file {file_path}: {e}")
+                raise Exception(f"Failed to encode file {file_path}: {e}")
+    elif file_paths and web_search:
+        logging.info(f"Skipping {len(file_paths)} files because web search is enabled and prompt doesn't reference documents")
     
     # Add prompt text
     content.append({
@@ -762,12 +779,15 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             
             response = client.messages.create(**api_params)
             
-            # Extract text response from Claude and track thinking tokens
+            # Extract text response from Claude - DON'T manually count thinking tokens
             answer = ""
-            thinking_tokens = 0
             web_search_used = False
             web_search_queries = 0
             web_search_sources = ""
+            
+            # Track thinking for informational purposes only (not for billing)
+            thinking_content_found = False
+            summarized_thinking_chars = 0
             
             if hasattr(response, 'content') and response.content:
                 for content_block in response.content:
@@ -776,12 +796,16 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
                     elif hasattr(content_block, 'type') and content_block.type == 'text':
                         answer += content_block.text
                     elif hasattr(content_block, 'type') and content_block.type == 'thinking':
-                        # Found thinking content - extract thinking tokens
+                        # Found thinking content - this is summarized for Claude 4, full for Claude 3.7
+                        thinking_content_found = True
                         thinking_text = getattr(content_block, 'thinking', '')
                         if thinking_text:
-                            # Rough estimate: ~1 token per 4 characters for thinking content
-                            thinking_tokens += len(thinking_text) // 4
-                            logging.info(f"Found thinking block with ~{len(thinking_text) // 4} estimated tokens")
+                            summarized_thinking_chars += len(thinking_text)
+                            logging.info(f"Found thinking block with {len(thinking_text)} characters (summarized for Claude 4, full for Claude 3.7)")
+                    elif hasattr(content_block, 'type') and content_block.type == 'redacted_thinking':
+                        # Found redacted thinking content
+                        thinking_content_found = True
+                        logging.info(f"Found redacted thinking block (encrypted for safety)")
                     elif hasattr(content_block, 'type') and content_block.type == 'tool_use':
                         # Check if this is a web search tool use
                         if hasattr(content_block, 'name') and 'web_search' in content_block.name:
@@ -825,19 +849,36 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             input_tokens = getattr(usage, 'input_tokens', input_token_count)
             output_tokens = getattr(usage, 'output_tokens', len(answer) // 4)  # Rough estimate if not available
             
+            # Estimate thinking tokens from thinking content
+            thinking_tokens_estimated = 0
+            if thinking_content_found and summarized_thinking_chars > 0:
+                # For Claude 4: The visible thinking is summarized, but we're billed for full thinking
+                # For Claude 3.7: The visible thinking is the full thinking
+                if "claude-4" in model_name or "sonnet-4" in model_name or "opus-4" in model_name:
+                    # Claude 4: Summarized thinking, estimate full thinking tokens
+                    # Assume summarization ratio of 1:3 to 1:5 (summary:full)
+                    thinking_tokens_estimated = (summarized_thinking_chars // 4) * 4  # Conservative estimate
+                else:
+                    # Claude 3.7: Full thinking shown, convert chars to tokens
+                    thinking_tokens_estimated = summarized_thinking_chars // 4  # ~4 chars per token
+                
+                logging.info(f"Estimated thinking tokens: {thinking_tokens_estimated} (from {summarized_thinking_chars} chars)")
+            
             # Calculate elapsed time
             elapsed_time = time.time() - start_time
             
             print(f"\n✅ ANTHROPIC API RESPONSE RECEIVED AFTER {elapsed_time:.2f} SECONDS")
             print(f"   Model: {model_name}")
             print(f"   Tokens - Input: {input_tokens}, Output: {output_tokens}")
-            if thinking_enabled and thinking_tokens > 0:
-                print(f"   🧠 Thinking tokens detected: {thinking_tokens} (included in output)")
+            if thinking_enabled and thinking_content_found:
+                print(f"   🧠 Thinking content found: {summarized_thinking_chars} chars visible")
+                print(f"   🧠 Estimated thinking tokens: {thinking_tokens_estimated}")
+                print(f"   💰 Note: Output tokens include FULL thinking tokens (billed), not just summarized content")
             elif thinking_enabled:
-                print(f"   🧠 Thinking enabled but no thinking tokens detected")
+                print(f"   🧠 Thinking enabled but no thinking content detected")
             
-            # Return the results
-            return answer, input_tokens, 0, output_tokens, web_search_used, web_search_sources
+            # Return the results with estimated thinking tokens
+            return answer, input_tokens, 0, output_tokens, thinking_tokens_estimated, web_search_used, web_search_sources
             
         except Exception as e:
             error_details = traceback.format_exc()
@@ -846,9 +887,9 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             # Check for token limit errors and provide more readable message
             error_str = str(e).lower()
             if "token" in error_str and ("limit" in error_str or "exceed" in error_str or "context" in error_str):
-                return f"ERROR: Token limit exceeded. The input is too large for {model_name}.", input_token_count, 0, 0, False, ""
+                return f"ERROR: Token limit exceeded. The input is too large for {model_name}.", input_token_count, 0, 0, 0, False, ""
             
-            return f"ERROR: {str(e)}", input_token_count, 0, 0, False, ""
+            return f"ERROR: {str(e)}", input_token_count, 0, 0, 0, False, ""
 
     except Exception as e:
         error_details = traceback.format_exc()
@@ -897,7 +938,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
     
     logging.info(f"Received answer (truncated): '{answer_str[:100]}...'")
     return (answer if answer is not None else f"ERROR: No answer extracted but no direct API error."), \
-           input_tokens, 0, output_tokens, web_search_used, web_search_sources
+           input_tokens, 0, output_tokens, 0, web_search_used, web_search_sources
 
 def calculate_cost(
     model_name: str,

@@ -117,6 +117,7 @@ async def list_models():
         "claude-sonnet-4-20250514",
         "claude-sonnet-4-20250514-thinking",
         "claude-3-7-sonnet-20250219",
+        "claude-3-7-sonnet-20250219-thinking",
         "claude-3-5-haiku-20241022",
         "gemini-2.5-flash-preview-05-20",
         "gemini-2.5-pro-preview-05-06",

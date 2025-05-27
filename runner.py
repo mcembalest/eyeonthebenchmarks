@@ -177,37 +177,41 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                 
                 prompt_t0 = perf_counter()
                 
-                if provider == "google":
-                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val, actual_web_search_used, web_search_sources = google_ask_with_files(
-                        file_paths, prompt_text, model_name, db_path, use_web_search
-                    )
+                # Process response and extract all token types
+                if provider == "openai":
+                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val, reasoning_tokens_val, actual_web_search_used, web_search_sources = openai_ask_with_files(file_paths, prompt_text, model_name, db_path, use_web_search)
+                    # For OpenAI, reasoning tokens are returned separately
+                    thinking_tokens_val = 0  # OpenAI doesn't have separate thinking tokens
+                elif provider == "google":
+                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val, thinking_tokens_val, actual_web_search_used, web_search_sources = google_ask_with_files(file_paths, prompt_text, model_name, db_path, use_web_search)
+                    # For Google, thinking tokens are returned separately
+                    reasoning_tokens_val = 0  # Google uses thinking, not reasoning
                 elif provider == "anthropic":
-                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val, actual_web_search_used, web_search_sources = anthropic_ask_with_files(
-                        file_paths, prompt_text, model_name, db_path, use_web_search
-                    )
-                else:  # openai
-                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val, actual_web_search_used, web_search_sources = openai_ask_with_files(
-                        file_paths, prompt_text, model_name, db_path, use_web_search
-                    )
-                
+                    ans, standard_input_tokens_val, cached_input_tokens_val, output_tokens_val, thinking_tokens_val, actual_web_search_used, web_search_sources = anthropic_ask_with_files(file_paths, prompt_text, model_name, db_path, use_web_search)
+                    # For Anthropic, thinking tokens are estimated and returned separately
+                    reasoning_tokens_val = 0  # Anthropic uses thinking, not reasoning
+                else:
+                    raise ValueError(f"Unsupported provider: {provider}")
+
                 prompt_t1 = perf_counter()
                 individual_latency_ms = round((prompt_t1 - prompt_t0) * 1000)
 
-                # Calculate cost for this prompt
-                cost_info = {"error": "Unknown provider"}
+                # Calculate costs with thinking/reasoning token breakdown
                 if provider == "openai":
                     cost_info = openai_calculate_cost(
                         model_name=model_name,
                         standard_input_tokens=standard_input_tokens_val,
                         cached_input_tokens=cached_input_tokens_val,
-                        output_tokens=output_tokens_val
+                        output_tokens=output_tokens_val,
+                        reasoning_tokens=reasoning_tokens_val
                     )
                 elif provider == "google":
                     cost_info = google_calculate_cost(
                         model_name=model_name,
                         standard_input_tokens=standard_input_tokens_val,
                         cached_input_tokens=cached_input_tokens_val,
-                        output_tokens=output_tokens_val
+                        output_tokens=output_tokens_val,
+                        thinking_tokens=thinking_tokens_val
                     )
                 elif provider == "anthropic":
                     cost_info = anthropic_calculate_cost(
@@ -215,13 +219,16 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                         standard_input_tokens=standard_input_tokens_val,
                         cache_write_tokens=0,  # TODO: Extract from response if available
                         cache_read_tokens=cached_input_tokens_val,
-                        output_tokens=output_tokens_val
+                        output_tokens=output_tokens_val,
+                        thinking_tokens=thinking_tokens_val
                     )
 
-                # Extract cost information
+                # Extract cost information including thinking/reasoning costs
                 input_cost = cost_info.get("input_cost", 0.0)
                 cached_cost = cost_info.get("cached_cost", 0.0) or cost_info.get("cache_read_cost", 0.0)
                 output_cost = cost_info.get("output_cost", 0.0)
+                thinking_cost = cost_info.get("thinking_cost", 0.0)
+                reasoning_cost = cost_info.get("reasoning_cost", 0.0)
                 prompt_total_cost = cost_info.get("total_cost", 0.0)
 
                 total_standard_input_tokens_run += standard_input_tokens_val
@@ -236,10 +243,14 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                     "standard_input_tokens": standard_input_tokens_val,
                     "cached_input_tokens": cached_input_tokens_val,
                     "output_tokens": output_tokens_val,
+                    "thinking_tokens": thinking_tokens_val,
+                    "reasoning_tokens": reasoning_tokens_val,
                     "model_answer": ans,
                     "input_cost": input_cost,
                     "cached_cost": cached_cost,
                     "output_cost": output_cost,
+                    "thinking_cost": thinking_cost,
+                    "reasoning_cost": reasoning_cost,
                     "total_cost": prompt_total_cost,
                     "web_search_used": actual_web_search_used,
                     "web_search_sources": web_search_sources
@@ -247,7 +258,9 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                 
                 ans_trunc = ans[:100] + "..." if len(ans) > 100 else ans
                 cost_msg = f" (Cost: ${prompt_total_cost:.6f})" if prompt_total_cost > 0 else ""
-                emit_progress({"current": i + 1, "total": total_prompts, "message": f"Answer: {ans_trunc}{cost_msg}"})
+                thinking_msg = f" (Thinking: {thinking_tokens_val})" if thinking_tokens_val > 0 else ""
+                reasoning_msg = f" (Reasoning: {reasoning_tokens_val})" if reasoning_tokens_val > 0 else ""
+                emit_progress({"current": i + 1, "total": total_prompts, "message": f"Answer: {ans_trunc}{cost_msg}{thinking_msg}{reasoning_msg}"})
                 
                 if on_prompt_complete:
                     on_prompt_complete(i, {
@@ -257,10 +270,14 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                         "standard_input_tokens": standard_input_tokens_val,
                         "cached_input_tokens": cached_input_tokens_val,
                         "output_tokens": output_tokens_val,
+                        "thinking_tokens": thinking_tokens_val,
+                        "reasoning_tokens": reasoning_tokens_val,
                         "model_answer": ans,
                         "input_cost": input_cost,
                         "cached_cost": cached_cost,
                         "output_cost": output_cost,
+                        "thinking_cost": thinking_cost,
+                        "reasoning_cost": reasoning_cost,
                         "total_cost": prompt_total_cost,
                         "web_search_used": actual_web_search_used,
                         "web_search_sources": web_search_sources
@@ -284,10 +301,14 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                     "standard_input_tokens": 0,
                     "cached_input_tokens": 0,
                     "output_tokens": 0,
+                    "thinking_tokens": 0,
+                    "reasoning_tokens": 0,
                     "model_answer": f"ERROR: {str(e)}",
                     "input_cost": 0.0,
                     "cached_cost": 0.0,
                     "output_cost": 0.0,
+                    "thinking_cost": 0.0,
+                    "reasoning_cost": 0.0,
                     "total_cost": 0.0,
                     "web_search_used": False,  # Always False on error
                     "web_search_sources": ""
@@ -299,7 +320,7 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
         
         emit_progress({"message": f"Benchmark complete! Time: {elapsed}s, Total Tokens: {total_tokens_run}, Total Cost: ${total_cost_run:.6f}"})
 
-        # Prepare prompts_data for database (now includes cost info)
+        # Prepare prompts_data for database (now includes cost info and thinking/reasoning tokens)
         result_prompts_data = [
             {
                 "prompt": ipd["prompt_text"],
@@ -308,9 +329,13 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                 "standard_input_tokens": ipd["standard_input_tokens"],
                 "cached_input_tokens": ipd["cached_input_tokens"],
                 "output_tokens": ipd["output_tokens"],
+                "thinking_tokens": ipd["thinking_tokens"],
+                "reasoning_tokens": ipd["reasoning_tokens"],
                 "input_cost": ipd["input_cost"],
                 "cached_cost": ipd["cached_cost"],
                 "output_cost": ipd["output_cost"],
+                "thinking_cost": ipd["thinking_cost"],
+                "reasoning_cost": ipd["reasoning_cost"],
                 "total_cost": ipd["total_cost"],
                 "web_search_used": ipd["web_search_used"],
                 "web_search_sources": ipd["web_search_sources"]

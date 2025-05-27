@@ -431,23 +431,24 @@ def openai_upload(pdf_path: Path) -> str:
         logging.error(error_msg)
         raise
 
-def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, bool, str]:
+def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gpt-4o-mini", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, int, bool, str]:
     """
-    Send a query to an OpenAI model with multiple file attachments.
+    Ask OpenAI a question with multimodal content (file uploads + text prompt).
     
     Args:
-        file_paths: List of paths to files to include
-        prompt_text: The question to ask the model
-        model_name: The model to use (e.g., "gpt-4o-mini")
-        db_path: Path to the database directory
-        web_search: Whether to enable web search for this prompt
-        
+        file_paths: List of file paths to upload
+        prompt_text: The text prompt to send
+        model_name: OpenAI model to use
+        db_path: Database path for file management
+        web_search: Whether to enable web search
+    
     Returns:
         A tuple containing:
             - answer (str): The model's text response
-            - standard_input_tokens (int): Tokens used in the input
-            - cached_input_tokens (int): Cached tokens used
-            - output_tokens (int): Tokens used in the output (includes reasoning tokens)
+            - standard_input_tokens (int): Standard input tokens used
+            - cached_input_tokens (int): Cached input tokens used
+            - output_tokens (int): Output tokens used (includes reasoning tokens)
+            - reasoning_tokens (int): Reasoning tokens used (for tracking, included in output_tokens)
             - web_search_used (bool): Whether web search was actually used
             - web_search_sources (str): Raw web search data as string
     """
@@ -457,11 +458,20 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
         print(f"⚠️ WARNING: Model {model_name} does not support web search. Disabling web search for this request.")
         web_search = False
     
+    # Only process files if web search is not enabled or if the prompt specifically references document content
+    # This prevents accidentally including old files when doing web search-only queries
+    should_include_files = not web_search or any(keyword in prompt_text.lower() for keyword in [
+        'document', 'pdf', 'file', 'report', 'analysis', 'in the document', 'according to the document'
+    ])
+    
     # Ensure all files are uploaded to OpenAI
     file_ids = []
-    for file_path in file_paths:
-        file_id = ensure_file_uploaded(file_path, db_path)
-        file_ids.append(file_id)
+    if should_include_files and file_paths:
+        for file_path in file_paths:
+            file_id = ensure_file_uploaded(file_path, db_path)
+            file_ids.append(file_id)
+    elif file_paths and web_search:
+        print(f"⚠️ Skipping {len(file_paths)} files because web search is enabled and prompt doesn't reference documents")
     
     # Build content with all files
     content = []
@@ -497,7 +507,7 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
     
     return openai_ask_internal(content, model_name, tools)
 
-def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] = None) -> Tuple[str, int, int, int, bool, str]:
+def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] = None) -> Tuple[str, int, int, int, int, bool, str]:
     """
     Internal function to send a query to OpenAI with prepared content.
     
@@ -507,6 +517,7 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
             - standard_input_tokens (int): Tokens used in the input
             - cached_input_tokens (int): Cached tokens used
             - output_tokens (int): Tokens used in the output (includes reasoning tokens)
+            - reasoning_tokens (int): Reasoning tokens used (for tracking, included in output_tokens)
             - web_search_used (bool): Whether web search was actually used
             - web_search_sources (str): Raw web search data as string
     """
@@ -677,6 +688,7 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
         standard_input_tokens = 0
         cached_input_tokens = 0
         output_tokens = 0
+        reasoning_tokens = 0
         web_search_used = False
         web_search_sources = ""
 
@@ -821,7 +833,7 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
                                     web_search_sources += f"Web search result: {content_block.text}\n"
                                     break
         
-        return answer, standard_input_tokens, cached_input_tokens, output_tokens, web_search_used, web_search_sources
+        return answer, standard_input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, web_search_used, web_search_sources
             
     except openai.APIError as e:
         logging.error(f"OpenAI API Error: {str(e)}", exc_info=True)

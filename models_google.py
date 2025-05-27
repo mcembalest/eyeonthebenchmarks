@@ -510,7 +510,7 @@ def google_upload(pdf_path: Path) -> str:
         logging.error(f"Error uploading {pdf_path} to Google: {e}")
         raise Exception(f"Failed to upload PDF to Google: {str(e)}")
 
-def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gemini-1.5-flash", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, bool, str]:
+def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gemini-1.5-flash", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, int, bool, str]:
     """
     Send a query to a Google Gemini model with multiple file attachments.
     
@@ -526,27 +526,37 @@ def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
             - answer (str): The model's text response
             - standard_input_tokens (int): Tokens used in the input
             - cached_input_tokens (int): Cached tokens used
-            - output_tokens (int): Tokens used in the output (includes thinking tokens)
+            - output_tokens (int): Tokens used in the output (excludes thinking tokens)
+            - thinking_tokens (int): Thinking tokens used (for tracking, included in billing)
             - web_search_used (bool): Whether web search was actually used
             - web_search_sources (str): Raw web search data as string
     """
     # Build content list with files and prompt
     content_parts = []
     
+    # Only process files if web search is not enabled or if the prompt specifically references document content
+    # This prevents accidentally including old files when doing web search-only queries
+    should_include_files = not web_search or any(keyword in prompt_text.lower() for keyword in [
+        'document', 'pdf', 'file', 'report', 'analysis', 'in the document', 'according to the document'
+    ])
+    
     # Add files to content using file objects directly
-    for file_path in file_paths:
-        # Upload file and get file object
-        file_id = ensure_file_uploaded(file_path, db_path)
-        
-        # Use the file object directly - Google expects this format
-        # According to Google docs: contents=[myfile, "prompt text"]
-        try:
-            client = ensure_google_client()
-            uploaded_file = client.files.get(name=file_id)
-            content_parts.append(uploaded_file)
-        except Exception as e:
-            logging.error(f"Error retrieving file object for {file_path}: {e}")
-            raise Exception(f"Failed to retrieve file object for {file_path}: {e}")
+    if should_include_files and file_paths:
+        for file_path in file_paths:
+            # Upload file and get file object
+            file_id = ensure_file_uploaded(file_path, db_path)
+            
+            # Use the file object directly - Google expects this format
+            # According to Google docs: contents=[myfile, "prompt text"]
+            try:
+                client = ensure_google_client()
+                uploaded_file = client.files.get(name=file_id)
+                content_parts.append(uploaded_file)
+            except Exception as e:
+                logging.error(f"Error retrieving file object for {file_path}: {e}")
+                raise Exception(f"Failed to retrieve file object for {file_path}: {e}")
+    elif file_paths and web_search:
+        logging.info(f"Skipping {len(file_paths)} files because web search is enabled and prompt doesn't reference documents")
     
     # Add prompt text
     content_parts.append(prompt_text)
@@ -556,7 +566,7 @@ def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
     
     return google_ask_internal(contents, model_name, web_search)
 
-def google_ask_internal(contents: List, model_name: str, web_search: bool = False) -> Tuple[str, int, int, int, bool, str]:
+def google_ask_internal(contents: List, model_name: str, web_search: bool = False) -> Tuple[str, int, int, int, int, bool, str]:
     """
     Internal function to send a query to Google with prepared contents.
     
@@ -565,7 +575,8 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
             - answer (str): The model's text response
             - standard_input_tokens (int): Tokens used in the input
             - cached_input_tokens (int): Cached tokens used
-            - output_tokens (int): Tokens used in the output (includes thinking tokens)
+            - output_tokens (int): Tokens used in the output (excludes thinking tokens)
+            - thinking_tokens (int): Thinking tokens used (for tracking, included in billing)
             - web_search_used (bool): Whether web search was actually used
             - web_search_sources (str): Raw web search data as string
     """
@@ -671,30 +682,30 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
             # The non-cached prompt tokens
             non_cached_prompt_tokens = standard_input_tokens - cached_input_tokens
             
-            # Add thinking tokens to output (they're generated during response creation)
-            adjusted_output_tokens = output_tokens + thinking_tokens
+            # Keep thinking tokens separate for tracking
+            output_tokens_without_thinking = output_tokens  # Original output tokens without thinking
             
             # Add tool use tokens to non-cached input
             adjusted_input_tokens = non_cached_prompt_tokens + (tool_use_tokens or 0)
             
             # Verify our adjusted totals match the authoritative total
-            calculated_total = adjusted_input_tokens + cached_input_tokens + adjusted_output_tokens
+            calculated_total = adjusted_input_tokens + cached_input_tokens + output_tokens_without_thinking + thinking_tokens
             if abs(calculated_total - total_tokens_used) > 5:  # Allow small rounding differences
                 logging.warning(f"Token calculation mismatch: calculated {calculated_total} vs actual {total_tokens_used}")
                 print(f"   ⚠️ Token calculation mismatch: {calculated_total} vs {total_tokens_used}")
                 
                 # If there's still a significant mismatch, distribute the difference
                 difference = total_tokens_used - calculated_total
-                adjusted_output_tokens += difference
+                output_tokens_without_thinking += difference
                 
                 # Recalculate
-                calculated_total = adjusted_input_tokens + cached_input_tokens + adjusted_output_tokens
+                calculated_total = adjusted_input_tokens + cached_input_tokens + output_tokens_without_thinking + thinking_tokens
                 print(f"   🔧 Adjusted: {calculated_total} (added {difference} to output)")
             
             # Update our variables for the rest of the function
             standard_input_tokens = adjusted_input_tokens
             cached_input_tokens = cached_input_tokens
-            output_tokens = adjusted_output_tokens
+            output_tokens = output_tokens_without_thinking
             
             # Detect web search usage by checking if tools were used
             web_search_used = False
@@ -840,15 +851,15 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
                     clean_response_text = "ERROR: Gemini API returned invalid response structure. This typically happens when the model encounters an internal error or when the content violates content policies. Please try running this prompt again."
                     logging.error("No response text could be extracted from Gemini response")
             
-            return clean_response_text, standard_input_tokens, cached_input_tokens, output_tokens, web_search_used, web_search_content
+            return clean_response_text, standard_input_tokens, cached_input_tokens, output_tokens, thinking_tokens, web_search_used, web_search_content
             
         except Exception as e:
             error_details = str(e)
             logging.error(f"Google API Error: {error_details}")
             # Check for token limit errors and provide more readable message
             if "exceeds maximum input size" in error_details or "exceeds the context size" in error_details:
-                return f"ERROR: Token limit exceeded. Please reduce the input size.", 0, 0, 0, False, ""
-            return f"ERROR: {error_details}", 0, 0, 0, False, ""
+                return f"ERROR: Token limit exceeded. Please reduce the input size.", 0, 0, 0, 0, False, ""
+            return f"ERROR: {error_details}", 0, 0, 0, 0, False, ""
             
     except Exception as e:
         print(f"\n❌ GOOGLE API CALL FAILED")

@@ -779,10 +779,16 @@ class AppLogic:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # First check if the benchmark exists
+            # First check if the benchmark exists and get file information
             cursor.execute("""
-                SELECT id, label FROM benchmarks
-                WHERE id = ?
+                SELECT b.id, b.label, b.description, 
+                       GROUP_CONCAT(f.original_filename, '; ') as file_names,
+                       COUNT(f.id) as file_count
+                FROM benchmarks b
+                LEFT JOIN benchmark_files bf ON b.id = bf.benchmark_id
+                LEFT JOIN files f ON bf.file_id = f.id
+                WHERE b.id = ?
+                GROUP BY b.id
             """, (benchmark_id,))
             
             benchmark_info = cursor.fetchone()
@@ -791,9 +797,13 @@ class AppLogic:
                 logging.error(error_msg)
                 raise ValueError(error_msg)
             
+            benchmark_label = benchmark_info[1] or f"Benchmark {benchmark_id}"
+            file_names = benchmark_info[3] or "No files"
+            file_count = benchmark_info[4] or 0
+            
             # Get all runs for this benchmark (different models)
             cursor.execute("""
-                SELECT id, model_name, created_at
+                SELECT id, model_name, provider, created_at
                 FROM benchmark_runs
                 WHERE benchmark_id = ?
                 ORDER BY model_name, created_at DESC
@@ -807,16 +817,22 @@ class AppLogic:
             
             # Create a map of model_name -> newest run_id
             run_ids_by_model = {}
-            for run_id, model_name, created_at in runs:
+            for run_id, model_name, provider, created_at in runs:
                 if model_name not in run_ids_by_model:
-                    run_ids_by_model[model_name] = run_id
+                    run_ids_by_model[model_name] = {
+                        'run_id': run_id,
+                        'provider': provider,
+                        'created_at': created_at
+                    }
             
             # Collect all prompt data into a single DataFrame
             all_prompts_data = []
             model_names = []
             
-            for model_name, run_id in run_ids_by_model.items():
+            for model_name, run_info in run_ids_by_model.items():
                 model_names.append(model_name)
+                run_id = run_info['run_id']
+                provider = run_info['provider']
                 
                 # Get prompt data for this run
                 cursor.execute("""
@@ -834,10 +850,21 @@ class AppLogic:
                     for row in rows:
                         row_dict = dict(zip(cols, row))
                         
-                        # Add model name
+                        # Add benchmark metadata
+                        row_dict['benchmark_name'] = benchmark_label
                         row_dict['model_name'] = model_name
+                        row_dict['provider'] = provider
+                        row_dict['files_used'] = file_names
+                        row_dict['file_count'] = file_count
                         
-                        # Standardize column names for MVP (no expected answers or scores)
+                        # Add formatted model display name
+                        if model_name.endswith('-thinking'):
+                            base_model = model_name.replace('-thinking', '')
+                            row_dict['model_display_name'] = f"{base_model} (+ Thinking)"
+                        else:
+                            row_dict['model_display_name'] = model_name
+                        
+                        # Standardize column names for CSV export
                         if 'prompt' in row_dict:
                             row_dict['prompt_text'] = row_dict.pop('prompt')
                         elif 'prompt_preview' in row_dict:
@@ -845,6 +872,12 @@ class AppLogic:
                             
                         if 'response' in row_dict:
                             row_dict['model_answer'] = row_dict.pop('response')
+                            
+                        # Ensure all token columns exist (for older databases)
+                        row_dict['thinking_tokens'] = row_dict.get('thinking_tokens', 0) or 0
+                        row_dict['reasoning_tokens'] = row_dict.get('reasoning_tokens', 0) or 0
+                        row_dict['thinking_cost'] = row_dict.get('thinking_cost', 0.0) or 0.0
+                        row_dict['reasoning_cost'] = row_dict.get('reasoning_cost', 0.0) or 0.0
                             
                         all_prompts_data.append(row_dict)
             
@@ -857,11 +890,23 @@ class AppLogic:
             df = pd.DataFrame(all_prompts_data)
             logging.info(f"DataFrame columns before filtering: {list(df.columns)}")
             
-            # Define column order with model_name first, including cost columns and web search data
-            cols_order = ['model_name', 'prompt_text', 'model_answer', 'latency',
-                          'standard_input_tokens', 'cached_input_tokens', 'output_tokens',
-                          'input_cost', 'cached_cost', 'output_cost', 'total_cost',
-                          'web_search_used', 'web_search_sources']
+            # Define comprehensive column order including thinking/reasoning tokens and file info
+            cols_order = [
+                # Metadata
+                'benchmark_name', 'model_name', 'provider', 'files_used', 'file_count',
+                # Content
+                'prompt_text', 'model_answer', 'latency',
+                # Token breakdown
+                'standard_input_tokens', 'cached_input_tokens', 'output_tokens',
+                'thinking_tokens', 'reasoning_tokens',
+                # Cost breakdown  
+                'input_cost', 'cached_cost', 'output_cost', 
+                'thinking_cost', 'reasoning_cost', 'total_cost',
+                # Web search
+                'web_search_used', 'web_search_sources',
+                # New formatted model display name
+                'model_display_name'
+            ]
             
             # Only keep relevant columns in order
             cols_to_export = [c for c in cols_order if c in df.columns]
@@ -886,20 +931,13 @@ class AppLogic:
                 'status': 'success',
                 'filename': filename,
                 'benchmark_id': benchmark_id,
+                'benchmark_name': benchmark_label,
+                'files_used': file_names,
+                'file_count': file_count,
                 'num_prompts': len(df) // len(model_names) if len(model_names) > 0 else 0,
                 'model_names': model_names,
                 'num_models': len(model_names)
             }
-
-        return {
-            "job_id": job_id,
-            "benchmark_id": benchmark_id,
-            "message": "Benchmark run(s) initiated.",
-            "status": "success",
-            "num_models": len(modelNames),
-            "num_prompts": len(prompts),
-            "label": label
-        }
 
     def handle_benchmark_progress(self, job_id: int, model_name: str, progress_data: dict):
         if job_id in self.jobs:
@@ -1096,16 +1134,20 @@ class AppLogic:
                     standard_input_tokens_prompt = p.get('standard_input_tokens', 0)
                     cached_input_tokens_prompt = p.get('cached_input_tokens', 0)
                     output_tokens_prompt = p.get('output_tokens', 0)
+                    thinking_tokens_prompt = p.get('thinking_tokens', 0)
+                    reasoning_tokens_prompt = p.get('reasoning_tokens', 0)
                     
                     # Extract cost data from prompt results
                     input_cost = p.get('input_cost', 0.0)
                     cached_cost = p.get('cached_cost', 0.0)
                     output_cost = p.get('output_cost', 0.0)
+                    thinking_cost = p.get('thinking_cost', 0.0)
+                    reasoning_cost = p.get('reasoning_cost', 0.0)
                     total_cost_prompt = p.get('total_cost', 0.0)
                     web_search_used = p.get('web_search_used', False)
                     web_search_sources = p.get('web_search_sources', '')
 
-                    # Use the updated save_benchmark_prompt function with cost tracking
+                    # Use the updated save_benchmark_prompt function with thinking/reasoning token tracking
                     save_benchmark_prompt(
                         benchmark_run_id=run_id, 
                         prompt=prompt, 
@@ -1114,9 +1156,13 @@ class AppLogic:
                         standard_input_tokens=standard_input_tokens_prompt, 
                         cached_input_tokens=cached_input_tokens_prompt, 
                         output_tokens=output_tokens_prompt,
+                        thinking_tokens=thinking_tokens_prompt,
+                        reasoning_tokens=reasoning_tokens_prompt,
                         input_cost=input_cost,
                         cached_cost=cached_cost,
                         output_cost=output_cost,
+                        thinking_cost=thinking_cost,
+                        reasoning_cost=reasoning_cost,
                         total_cost=total_cost_prompt,
                         web_search_used=web_search_used,
                         web_search_sources=web_search_sources

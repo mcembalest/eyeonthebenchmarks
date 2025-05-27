@@ -153,16 +153,60 @@ def init_db(db_path: Path = Path.cwd()):
             latency REAL,        
             standard_input_tokens INTEGER,      
             cached_input_tokens INTEGER,      
-            output_tokens INTEGER,        
+            output_tokens INTEGER,
+            thinking_tokens INTEGER DEFAULT 0,
+            reasoning_tokens INTEGER DEFAULT 0,        
             input_cost REAL DEFAULT 0,
             cached_cost REAL DEFAULT 0,
             output_cost REAL DEFAULT 0,
+            thinking_cost REAL DEFAULT 0,
+            reasoning_cost REAL DEFAULT 0,
             total_cost REAL DEFAULT 0,
             web_search_used BOOLEAN DEFAULT 0,
             web_search_sources TEXT,
             FOREIGN KEY (benchmark_run_id) REFERENCES {BENCHMARK_RUNS_TABLE}(id)
         )       
     ''')
+
+    # Add thinking_tokens column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARK_PROMPTS_TABLE} ADD COLUMN thinking_tokens INTEGER DEFAULT 0')
+        logging.info("Added thinking_tokens column to benchmark_prompts table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("thinking_tokens column already exists")
+        else:
+            logging.warning(f"Could not add thinking_tokens column: {e}")
+
+    # Add reasoning_tokens column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARK_PROMPTS_TABLE} ADD COLUMN reasoning_tokens INTEGER DEFAULT 0')
+        logging.info("Added reasoning_tokens column to benchmark_prompts table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("reasoning_tokens column already exists")
+        else:
+            logging.warning(f"Could not add reasoning_tokens column: {e}")
+
+    # Add thinking_cost column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARK_PROMPTS_TABLE} ADD COLUMN thinking_cost REAL DEFAULT 0')
+        logging.info("Added thinking_cost column to benchmark_prompts table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("thinking_cost column already exists")
+        else:
+            logging.warning(f"Could not add thinking_cost column: {e}")
+
+    # Add reasoning_cost column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARK_PROMPTS_TABLE} ADD COLUMN reasoning_cost REAL DEFAULT 0')
+        logging.info("Added reasoning_cost column to benchmark_prompts table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("reasoning_cost column already exists")
+        else:
+            logging.warning(f"Could not add reasoning_cost column: {e}")
 
     # Add web_search_used column if it doesn't exist (for existing databases)
     try:
@@ -492,8 +536,10 @@ def save_benchmark_run(benchmark_id: int, model_name: str, provider: str, report
 def save_benchmark_prompt(benchmark_run_id: int, prompt: str, response: str, 
                          latency: float, standard_input_tokens: int, 
                          cached_input_tokens: int, output_tokens: int,
+                         thinking_tokens: int = 0, reasoning_tokens: int = 0,
                          input_cost: float = 0.0, cached_cost: float = 0.0,
-                         output_cost: float = 0.0, total_cost: float = 0.0,
+                         output_cost: float = 0.0, thinking_cost: float = 0.0,
+                         reasoning_cost: float = 0.0, total_cost: float = 0.0,
                          web_search_used: bool = False,
                          web_search_sources: str = "",
                          db_path: Path = Path.cwd()) -> Optional[int]:
@@ -507,14 +553,19 @@ def save_benchmark_prompt(benchmark_run_id: int, prompt: str, response: str,
             INSERT INTO {BENCHMARK_PROMPTS_TABLE} 
             (benchmark_run_id, prompt, response, latency, 
              standard_input_tokens, cached_input_tokens, output_tokens,
-             input_cost, cached_cost, output_cost, total_cost, web_search_used, web_search_sources)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             thinking_tokens, reasoning_tokens,
+             input_cost, cached_cost, output_cost, thinking_cost, reasoning_cost, total_cost, 
+             web_search_used, web_search_sources)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (benchmark_run_id, str(prompt), str(response),
               float(latency) if latency is not None else 0.0, 
               int(standard_input_tokens) if standard_input_tokens is not None else 0,
               int(cached_input_tokens) if cached_input_tokens is not None else 0,
               int(output_tokens) if output_tokens is not None else 0,
-              input_cost, cached_cost, output_cost, total_cost, 1 if web_search_used else 0, web_search_sources))
+              int(thinking_tokens) if thinking_tokens is not None else 0,
+              int(reasoning_tokens) if reasoning_tokens is not None else 0,
+              input_cost, cached_cost, output_cost, thinking_cost, reasoning_cost, total_cost, 
+              1 if web_search_used else 0, web_search_sources))
         
         prompt_id = cursor.lastrowid
         conn.commit()
