@@ -10,13 +10,36 @@ import tiktoken
 # Load environment variables from .env file
 load_dotenv()
 
-# Get API key from environment
+# Get API key from environment - but don't fail if missing
 api_key = os.environ.get("OPENAI_API_KEY")
-if not api_key:
-    raise ValueError("OPENAI_API_KEY environment variable not set. Please check your .env file.")
 
-# Configure OpenAI client
-client = openai.OpenAI(api_key=api_key)
+# Only initialize client if API key is available
+client = None
+if api_key:
+    # Configure OpenAI client
+    client = openai.OpenAI(api_key=api_key)
+else:
+    print("[OpenAI] No API key found - will initialize when key is provided")
+
+
+def ensure_openai_client():
+    """Ensure OpenAI client is initialized with current API key"""
+    global client, api_key
+    current_api_key = os.environ.get("OPENAI_API_KEY")
+    
+    if not current_api_key:
+        raise ValueError("OpenAI API key not found. Please configure it in Settings.")
+    
+    # Re-initialize client if API key has changed
+    if current_api_key != api_key:
+        api_key = current_api_key
+        client = openai.OpenAI(api_key=api_key)
+        print("[OpenAI] Client initialized with new API key")
+    elif not client:
+        client = openai.OpenAI(api_key=current_api_key)
+        print("[OpenAI] Client initialized")
+    
+    return client
 
 
 AVAILABLE_MODELS = [
@@ -362,11 +385,12 @@ def openai_upload(pdf_path: Path) -> str:
     """
     logging.info(f"Starting OpenAI file upload for {pdf_path}")
     
-    # Validate API key first
-    if not api_key:
-        error_msg = "OPENAI_API_KEY environment variable not set. Cannot upload file."
-        logging.error(error_msg)
-        raise ValueError(error_msg)
+    # Ensure client is available
+    try:
+        client = ensure_openai_client()
+    except ValueError as e:
+        logging.error(str(e))
+        raise
     
     # Validate file exists and is readable
     if not pdf_path.exists():
@@ -508,16 +532,15 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
         # Reload environment variables to ensure we have the latest
         load_dotenv()
         
-        # Check API key
-        api_key = os.environ.get('OPENAI_API_KEY')
-        if not api_key:
-            error_msg = "OPENAI_API_KEY environment variable is not set"
-            logging.error(error_msg)
-            raise ValueError(error_msg)
+        # Ensure client is available
+        try:
+            client = ensure_openai_client()
+        except ValueError as e:
+            logging.error(str(e))
+            raise
             
-        # Log key info without revealing sensitive data
-        key_info = f"Length: {len(api_key)}, First 3 chars: {api_key[:3]}, Last 3 chars: {api_key[-3:]}"
-        logging.info(f"API Key verified: {key_info}")
+        # Log client info
+        logging.info(f"OpenAI client initialized successfully")
         logging.info(f"Content blocks: {len(content)}, Model: {model_name}")
 
         # Format the API input for Responses API
@@ -553,13 +576,6 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
             logging.info(client_info)
             print(f"   OpenAI client initialized: {client is not None}")
             
-            # Check OpenAI API key first few and last few characters
-            if api_key:
-                key_preview = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
-                print(f"   API Key found: {key_preview} (length: {len(api_key)})")
-            else:
-                print(f"   ⚠️ WARNING: No API key found! API call will fail.")
-                
             # Show model and file details
             print(f"   Model name: {model_name}")
             print(f"   Files: {file_count}")

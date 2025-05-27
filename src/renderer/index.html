@@ -24,6 +24,10 @@
         
         <!-- Page-specific action buttons -->
         <div id="headerActions" class="d-flex gap-2">
+          <!-- Settings button -->
+          <button id="settingsBtn" class="btn btn-outline-light">
+            <i class="fas fa-cog me-1"></i>Settings
+          </button>
           <!-- Dynamic actions will be inserted here -->
         </div>
       </div>
@@ -88,38 +92,7 @@
       <!-- Composer Page -->
       <div id="composerContent" class="page h-100">
         <div class="composer-layout">
-          <!-- Left Panel - Prompts -->
-          <div class="composer-left">
-            <div class="card h-100">
-              <div class="card-header bg-primary text-white">
-                <h5 class="mb-0">
-                  <i class="fas fa-question-circle me-2"></i>
-                  Test Prompts
-                </h5>
-              </div>
-              <div class="card-body d-flex flex-column">
-                <div class="mb-3">
-                  <button id="loadPromptSetBtn" class="btn btn-outline-success btn-sm">
-                    <i class="fas fa-layer-group me-1"></i>Load Prompt Set
-                  </button>
-                  <button id="importCsvBtn" class="btn btn-outline-secondary btn-sm ms-2">
-                    <i class="fas fa-file-csv me-1"></i>Import CSV
-                  </button>
-                  <button id="addPromptBtn" class="btn btn-outline-primary btn-sm ms-2">
-                    <i class="fas fa-plus me-1"></i>Add Prompt
-                  </button>
-                </div>
-                
-                <div class="flex-grow-1 overflow-auto">
-                  <div id="promptsList" class="prompts-list">
-                    <!-- Prompts will be added here -->
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
           
-          <!-- Right Panel - Settings -->
           <div class="composer-right">
             <div class="card h-100">
               <div class="card-header bg-success text-white">
@@ -156,17 +129,16 @@
                     <div id="selectedPdfLabel" class="text-muted">No files selected</div>
                   </div>
                 </div>
-                
                 <!-- Web Search -->
-                <div class="mb-4">
+                <div class="mb-4 ms-2">
                   <h6 class="text-muted mb-3">Web Search</h6>
-                  <div class="form-check form-switch">
+                  <div class="form-check form-switch ms-2">
                     <input class="form-check-input" type="checkbox" id="webSearchToggle">
                     <label class="form-check-label" for="webSearchToggle">
                       <i class="fas fa-globe me-1"></i>Enable web search
                     </label>
                   </div>
-                  <div class="text-muted small mt-1">
+                  <div class="text-muted small mt-1 ms-2">
                     Models can search the web for information.
                   </div>
                   
@@ -198,6 +170,41 @@
               </div>
             </div>
           </div>
+
+
+
+          <div class="composer-left">
+            <div class="card h-100">
+              <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">
+                  <i class="fas fa-question-circle me-2"></i>
+                  Prompts
+                </h5>
+              </div>
+              <div class="card-body d-flex flex-column">
+                <div class="mb-3">
+                  <button id="loadPromptSetBtn" class="btn btn-outline-success btn-sm">
+                    <i class="fas fa-layer-group me-1"></i>Load Prompt Set
+                  </button>
+                  <button id="importCsvBtn" class="btn btn-outline-secondary btn-sm ms-2">
+                    <i class="fas fa-file-csv me-1"></i>Import CSV
+                  </button>
+                  <button id="addPromptBtn" class="btn btn-outline-primary btn-sm ms-2">
+                    <i class="fas fa-plus me-1"></i>Add Prompt
+                  </button>
+                </div>
+                
+                <div class="flex-grow-1 overflow-auto">
+                  <div id="promptsList" class="prompts-list">
+                    <!-- Prompts will be added here -->
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+
+
         </div>
       </div>
       
@@ -300,9 +307,188 @@
           </div>
         </div>
       </div>
+
+      <!-- Settings Page -->
+      <div id="settingsContent" class="page">
+        <div class="container-fluid h-100">
+          <div class="row justify-content-center h-100">
+            <div class="col-md-8 col-lg-6">
+              <div class="card mt-4">
+                <div class="card-header bg-primary text-white">
+                  <h4 class="mb-0">
+                    <i class="fas fa-cog me-2"></i>Settings
+                  </h4>
+                </div>
+                <div class="card-body">
+                  <!-- API Keys Section -->
+                  <div class="mb-4">
+                    <h5 class="text-primary mb-3">
+                      <i class="fas fa-key me-2"></i>API Keys
+                    </h5>
+                    <p class="text-muted mb-3">
+                      Configure your API keys for different AI providers. At least one API key is required to run benchmarks.
+                    </p>
+                    
+                    <!-- OpenAI API Key -->
+                    <div class="mb-3">
+                      <label for="openaiApiKey" class="form-label">
+                        <img src="assets/openai.png" alt="OpenAI" style="width: 16px; height: 16px;" class="me-2">
+                        OpenAI API Key
+                      </label>
+                      <div class="input-group">
+                        <input type="password" class="form-control" id="openaiApiKey" 
+                               placeholder="sk-..." autocomplete="off">
+                        <button class="btn btn-outline-secondary" type="button" id="toggleOpenaiKey">
+                          <i class="fas fa-eye"></i>
+                        </button>
+                      </div>
+                      <div class="form-text">Used for GPT models (gpt-4o, gpt-4o-mini, o3, o4-mini)</div>
+                    </div>
+
+                    <!-- Anthropic API Key -->
+                    <div class="mb-3">
+                      <label for="anthropicApiKey" class="form-label">
+                        <img src="assets/anthropic.png" alt="Anthropic" style="width: 16px; height: 16px;" class="me-2">
+                        Anthropic API Key
+                      </label>
+                      <div class="input-group">
+                        <input type="password" class="form-control" id="anthropicApiKey" 
+                               placeholder="sk-ant-..." autocomplete="off">
+                        <button class="btn btn-outline-secondary" type="button" id="toggleAnthropicKey">
+                          <i class="fas fa-eye"></i>
+                        </button>
+                      </div>
+                      <div class="form-text">Used for Claude models (claude-3-5-sonnet, claude-3-5-haiku, etc.)</div>
+                    </div>
+
+                    <!-- Google API Key -->
+                    <div class="mb-3">
+                      <label for="googleApiKey" class="form-label">
+                        <img src="assets/google.png" alt="Google" style="width: 16px; height: 16px;" class="me-2">
+                        Google API Key
+                      </label>
+                      <div class="input-group">
+                        <input type="password" class="form-control" id="googleApiKey" 
+                               placeholder="AIza..." autocomplete="off">
+                        <button class="btn btn-outline-secondary" type="button" id="toggleGoogleKey">
+                          <i class="fas fa-eye"></i>
+                        </button>
+                      </div>
+                      <div class="form-text">Used for Gemini models (gemini-2.5-flash, gemini-2.5-pro)</div>
+                    </div>
+                  </div>
+
+                  <!-- Action Buttons -->
+                  <div class="d-flex gap-2">
+                    <button id="saveSettingsBtn" class="btn btn-primary">
+                      <i class="fas fa-save me-1"></i>Save Settings
+                    </button>
+                    <button id="cancelSettingsBtn" class="btn btn-outline-secondary">
+                      <i class="fas fa-times me-1"></i>Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </main>
   </div>
   
+  <!-- First-Time Setup Modal -->
+  <div class="modal fade" id="firstTimeSetupModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header bg-primary text-white">
+          <h5 class="modal-title">
+            <i class="fas fa-rocket me-2"></i>Welcome to Eye on the Benchmarks!
+          </h5>
+        </div>
+        <div class="modal-body">
+          <div class="text-center mb-4">
+            <i class="fas fa-key fa-3x text-primary mb-3"></i>
+            <h4>API Keys Required</h4>
+            <p class="text-muted">
+              To run benchmarks, you'll need to provide API keys for at least one AI provider. 
+            </p>
+          </div>
+
+          <!-- Quick Setup Form -->
+          <div class="row">
+            <div class="col-12">
+              <h6 class="mb-3">Set up your API keys:</h6>
+              
+              <!-- OpenAI -->
+              <div class="mb-3">
+                <label for="setupOpenaiKey" class="form-label">
+                  <img src="assets/openai.png" alt="OpenAI" style="width: 16px; height: 16px;" class="me-2">
+                  OpenAI API Key <span class="text-muted">(optional)</span>
+                </label>
+                <div class="input-group">
+                  <input type="password" class="form-control" id="setupOpenaiKey" 
+                         placeholder="sk-..." autocomplete="off">
+                  <button class="btn btn-outline-secondary" type="button" id="toggleSetupOpenaiKey">
+                    <i class="fas fa-eye"></i>
+                  </button>
+                </div>
+                <div class="form-text">For GPT models: gpt-4o, gpt-4o-mini, o3, o4-mini</div>
+              </div>
+
+              <!-- Anthropic -->
+              <div class="mb-3">
+                <label for="setupAnthropicKey" class="form-label">
+                  <img src="assets/anthropic.png" alt="Anthropic" style="width: 16px; height: 16px;" class="me-2">
+                  Anthropic API Key <span class="text-muted">(optional)</span>
+                </label>
+                <div class="input-group">
+                  <input type="password" class="form-control" id="setupAnthropicKey" 
+                         placeholder="sk-ant-..." autocomplete="off">
+                  <button class="btn btn-outline-secondary" type="button" id="toggleSetupAnthropicKey">
+                    <i class="fas fa-eye"></i>
+                  </button>
+                </div>
+                <div class="form-text">For Claude models: claude-3-5-sonnet, claude-3-5-haiku, etc.</div>
+              </div>
+
+              <!-- Google -->
+              <div class="mb-3">
+                <label for="setupGoogleKey" class="form-label">
+                  <img src="assets/google.png" alt="Google" style="width: 16px; height: 16px;" class="me-2">
+                  Google API Key <span class="text-muted">(optional)</span>
+                </label>
+                <div class="input-group">
+                  <input type="password" class="form-control" id="setupGoogleKey" 
+                         placeholder="AIza..." autocomplete="off">
+                  <button class="btn btn-outline-secondary" type="button" id="toggleSetupGoogleKey">
+                    <i class="fas fa-eye"></i>
+                  </button>
+                </div>
+                <div class="form-text">For Gemini models: gemini-2.5-flash, gemini-2.5-pro</div>
+              </div>
+
+              <div class="alert alert-info">
+                <i class="fas fa-info-circle me-2"></i>
+                <strong>Need API keys?</strong> You can get them from:
+                <a href="#" onclick="window.electronAPI.shell?.openExternal('https://platform.openai.com/api-keys')" class="alert-link">OpenAI</a>, 
+                <a href="#" onclick="window.electronAPI.shell?.openExternal('https://console.anthropic.com/account/keys')" class="alert-link">Anthropic</a>, or 
+                <a href="#" onclick="window.electronAPI.shell?.openExternal('https://console.cloud.google.com/apis/credentials')" class="alert-link">Google Cloud</a>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" id="skipSetupBtn">
+            Skip for now
+          </button>
+          <button type="button" class="btn btn-primary" id="completeSetupBtn">
+            <i class="fas fa-check me-1"></i>Save & Continue
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Container -->
   <div id="toastContainer" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
   
@@ -314,6 +500,7 @@
   <script src="js/utils.js"></script>
   <script src="js/api.js"></script>
   <script src="js/components.js"></script>
+  <script src="js/settings.js"></script>
   <script src="js/pages.js"></script>
   <script src="js/app.js"></script>
 </body>

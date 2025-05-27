@@ -33,6 +33,11 @@ class App {
         throw new Error('Electron API not available. Please ensure the app is running in Electron.');
       }
 
+      // Initialize settings (this will show first-time setup if needed)
+      if (window.Settings) {
+        await window.Settings.init();
+      }
+
       // Initialize the home page
       await window.Pages.initHomePage();
 

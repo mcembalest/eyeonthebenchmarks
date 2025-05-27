@@ -12,13 +12,35 @@ from file_store import register_file, get_provider_file_id, register_provider_up
 # Load environment variables from .env file
 load_dotenv()
 
-# Get API key from environment
+# Get API key from environment - but don't fail if missing
 api_key = os.environ.get("GOOGLE_API_KEY")
-if not api_key:
-    raise ValueError("GOOGLE_API_KEY environment variable not set. Please check your .env file.")
 
-# Configure Google Generative AI client
-client = genai.Client(api_key=api_key)
+# Only initialize client if API key is available
+client = None
+if api_key:
+    # Configure Google Generative AI client
+    client = genai.Client(api_key=api_key)
+else:
+    print("[Google] No API key found - will initialize when key is provided")
+
+def ensure_google_client():
+    """Ensure Google client is initialized with current API key"""
+    global client, api_key
+    current_api_key = os.environ.get("GOOGLE_API_KEY")
+    
+    if not current_api_key:
+        raise ValueError("Google API key not found. Please configure it in Settings.")
+    
+    # Re-initialize client if API key has changed
+    if current_api_key != api_key:
+        api_key = current_api_key
+        client = genai.Client(api_key=api_key)
+        print("[Google] Client initialized with new API key")
+    elif not client:
+        client = genai.Client(api_key=current_api_key)
+        print("[Google] Client initialized")
+    
+    return client
 
 # Available Google models for benchmarking
 AVAILABLE_MODELS = [
@@ -464,6 +486,13 @@ def google_upload(pdf_path: Path) -> str:
     Raises:
         Exception: If upload fails
     """    
+    # Ensure client is available
+    try:
+        client = ensure_google_client()
+    except ValueError as e:
+        logging.error(str(e))
+        raise
+    
     try:
         # Upload file to Google
         uploaded_file = client.files.upload(
@@ -541,6 +570,13 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
     logging.info(f"Arguments: model_name={model_name}, web_search={web_search}")
     
     try:
+        # Ensure client is available
+        try:
+            client = ensure_google_client()
+        except ValueError as e:
+            logging.error(str(e))
+            raise
+        
         # Prepare tools for web search if enabled
         generation_config = {}
         tools = []
@@ -835,38 +871,76 @@ def count_tokens_google(contents: List, model_name: str) -> int:
         Estimated token count
     """
     try:
+        # Ensure client is available
+        client = ensure_google_client()
+        
         # For files that haven't been uploaded yet, we need to estimate
         estimated_tokens = 0
         actual_contents = []
         
         for item in contents:
             if isinstance(item, str):
-                # Text content
+                # Text content - can count directly
                 actual_contents.append(item)
             elif hasattr(item, 'name'):
-                # Already uploaded file object
+                # Already uploaded file object - can count directly
                 actual_contents.append(item)
             elif isinstance(item, Path):
                 # File path - estimate tokens based on file size
                 if item.exists():
                     file_size_bytes = item.stat().st_size
-                    # Rough estimate: ~1 token per 4 bytes for PDF text content
-                    estimated_tokens += file_size_bytes // 4
+                    # More accurate estimate for different file types
+                    if item.suffix.lower() == '.pdf':
+                        # PDFs: estimate based on typical text density
+                        # A 530KB PDF (9 pages) should be around 100k+ tokens
+                        # Use a more realistic ratio: ~1 token per 3-4 bytes for PDF content
+                        estimated_tokens += file_size_bytes // 3
+                    else:
+                        # Text files: ~1 token per 4 bytes
+                        estimated_tokens += file_size_bytes // 4
         
         # Count tokens for actual content if we have any
         if actual_contents:
-            response = client.models.count_tokens(
-                model=model_name,
-                contents=actual_contents
-            )
-            return response.total_tokens + estimated_tokens
-        else:
+            try:
+                response = client.models.count_tokens(
+                    model=model_name,
+                    contents=actual_contents
+                )
+                return response.total_tokens + estimated_tokens
+            except Exception as count_error:
+                logging.warning(f"Failed to count tokens via API: {count_error}")
+                # Fall through to manual estimation
+        
+        # If we only have estimated tokens or API failed, return the estimate
+        if estimated_tokens > 0:
             return estimated_tokens
+        else:
+            # Last resort: estimate from text content
+            total_chars = 0
+            for item in contents:
+                if isinstance(item, str):
+                    total_chars += len(item)
+            return max(total_chars // 4, 100)  # At least 100 tokens
             
     except Exception as e:
         logging.warning(f"Error counting tokens for Google model {model_name}: {e}")
-        # Return a conservative high estimate if we can't count properly
-        return 800000
+        # Provide a more reasonable estimate based on file sizes if we have them
+        total_estimated = 0
+        for item in contents:
+            if isinstance(item, str):
+                # Rough estimate: ~1 token per 4 characters for text
+                total_estimated += len(item) // 4
+            elif isinstance(item, Path) and item.exists():
+                # Rough estimate based on file type
+                file_size_bytes = item.stat().st_size
+                if item.suffix.lower() == '.pdf':
+                    # More aggressive estimate for PDFs - they contain a lot of text
+                    total_estimated += file_size_bytes // 3  # ~1 token per 3 bytes
+                else:
+                    total_estimated += file_size_bytes // 4
+        
+        # If we still have no estimate, return a reasonable minimum
+        return max(total_estimated, 100)
 
 def get_context_limit_google(model_name: str) -> int:
     """

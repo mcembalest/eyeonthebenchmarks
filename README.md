@@ -2,28 +2,22 @@
 
 <img src="./src/renderer/assets/icon.png" alt="logo" width="640"/>
 
-Eye on the Benchmarks lets you use AI with the simplest possible setup so you can better understand its strengths and weaknesses.
+Eye on the Benchmarks makes it easy to test and compare AI models.
 
-## Prompts and Models and APIs
+## Models and Responses
 
-You run one or more prompts at a time and get responses from one or more models. The application makes API calls behind the scenes to different model providers and records the response from each model (as well as the cost + latency of every request).
+You run one or more prompts at a time and get responses from one or more models at a time. The app makes API calls behind the scenes to these model providers:
 
-### Models
+| <img src="src/renderer/assets/openai.png" alt="OpenAI" width="20"/> OpenAI | <img src="src/renderer/assets/anthropic.png" alt="Anthropic" width="20"/> Anthropic | <img src="src/renderer/assets/google.png" alt="Google" width="20"/> Google |
+|---|---|---|
+| GPT 4o | Claude 4 Opus | Gemini 2.5 Pro |
+| GPT 4o mini | Claude 4 Sonnet | Gemini 2.5 Flash |
+| GPT 4.1 | Claude 3.7 Sonnet | |
+| GPT 4.1 mini | Claude 3.5 Haiku | |
+| o3 | | |
+| o4-mini | | |
 
-- OpenAI
-    - GPT 4o + mini
-    - GPT 4.1 + mini + nano
-    - o3
-    - o4-mini
-- Anthropic
-    - Claude 3.5 Haiku
-    - Claude 3.7 Sonnet
-    - Claude 4 Sonnet + Opus
-- Google
-    - Gemini 2.5 Pro
-    - Gemini 2.5 Flash
-
-<img src="assets/prompts-models-and-apis.png" alt="oh my" width="400"/>
+Eye on the Benchmarks saves the cost, latency, and resources accessed by the model APIs for the prompts you submit. The goal is to have full transparency and auditability into exactly what models saw and used along the way to their response.
 
 ## Context and Features
 

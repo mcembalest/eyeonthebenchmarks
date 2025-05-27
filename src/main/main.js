@@ -5,6 +5,60 @@ const electron = require('electron');
 const http = require('http');
 const { spawn } = require('child_process');
 const { shell } = require('electron');
+
+// Settings management
+const settingsPath = path.join(electron.app.getPath('userData'), 'settings.json');
+
+// Default settings
+const defaultSettings = {
+  apiKeys: {
+    openai: '',
+    anthropic: '',
+    google: ''
+  },
+  firstTimeSetup: true
+};
+
+// Settings store
+let settings = { ...defaultSettings };
+
+// Load settings from file
+async function loadSettings() {
+  try {
+    const data = await fs.readFile(settingsPath, 'utf8');
+    settings = { ...defaultSettings, ...JSON.parse(data) };
+    console.log('[Settings] Loaded settings from:', settingsPath);
+  } catch (error) {
+    console.log('[Settings] No existing settings file, using defaults');
+    settings = { ...defaultSettings };
+  }
+}
+
+// Save settings to file
+async function saveSettings() {
+  try {
+    await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+    console.log('[Settings] Saved settings to:', settingsPath);
+  } catch (error) {
+    console.error('[Settings] Failed to save settings:', error);
+  }
+}
+
+// Check if API keys are configured
+function hasValidApiKeys() {
+  const { apiKeys } = settings;
+  return apiKeys.openai || apiKeys.anthropic || apiKeys.google;
+}
+
+// Get API keys for environment
+function getApiKeysForEnv() {
+  return {
+    OPENAI_API_KEY: settings.apiKeys.openai || '',
+    ANTHROPIC_API_KEY: settings.apiKeys.anthropic || '',
+    GOOGLE_API_KEY: settings.apiKeys.google || ''
+  };
+}
+
 const apiHost = '127.0.0.1';
 const apiPort = 8000;
 const apiBase = `http://${apiHost}:${apiPort}`;
@@ -202,8 +256,11 @@ const startBackend = async () => {
   const { command, args } = getBackendCommand();
   console.log(`[Main Process] Attempting to start backend with command: '${command}' and args: [${args.join(', ')}]`);
   
+  // Set up environment variables with API keys from settings
+  const env = { ...process.env, ...getApiKeysForEnv() };
+  
   try {
-    backendProcess = spawn(command, args);
+    backendProcess = spawn(command, args, { env });
   } catch (spawnError) {
     console.error('[Main Process] CRITICAL: Error spawning backend process:', spawnError);
     // If spawn itself throws (e.g., command not found), we need to catch it here.
@@ -252,6 +309,26 @@ const startBackend = async () => {
   throw new Error('Backend failed to start');
 };
 
+const restartBackend = async () => {
+  console.log('[Main Process] Restarting backend...');
+  
+  // Kill existing backend process if it exists
+  if (backendProcess && !backendProcess.killed) {
+    console.log('[Main Process] Terminating existing backend process...');
+    backendProcess.kill('SIGTERM');
+    
+    // Wait a moment for the process to terminate
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+  
+  // Reset the process reference
+  backendProcess = null;
+  
+  // Start the backend again
+  await startBackend();
+  console.log('[Main Process] Backend restarted successfully!');
+};
+
 // App lifecycle and window creation
 // Clean up the backend process
 app.on('will-quit', () => {
@@ -262,6 +339,9 @@ app.on('will-quit', () => {
 });
 
 app.whenReady().then(async () => {
+  // Load settings first
+  await loadSettings();
+  
   // Start the backend before creating the window, but never block UI
   try {
     await startBackend();
@@ -591,6 +671,71 @@ const setupIpcHandlers = () => {
     } catch (err) {
       console.error('Error validating tokens:', err);
       return { status: 'error', message: err.message };
+    }
+  });
+
+  // Settings-related IPC handlers
+  ipcMain.handle('get-settings', async () => {
+    try {
+      return { success: true, settings };
+    } catch (error) {
+      console.error('Error getting settings:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('save-settings', async (event, newSettings) => {
+    try {
+      settings = { ...settings, ...newSettings };
+      await saveSettings();
+      return { success: true };
+    } catch (error) {
+      console.error('Error saving settings:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('update-api-keys', async (event, apiKeys) => {
+    try {
+      settings.apiKeys = { ...settings.apiKeys, ...apiKeys };
+      settings.firstTimeSetup = false; // Mark first-time setup as complete
+      await saveSettings();
+      console.log('[Settings] API keys updated successfully');
+      
+      // Restart the backend to pick up new API keys
+      console.log('[Settings] Restarting backend with new API keys...');
+      await restartBackend();
+      console.log('[Settings] Backend restarted with new API keys');
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Error updating API keys:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('check-api-keys', async () => {
+    try {
+      const hasKeys = hasValidApiKeys();
+      return { 
+        success: true, 
+        hasApiKeys: hasKeys,
+        isFirstTime: settings.firstTimeSetup 
+      };
+    } catch (error) {
+      console.error('Error checking API keys:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Shell functionality
+  ipcMain.handle('shell-open-external', async (event, url) => {
+    try {
+      await shell.openExternal(url);
+      return { success: true };
+    } catch (error) {
+      console.error('Error opening external URL:', error);
+      return { success: false, error: error.message };
     }
   });
 }

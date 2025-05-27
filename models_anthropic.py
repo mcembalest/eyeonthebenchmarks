@@ -11,16 +11,44 @@ import traceback
 # Load environment variables from .env file
 load_dotenv()
 
-# Get API key from environment
+# Get API key from environment - but don't fail if missing
 api_key = os.environ.get("ANTHROPIC_API_KEY")
-if not api_key:
-    raise ValueError("ANTHROPIC_API_KEY environment variable not set. Please check your .env file.")
 
-# Configure Anthropic client with beta features for file support
-client = anthropic.Anthropic(
-    api_key=api_key,
-    default_headers={"anthropic-beta": "files-api-2025-04-14"}
-)
+# Only initialize client if API key is available
+client = None
+if api_key:
+    # Configure Anthropic client with beta features for file support
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        default_headers={"anthropic-beta": "files-api-2025-04-14"}
+    )
+else:
+    print("[Anthropic] No API key found - will initialize when key is provided")
+
+def ensure_anthropic_client():
+    """Ensure Anthropic client is initialized with current API key"""
+    global client, api_key
+    current_api_key = os.environ.get("ANTHROPIC_API_KEY")
+    
+    if not current_api_key:
+        raise ValueError("Anthropic API key not found. Please configure it in Settings.")
+    
+    # Re-initialize client if API key has changed
+    if current_api_key != api_key:
+        api_key = current_api_key
+        client = anthropic.Anthropic(
+            api_key=api_key,
+            default_headers={"anthropic-beta": "files-api-2025-04-14"}
+        )
+        print("[Anthropic] Client initialized with new API key")
+    elif not client:
+        client = anthropic.Anthropic(
+            api_key=current_api_key,
+            default_headers={"anthropic-beta": "files-api-2025-04-14"}
+        )
+        print("[Anthropic] Client initialized")
+    
+    return client
 
 AVAILABLE_MODELS = [
     "claude-3-7-sonnet-20250219",
@@ -485,11 +513,12 @@ def anthropic_upload(pdf_path: Path) -> str:
     """
     logging.info(f"Starting Anthropic file upload for {pdf_path}")
     
-    # Validate API key first
-    if not api_key:
-        error_msg = "ANTHROPIC_API_KEY environment variable not set. Cannot upload file."
-        logging.error(error_msg)
-        raise ValueError(error_msg)
+    # Ensure client is available
+    try:
+        client = ensure_anthropic_client()
+    except ValueError as e:
+        logging.error(str(e))
+        raise
     
     # Validate file exists and is readable
     if not pdf_path.exists():
@@ -604,13 +633,13 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
         # Reload environment variables to ensure we have the latest
         load_dotenv()
         
-        # Check API key
-        api_key = os.environ.get('ANTHROPIC_API_KEY')
-        if not api_key:
-            error_msg = "ANTHROPIC_API_KEY environment variable is not set"
-            logging.error(error_msg)
-            raise ValueError(error_msg)
-            
+        # Ensure client is available
+        try:
+            client = ensure_anthropic_client()
+        except ValueError as e:
+            logging.error(str(e))
+            raise
+        
         # Create the messages structure
         messages = [
             {
@@ -690,6 +719,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
                             web_search_queries += 1
                     elif hasattr(content_block, 'type') and content_block.type == 'web_search_tool_result':
                         # Extract web search results
+                        web_search_used = True
                         web_search_sources += f"Web search tool result: {str(content_block)}\n"
                         if hasattr(content_block, 'content'):
                             for result in content_block.content:
@@ -708,6 +738,12 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
                 if any(indicator in answer.lower() for indicator in search_indicators):
                     web_search_used = True
                     web_search_queries = 1  # Assume 1 search query
+            
+            # Final fallback: if we have web search sources but web_search_used is still False, set it to True
+            if web_search and web_search_sources and not web_search_used:
+                web_search_used = True
+                web_search_queries = 1
+                logging.info("Web search sources detected but web_search_used was False - correcting this")
             
             if web_search_used:
                 logging.info(f"Web search detected: {web_search_queries} queries")
@@ -861,6 +897,9 @@ def count_tokens_anthropic(content: List[Dict], model_name: str) -> int:
         Estimated token count
     """
     try:
+        # Ensure client is available
+        client = ensure_anthropic_client()
+        
         # Convert content to Anthropic format for token counting
         anthropic_content = []
         
@@ -900,8 +939,21 @@ def count_tokens_anthropic(content: List[Dict], model_name: str) -> int:
         
     except Exception as e:
         logging.warning(f"Error counting tokens for Anthropic model {model_name}: {e}")
-        # Return a conservative high estimate if we can't count properly
-        return 150000
+        # Provide a more reasonable estimate based on file sizes if we have them
+        total_estimated = 0
+        for item in content:
+            if item.get("type") == "text":
+                # Rough estimate: ~1 token per 4 characters for text
+                total_estimated += len(item.get("text", "")) // 4
+            elif item.get("type") == "file":
+                # Rough estimate: ~1 token per 4 bytes for PDF text content
+                file_path = Path(item.get("file_path", ""))
+                if file_path.exists():
+                    file_size_bytes = file_path.stat().st_size
+                    total_estimated += file_size_bytes // 4
+        
+        # If we still have no estimate, return a conservative fallback
+        return max(total_estimated, 10000)  # More reasonable than 150k
 
 def get_context_limit_anthropic(model_name: str) -> int:
     """

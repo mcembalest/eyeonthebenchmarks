@@ -67,7 +67,7 @@ def validate_token_limits(prompts: List[Dict], pdf_paths: List[str], model_names
                 elif provider == "anthropic":
                     content = [{"type": "text", "text": prompt_text}]
                     for pdf_path in pdf_path_objects:
-                        content.append({"type": "document", "file_path": str(pdf_path)})
+                        content.append({"type": "file", "file_path": str(pdf_path)})
                     
                     estimated_tokens = count_tokens_anthropic(content, model_name)
                     context_limit = get_context_limit_anthropic(model_name)

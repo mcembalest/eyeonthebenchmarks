@@ -72,6 +72,12 @@ class Pages {
         case 'promptSetContent':
           this.initPromptSetPage();
           break;
+        case 'settingsContent':
+          // Settings page initialization is handled by the Settings class
+          if (window.Settings) {
+            window.Settings.loadSettings();
+          }
+          break;
         case 'detailsContent':
           // Details page initialization is handled by viewBenchmarkDetails
           break;
@@ -88,29 +94,39 @@ class Pages {
   updateHeaderActions(pageId) {
     const headerActions = document.getElementById('headerActions');
     
+    // Always include the Settings button
+    const settingsButton = `
+      <button id="settingsBtn" class="btn btn-outline-light">
+        <i class="fas fa-cog me-1"></i>Settings
+      </button>
+    `;
+    
     switch (pageId) {
       case 'homeContent':
         headerActions.innerHTML = `
-          <button class="btn btn-primary me-2" onclick="window.Pages.navigateTo('composerContent')">
-            <i class="fas fa-plus"></i> New Benchmark
-          </button>
+          ${settingsButton}
           <button class="btn btn-outline-light" onclick="window.Pages.navigateTo('promptSetContent')">
             <i class="fas fa-layer-group"></i> Prompts
+          </button>
+          <button class="btn btn-success border-2 ms-3" onclick="window.Pages.navigateTo('composerContent')" style="border-width: 2px !important; font-weight: 600; box-shadow: 0 2px 4px rgba(7, 234, 255, 0.3);">
+            <i class="fas fa-plus"></i> New Benchmark
           </button>
         `;
         break;
       case 'composerContent':
         headerActions.innerHTML = `
-          <button class="btn btn-success me-2" id="runBenchmarkBtn">
-            <i class="fas fa-play"></i> Run Benchmark
-          </button>
+          ${settingsButton}
           <button class="btn btn-outline-light" onclick="window.Pages.navigateTo('homeContent')">
             <i class="fas fa-home"></i> Back to Home
+          </button>
+          <button class="btn btn-success me-2 ms-3 border-2" id="runBenchmarkBtn" style="border-width: 2px !important; font-weight: 600;">
+            <i class="fas fa-play"></i> Run Benchmark
           </button>
         `;
         break;
       case 'promptSetContent':
         headerActions.innerHTML = `
+          ${settingsButton}
           <button class="btn btn-outline-light" onclick="window.Pages.navigateTo('homeContent')">
             <i class="fas fa-home"></i> Back to Home
           </button>
@@ -118,13 +134,22 @@ class Pages {
         break;
       case 'detailsContent':
         headerActions.innerHTML = `
+          ${settingsButton}
+          <button class="btn btn-outline-light" onclick="window.Pages.navigateTo('homeContent')">
+            <i class="fas fa-home"></i> Back to Home
+          </button>
+        `;
+        break;
+      case 'settingsContent':
+        headerActions.innerHTML = `
+          ${settingsButton}
           <button class="btn btn-outline-light" onclick="window.Pages.navigateTo('homeContent')">
             <i class="fas fa-home"></i> Back to Home
           </button>
         `;
         break;
       default:
-        headerActions.innerHTML = '';
+        headerActions.innerHTML = settingsButton;
     }
   }
 
@@ -1352,7 +1377,7 @@ class Pages {
         `;
 
         groupedModels[provider].forEach(model => {
-          const isDefault = model.id === 'gpt-4o-mini';
+          const isDefault = model.id === 'gpt-4.1';
           const checkbox = window.Components.createModelCheckbox(model, isDefault);
           providerDiv.appendChild(checkbox);
         });

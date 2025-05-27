@@ -355,7 +355,6 @@ class Components {
       <label class="form-check-label d-flex justify-content-between align-items-center" 
              for="model-${model.id}">
         <div class="d-flex align-items-center">
-          ${Utils.createModelImage(model.name, 'me-2', true)}
           <span>${Utils.sanitizeHtml(formattedName)}</span>
         </div>
         ${Utils.createProviderImage(model.provider, 'ms-2')}

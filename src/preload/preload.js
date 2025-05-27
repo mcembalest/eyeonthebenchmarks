@@ -69,4 +69,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
     console.log('Preload: validateTokens called');
     return ipcRenderer.invoke('validate-tokens', { prompts, pdfPaths, modelNames });
   },
+
+  // Settings-related functions
+  getSettings: () => ipcRenderer.invoke('get-settings'),
+  saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
+  updateApiKeys: (apiKeys) => ipcRenderer.invoke('update-api-keys', apiKeys),
+  checkApiKeys: () => ipcRenderer.invoke('check-api-keys'),
+
+  // Sound effects
+  playSound: (soundPath, shouldPlay = true) => ipcRenderer.invoke('play-sound', soundPath, shouldPlay),
+
+  // Shell functionality
+  shell: {
+    openExternal: (url) => ipcRenderer.invoke('shell-open-external', url)
+  },
 });
