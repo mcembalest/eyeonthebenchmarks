@@ -620,26 +620,24 @@ def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_nam
     ])
     
     if should_include_files and file_paths:
-        # Add files using base64 encoding (Anthropic's format)
+        # Add files using the Files API (upload and reference by file_id)
         for file_path in file_paths:
-            # Read file and encode as base64
-            import base64
             try:
-                with open(file_path, "rb") as pdf_file:
-                    pdf_base64 = base64.standard_b64encode(pdf_file.read()).decode("utf-8")
+                # Upload file and get file_id
+                file_id = ensure_file_uploaded(file_path, db_path)
                 
+                # Add document reference using file_id
                 content.append({
                     "type": "document",
                     "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": pdf_base64
+                        "type": "file",
+                        "file_id": file_id
                     }
                 })
-                logging.info(f"Added {file_path.name} as base64-encoded document")
+                logging.info(f"Added {file_path.name} using Files API with file_id: {file_id}")
             except Exception as e:
-                logging.error(f"Error encoding file {file_path}: {e}")
-                raise Exception(f"Failed to encode file {file_path}: {e}")
+                logging.error(f"Error uploading file {file_path}: {e}")
+                raise Exception(f"Failed to upload file {file_path}: {e}")
     elif file_paths and web_search:
         logging.info(f"Skipping {len(file_paths)} files because web search is enabled and prompt doesn't reference documents")
     
@@ -651,7 +649,7 @@ def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_nam
     
     return anthropic_ask_internal(content, model_name, web_search)
 
-def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: bool = False) -> Tuple[str, int, int, int, bool, str]:
+def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: bool = False) -> Tuple[str, int, int, int, int, bool, str]:
     """
     Internal function to send a query to Anthropic with prepared content.
     
@@ -661,6 +659,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             - standard_input_tokens (int): Tokens used in the input
             - cached_input_tokens (int): Cached tokens used
             - output_tokens (int): Tokens used in the output
+            - thinking_tokens (int): Thinking tokens used (for tracking, included in output_tokens)
             - web_search_used (bool): Whether web search was actually used
             - web_search_sources (str): Raw web search data as string
     """
@@ -846,8 +845,8 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             
             # Extract token usage
             usage = getattr(response, 'usage', {})
-            input_tokens = getattr(usage, 'input_tokens', input_token_count)
-            output_tokens = getattr(usage, 'output_tokens', len(answer) // 4)  # Rough estimate if not available
+            input_tokens = getattr(usage, 'input_tokens', input_token_count) or 0
+            output_tokens = getattr(usage, 'output_tokens', len(answer) // 4) or 0  # Rough estimate if not available
             
             # Estimate thinking tokens from thinking content
             thinking_tokens_estimated = 0

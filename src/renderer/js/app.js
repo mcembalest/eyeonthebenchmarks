@@ -78,7 +78,8 @@ class App {
       { selector: '#importCsvBtn', event: 'click', handler: () => this.handleCsvImport() },
       { selector: '#addPromptBtn', event: 'click', handler: () => window.Pages.addPrompt() },
       { selector: '#selectPdfBtn', event: 'click', handler: () => this.handlePdfSelection() },
-      { selector: '#selectMultiplePdfsBtn', event: 'click', handler: () => this.handleMultiplePdfSelection() }
+      { selector: '#selectMultiplePdfsBtn', event: 'click', handler: () => this.handleMultiplePdfSelection() },
+      { selector: '#selectExistingFilesBtn', event: 'click', handler: () => this.handleExistingFileSelection() }
     ]);
 
     // Global event listeners
@@ -232,6 +233,186 @@ class App {
       console.error('Error selecting multiple PDFs:', error);
       window.Components.showToast(`Failed to select PDFs: ${error.message}`, 'error');
     }
+  }
+
+  /**
+   * Handle existing file selection from registered files
+   */
+  async handleExistingFileSelection() {
+    try {
+      // Get all registered files
+      const files = await window.API.getFiles();
+      
+      if (!files || files.length === 0) {
+        window.Components.showToast('No files registered yet. Upload files first.', 'info');
+        return;
+      }
+
+      // Create modal for file selection
+      this.showFileSelectionModal(files);
+      
+    } catch (error) {
+      console.error('Error loading existing files:', error);
+      window.Components.showToast(`Failed to load files: ${error.message}`, 'error');
+    }
+  }
+
+  /**
+   * Show modal for selecting existing files
+   */
+  showFileSelectionModal(files) {
+    // Filter to show only existing files
+    const existingFiles = files.filter(file => file.exists_on_disk);
+    
+    if (existingFiles.length === 0) {
+      window.Components.showToast('No valid files available on disk', 'warning');
+      return;
+    }
+
+    const modalHtml = `
+      <div class="modal fade" id="fileSelectionModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title">
+                <i class="fas fa-folder-open me-2"></i>
+                Select Existing Files
+              </h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+              <p class="text-muted mb-3">Select files to include in your benchmark. CSV files will be processed as JSON records.</p>
+              
+              <div class="file-selection-list" style="max-height: 400px; overflow-y: auto;">
+                ${existingFiles.map(file => {
+                  const fileSize = this.formatFileSize(file.file_size_bytes);
+                  const isSelected = window.Pages.selectedPdfPaths.includes(file.file_path);
+                  const fileIcon = this.getFileIcon(file.original_filename);
+                  
+                  // Add CSV info if available
+                  let csvInfo = '';
+                  if (file.mime_type === 'text/csv' && file.csv_rows > 0) {
+                    csvInfo = `<small class="text-muted ms-2">(${file.csv_rows.toLocaleString()} rows, ${file.csv_columns} columns)</small>`;
+                  }
+                  
+                  return `
+                    <div class="form-check p-3 border rounded mb-2 ${isSelected ? 'bg-light' : ''}">
+                      <input class="form-check-input file-selection-checkbox" type="checkbox" 
+                             value="${Utils.sanitizeHtml(file.file_path)}" 
+                             id="file_${file.id}"
+                             ${isSelected ? 'checked' : ''}>
+                      <label class="form-check-label d-flex justify-content-between align-items-center w-100" for="file_${file.id}">
+                        <div>
+                          <i class="${fileIcon} text-primary me-2"></i>
+                          <strong>${Utils.sanitizeHtml(file.original_filename)}</strong>
+                          ${csvInfo}
+                          <br>
+                          <small class="text-muted">${fileSize} • ${new Date(file.created_at).toLocaleDateString()}</small>
+                        </div>
+                        ${file.mime_type === 'text/csv' ? '<span class="badge bg-info">CSV</span>' : ''}
+                      </label>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+              
+              <div class="mt-3">
+                <button class="btn btn-sm btn-outline-secondary" onclick="window.app.selectAllFiles(true)">
+                  <i class="fas fa-check-square me-1"></i>Select All
+                </button>
+                <button class="btn btn-sm btn-outline-secondary ms-2" onclick="window.app.selectAllFiles(false)">
+                  <i class="fas fa-square me-1"></i>Deselect All
+                </button>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+              <button type="button" class="btn btn-primary" onclick="window.app.confirmFileSelection()">
+                <i class="fas fa-check me-1"></i>Confirm Selection
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Remove existing modal if any
+    const existingModal = document.getElementById('fileSelectionModal');
+    if (existingModal) {
+      existingModal.remove();
+    }
+
+    // Add modal to DOM
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    
+    // Show modal
+    const modal = new bootstrap.Modal(document.getElementById('fileSelectionModal'));
+    modal.show();
+
+    // Clean up on hide
+    document.getElementById('fileSelectionModal').addEventListener('hidden.bs.modal', () => {
+      document.getElementById('fileSelectionModal').remove();
+    });
+  }
+
+  /**
+   * Select or deselect all files in the modal
+   */
+  selectAllFiles(select) {
+    const checkboxes = document.querySelectorAll('.file-selection-checkbox');
+    checkboxes.forEach(cb => cb.checked = select);
+  }
+
+  /**
+   * Confirm file selection from modal
+   */
+  confirmFileSelection() {
+    const selectedFiles = Array.from(document.querySelectorAll('.file-selection-checkbox:checked'))
+      .map(cb => cb.value);
+    
+    if (selectedFiles.length === 0) {
+      window.Components.showToast('No files selected', 'warning');
+      return;
+    }
+
+    // Update the selected files
+    window.Pages.selectedPdfPaths = selectedFiles;
+    this.updatePdfDisplay();
+
+    // Close modal
+    const modal = bootstrap.Modal.getInstance(document.getElementById('fileSelectionModal'));
+    modal.hide();
+
+    window.Components.showToast(`Selected ${selectedFiles.length} file(s)`, 'success');
+  }
+
+  /**
+   * Format file size for display
+   */
+  formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
+  /**
+   * Get file icon based on filename
+   */
+  getFileIcon(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    const iconMap = {
+      'pdf': 'fas fa-file-pdf',
+      'csv': 'fas fa-file-csv',
+      'xlsx': 'fas fa-file-excel',
+      'xls': 'fas fa-file-excel',
+      'doc': 'fas fa-file-word',
+      'docx': 'fas fa-file-word',
+      'txt': 'fas fa-file-alt',
+      'json': 'fas fa-file-code'
+    };
+    return iconMap[ext] || 'fas fa-file';
   }
 
   /**

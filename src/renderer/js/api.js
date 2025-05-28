@@ -481,6 +481,97 @@ class API {
     }
   }
 
+  // ===== FILE MANAGEMENT METHODS =====
+
+  /**
+   * Upload and register a file in the system
+   * @param {string} filePath - Path to the file to upload
+   * @returns {Promise<Object>} Upload result
+   */
+  async uploadFile(filePath) {
+    const cacheKey = 'files';
+    
+    try {
+      const response = await this.makeRequest('/files/upload', {
+        method: 'POST',
+        body: JSON.stringify({ filePath })
+      });
+
+      // Clear cache to force refresh
+      this.cache.delete(cacheKey);
+      
+      return response;
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get all registered files
+   * @param {boolean} useCache - Whether to use cached data
+   * @returns {Promise<Array>} Array of files
+   */
+  async getFiles(useCache = true) {
+    const cacheKey = 'files';
+    
+    if (useCache && this.cache.has(cacheKey)) {
+      return this.cache.get(cacheKey);
+    }
+
+    try {
+      const files = await this.makeRequest('/files');
+      this.cache.set(cacheKey, files);
+      return files;
+    } catch (error) {
+      console.error('Error fetching files:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get detailed information about a specific file
+   * @param {number} fileId - File ID
+   * @returns {Promise<Object>} File details
+   */
+  async getFileDetails(fileId) {
+    const cacheKey = `file_${fileId}`;
+    
+    try {
+      const details = await this.makeRequest(`/files/${fileId}`);
+      this.cache.set(cacheKey, details);
+      return details;
+    } catch (error) {
+      console.error(`Error fetching file ${fileId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a file from the system
+   * @param {number} fileId - File ID
+   * @returns {Promise<Object>} Deletion result
+   */
+  async deleteFile(fileId) {
+    const cacheKey = 'files';
+    const detailsCacheKey = `file_${fileId}`;
+    
+    try {
+      const response = await this.makeRequest(`/files/${fileId}`, {
+        method: 'DELETE'
+      });
+
+      // Clear cache to force refresh
+      this.cache.delete(cacheKey);
+      this.cache.delete(detailsCacheKey);
+      
+      return response;
+    } catch (error) {
+      console.error(`Error deleting file ${fileId}:`, error);
+      throw error;
+    }
+  }
+
   /**
    * Make a request to the API server
    * @param {string} endpoint - API endpoint

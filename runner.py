@@ -231,6 +231,13 @@ def run_benchmark_with_files(prompts: List[Dict], file_paths: List[Path], model_
                 reasoning_cost = cost_info.get("reasoning_cost", 0.0)
                 prompt_total_cost = cost_info.get("total_cost", 0.0)
 
+                # Ensure all token values are integers (not None) before adding
+                standard_input_tokens_val = standard_input_tokens_val if standard_input_tokens_val is not None else 0
+                cached_input_tokens_val = cached_input_tokens_val if cached_input_tokens_val is not None else 0
+                output_tokens_val = output_tokens_val if output_tokens_val is not None else 0
+                thinking_tokens_val = thinking_tokens_val if thinking_tokens_val is not None else 0
+                reasoning_tokens_val = reasoning_tokens_val if reasoning_tokens_val is not None else 0
+
                 total_standard_input_tokens_run += standard_input_tokens_val
                 total_cached_input_tokens_run += cached_input_tokens_val
                 total_output_tokens_run += output_tokens_val

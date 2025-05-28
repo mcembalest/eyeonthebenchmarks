@@ -50,7 +50,11 @@ from file_store import (
     get_prompt_set,
     update_prompt_set,
     delete_prompt_set,
-    get_next_prompt_set_number
+    get_next_prompt_set_number,
+    register_file,
+    get_all_files,
+    get_file_details,
+    delete_file
 )
 # Import the UI bridge protocol and data change types
 from ui_bridge import AppUIBridge, DataChangeType
@@ -1588,6 +1592,122 @@ class AppLogic:
             logging.error(f"Error getting next prompt set number: {e}")
             return 1
 
+    # ===== FILE MANAGEMENT =====
+    
+    def handle_upload_file(self, file_path: str) -> dict:
+        """Upload and register a file in the system."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import register_file
+            
+            file_path_obj = Path(file_path)
+            
+            # Validate file exists
+            if not file_path_obj.exists():
+                return {"success": False, "error": "File does not exist"}
+            
+            # Validate file type (PDF, CSV, XLSX)
+            allowed_extensions = {'.pdf', '.csv', '.xlsx'}
+            if file_path_obj.suffix.lower() not in allowed_extensions:
+                return {"success": False, "error": f"File type not supported. Allowed: {', '.join(allowed_extensions)}"}
+            
+            # Register file
+            file_id = register_file(file_path_obj, db_path)
+            
+            if file_id:
+                return {
+                    "success": True,
+                    "file_id": file_id,
+                    "message": f"File '{file_path_obj.name}' uploaded successfully"
+                }
+            else:
+                return {"success": False, "error": "Failed to register file"}
+                
+        except Exception as e:
+            logging.error(f"Error uploading file {file_path}: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def handle_get_files(self) -> List[dict]:
+        """Get all registered files."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import get_all_files
+            
+            return get_all_files(db_path)
+            
+        except Exception as e:
+            logging.error(f"Error getting files: {e}")
+            return []
+    
+    def handle_get_file_details(self, file_id: int) -> dict:
+        """Get details of a specific file."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import get_file_details
+            
+            file_details = get_file_details(file_id, db_path)
+            
+            if file_details:
+                return {"success": True, "file": file_details}
+            else:
+                return {"success": False, "error": "File not found"}
+                
+        except Exception as e:
+            logging.error(f"Error getting file details {file_id}: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def handle_delete_file(self, file_id: int) -> dict:
+        """Delete a file from the system."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import delete_file
+            
+            success = delete_file(file_id, db_path)
+            
+            if success:
+                return {"success": True, "message": f"File {file_id} deleted successfully"}
+            else:
+                return {"success": False, "error": "Failed to delete file (may be in use by benchmarks)"}
+                
+        except Exception as e:
+            logging.error(f"Error deleting file {file_id}: {e}")
+            return {"success": False, "error": str(e)}
+
+    # ===== PROMPT SET HANDLERS =====
+    
+    def handle_create_prompt_set(self, name: str, description: str, prompts: List[str]) -> dict:
+        """Create a new prompt set."""
+        return self.create_prompt_set(name, description, prompts)
+    
+    def handle_get_prompt_sets(self) -> List[dict]:
+        """Get all prompt sets."""
+        return self.get_prompt_sets()
+    
+    def handle_get_prompt_set_details(self, prompt_set_id: int) -> dict:
+        """Get detailed information about a specific prompt set."""
+        result = self.get_prompt_set_details(prompt_set_id)
+        if result:
+            return {"success": True, "prompt_set": result}
+        else:
+            return {"success": False, "error": "Prompt set not found"}
+    
+    def handle_update_prompt_set(self, prompt_set_id: int, name: str = None, 
+                                description: str = None, prompts: List[str] = None) -> dict:
+        """Update a prompt set."""
+        return self.update_prompt_set(prompt_set_id, name, description, prompts)
+    
+    def handle_delete_prompt_set(self, prompt_set_id: int) -> dict:
+        """Delete a prompt set."""
+        return self.delete_prompt_set(prompt_set_id)
+    
+    def handle_get_next_prompt_set_number(self) -> dict:
+        """Get the next available prompt set number."""
+        return {"next_number": self.get_next_prompt_set_number()}
+
+    def handle_validate_tokens(self, prompts: list, file_paths: list, model_names: list) -> dict:
+        """Validate token limits for given prompts, files, and models."""
+        return self.validate_tokens(prompts, file_paths, model_names)
+
     def validate_tokens(self, prompts: list, pdfPaths: list, modelNames: list) -> dict:
         """
         Validate that prompts + PDFs don't exceed context limits for the selected models.
@@ -1619,6 +1739,107 @@ class AppLogic:
         except Exception as e:
             logging.error(f"Error validating tokens: {str(e)}")
             return {"status": "error", "message": f"Token validation failed: {str(e)}"}
+
+    def get_model_token_budget(self, model_name: str) -> int:
+        """Get the token budget for a specific model (context limit minus buffer)."""
+        model_budgets = {
+            # OpenAI models
+            'gpt-4o': 120000,  # 128k - 8k buffer
+            'gpt-4o-mini': 120000,  # 128k - 8k buffer
+            'gpt-4.1': 120000,  # 128k - 8k buffer
+            'gpt-4.1-mini': 120000,  # 128k - 8k buffer
+            'o3': 120000,  # 128k - 8k buffer
+            'o4-mini': 120000,  # 128k - 8k buffer
+            
+            # Anthropic models
+            'claude-opus-4-20250514': 190000,  # 200k - 10k buffer
+            'claude-opus-4-20250514-thinking': 190000,
+            'claude-sonnet-4-20250514': 190000,
+            'claude-sonnet-4-20250514-thinking': 190000,
+            'claude-3-7-sonnet-20250219': 190000,
+            'claude-3-7-sonnet-20250219-thinking': 190000,
+            'claude-3-5-haiku-20241022': 190000,
+            
+            # Google models
+            'gemini-2.5-flash-preview-05-20': 990000,  # 1M - 10k buffer
+            'gemini-2.5-pro-preview-05-06': 990000,
+        }
+        
+        return model_budgets.get(model_name, 120000)  # Default to GPT-4o budget
+
+    def process_csv_for_model(self, csv_file_path: str, model_name: str) -> dict:
+        """
+        Process CSV file for a specific model, applying token budget limits.
+        
+        Returns:
+            Dict with 'data' (JSON string), 'truncation_info', 'included_rows', 'total_rows'
+        """
+        try:
+            from file_store import parse_csv_to_json_records, estimate_json_records_tokens
+            
+            # Get model's token budget
+            token_budget = self.get_model_token_budget(model_name)
+            
+            # Parse full CSV
+            csv_data = parse_csv_to_json_records(Path(csv_file_path))
+            total_rows = csv_data['total_rows']
+            
+            # Estimate tokens for full dataset
+            full_tokens = estimate_json_records_tokens(csv_data['records'])
+            
+            if full_tokens <= token_budget:
+                # No truncation needed
+                return {
+                    'data': json.dumps(csv_data['records'], separators=(',', ':')),
+                    'truncation_info': None,
+                    'included_rows': total_rows,
+                    'total_rows': total_rows,
+                    'estimated_tokens': full_tokens
+                }
+            
+            # Need to truncate - binary search for optimal row count
+            left, right = 1, total_rows
+            best_rows = 1
+            
+            while left <= right:
+                mid = (left + right) // 2
+                subset_data = parse_csv_to_json_records(Path(csv_file_path), max_rows=mid)
+                subset_tokens = estimate_json_records_tokens(subset_data['records'])
+                
+                if subset_tokens <= token_budget:
+                    best_rows = mid
+                    left = mid + 1
+                else:
+                    right = mid - 1
+            
+            # Get the final truncated data
+            truncated_data = parse_csv_to_json_records(Path(csv_file_path), max_rows=best_rows)
+            final_tokens = estimate_json_records_tokens(truncated_data['records'])
+            
+            # Create truncation info
+            truncation_info = {
+                'csv_truncations': [{
+                    'file_name': Path(csv_file_path).name,
+                    'original_rows': total_rows,
+                    'included_rows': best_rows,
+                    'token_budget': token_budget,
+                    'actual_tokens': final_tokens,
+                    'strategy': 'first_n_rows',
+                    'model': model_name
+                }]
+            }
+            
+            return {
+                'data': json.dumps(truncated_data['records'], separators=(',', ':')),
+                'truncation_info': truncation_info,
+                'included_rows': best_rows,
+                'total_rows': total_rows,
+                'estimated_tokens': final_tokens
+            }
+            
+        except Exception as e:
+            logging.error(f"Error processing CSV for model {model_name}: {e}")
+            raise
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

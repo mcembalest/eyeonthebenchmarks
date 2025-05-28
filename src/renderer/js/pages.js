@@ -72,6 +72,9 @@ class Pages {
         case 'promptSetContent':
           this.initPromptSetPage();
           break;
+        case 'filesContent':
+          this.initFilesPage();
+          break;
         case 'settingsContent':
           // Settings page initialization is handled by the Settings class
           if (window.Settings) {
@@ -108,6 +111,9 @@ class Pages {
           <button class="btn btn-outline-light" onclick="window.Pages.navigateTo('promptSetContent')">
             <i class="fas fa-layer-group"></i> Prompts
           </button>
+          <button class="btn btn-outline-light" onclick="window.Pages.navigateTo('filesContent')">
+            <i class="fas fa-file"></i> Files
+          </button>
           <button class="btn btn-success border-2 ms-3" onclick="window.Pages.navigateTo('composerContent')" style="border-width: 2px !important; font-weight: 600; box-shadow: 0 2px 4px rgba(7, 234, 255, 0.3);">
             <i class="fas fa-plus"></i> New Benchmark
           </button>
@@ -125,6 +131,14 @@ class Pages {
         `;
         break;
       case 'promptSetContent':
+        headerActions.innerHTML = `
+          ${settingsButton}
+          <button class="btn btn-outline-light" onclick="window.Pages.navigateTo('homeContent')">
+            <i class="fas fa-home"></i> Back to Home
+          </button>
+        `;
+        break;
+      case 'filesContent':
         headerActions.innerHTML = `
           ${settingsButton}
           <button class="btn btn-outline-light" onclick="window.Pages.navigateTo('homeContent')">
@@ -2943,27 +2957,450 @@ class Pages {
    * @param {string} sources - The web search sources text
    */
   copyWebSearchSources(sources) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(sources).then(() => {
-        window.Components.showToast('Web search sources copied to clipboard', 'success');
-      }).catch(err => {
-        console.error('Failed to copy to clipboard:', err);
-        window.Components.showToast('Failed to copy to clipboard', 'error');
+    navigator.clipboard.writeText(sources).then(() => {
+      window.Components.showToast('Web search sources copied to clipboard', 'success');
+    }).catch(err => {
+      console.error('Failed to copy sources:', err);
+      window.Components.showToast('Failed to copy sources', 'error');
+    });
+  }
+
+  // ===== FILES PAGE METHODS =====
+
+  /**
+   * Initialize files page
+   */
+  async initFilesPage() {
+    await this.loadFiles();
+    this.setupFilesEventListeners();
+  }
+
+  /**
+   * Load and display files
+   */
+  async loadFiles() {
+    try {
+      const files = await window.API.getFiles();
+      this.renderFiles(files);
+    } catch (error) {
+      console.error('Error loading files:', error);
+      window.Components.showToast('Failed to load files', 'error');
+    }
+  }
+
+  /**
+   * Render files list
+   */
+  renderFiles(files) {
+    const container = document.getElementById('filesListContainer');
+    if (!container) return;
+
+    if (files.length === 0) {
+      container.innerHTML = `
+        <div class="text-center py-5">
+          <i class="fas fa-file fa-3x text-muted mb-3"></i>
+          <h5 class="text-muted">No Files Yet</h5>
+          <p class="text-muted">Upload your first file to get started</p>
+          <button class="btn btn-primary" onclick="window.Pages.uploadFile()">
+            <i class="fas fa-upload"></i> Upload Your First File
+          </button>
+        </div>
+      `;
+      return;
+    }
+
+    // Create table with sortable headers
+    const tableHtml = `
+      <div class="table-responsive">
+        <table class="table table-hover" id="filesTable">
+          <thead class="table-light">
+            <tr>
+              <th scope="col" data-sort="name" style="cursor: pointer;">
+                File Name <i class="fas fa-sort text-muted"></i>
+              </th>
+              <th scope="col" data-sort="size" style="cursor: pointer;">
+                Size <i class="fas fa-sort text-muted"></i>
+              </th>
+              <th scope="col" data-sort="date" style="cursor: pointer;">
+                Uploaded <i class="fas fa-sort text-muted"></i>
+              </th>
+              <th scope="col">Status</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${files.map(file => {
+              const fileSize = this.formatFileSize(file.file_size_bytes);
+              const fileIcon = this.getFileIcon(file.original_filename);
+              const createdDate = new Date(file.created_at);
+              const formattedDate = createdDate.toLocaleDateString();
+              const formattedTime = createdDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+              const existsClass = file.exists_on_disk ? 'text-success' : 'text-danger';
+              const existsIcon = file.exists_on_disk ? 'fa-check-circle' : 'fa-exclamation-triangle';
+              const existsText = file.exists_on_disk ? 'Available' : 'Missing';
+
+              // Add CSV info if it's a CSV file
+              let csvInfo = '';
+              if (file.mime_type === 'text/csv' && file.csv_rows > 0) {
+                csvInfo = `<br><small class="text-muted">${file.csv_rows.toLocaleString()} rows, ${file.csv_columns} columns</small>`;
+              }
+
+              return `
+                <tr>
+                  <td data-sort="${Utils.sanitizeHtml(file.original_filename).toLowerCase()}">
+                    <div class="d-flex align-items-center">
+                      <i class="${fileIcon} text-primary me-2"></i>
+                      <div>
+                        <span>${Utils.sanitizeHtml(file.original_filename)}</span>
+                        ${csvInfo}
+                      </div>
+                    </div>
+                  </td>
+                  <td data-sort="${file.file_size_bytes}">
+                    ${fileSize}
+                  </td>
+                  <td data-sort="${file.created_at}">
+                    <div>
+                      <div>${formattedDate}</div>
+                      <small class="text-muted">${formattedTime}</small>
+                    </div>
+                  </td>
+                  <td>
+                    <span class="badge ${existsClass === 'text-success' ? 'bg-success' : 'bg-warning'}">
+                      <i class="fas ${existsIcon} me-1"></i>${existsText}
+                    </span>
+                  </td>
+                  <td>
+                    <div class="btn-group btn-group-sm">
+                      <button class="btn btn-outline-primary" onclick="window.Pages.viewFileDetails(${file.id})" title="View Details">
+                        <i class="fas fa-info-circle"></i>
+                      </button>
+                      <button class="btn btn-outline-danger" onclick="window.Pages.deleteFile(${file.id}, '${Utils.sanitizeHtml(file.original_filename)}')" title="Delete File">
+                        <i class="fas fa-trash"></i>
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    container.innerHTML = tableHtml;
+    
+    // Set up table sorting
+    this.setupFilesTableSorting();
+  }
+
+  /**
+   * Set up event listeners for files page
+   */
+  setupFilesEventListeners() {
+    const uploadBtn = document.getElementById('uploadFileBtn');
+    if (uploadBtn) {
+      uploadBtn.onclick = () => this.uploadFile();
+    }
+  }
+
+  /**
+   * Set up table sorting for files table
+   */
+  setupFilesTableSorting() {
+    const table = document.getElementById('filesTable');
+    if (!table) return;
+
+    const headers = table.querySelectorAll('th[data-sort]');
+    let currentSort = { column: null, direction: 'asc' };
+
+    headers.forEach(header => {
+      header.addEventListener('click', () => {
+        const sortType = header.dataset.sort;
+        const tbody = table.querySelector('tbody');
+        const rows = Array.from(tbody.querySelectorAll('tr'));
+
+        // Update sort direction
+        if (currentSort.column === sortType) {
+          currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+        } else {
+          currentSort.column = sortType;
+          currentSort.direction = 'asc';
+        }
+
+        // Update header icons
+        headers.forEach(h => {
+          const icon = h.querySelector('i');
+          icon.className = 'fas fa-sort text-muted';
+        });
+        
+        const currentIcon = header.querySelector('i');
+        currentIcon.className = currentSort.direction === 'asc' 
+          ? 'fas fa-sort-up text-primary' 
+          : 'fas fa-sort-down text-primary';
+
+        // Sort rows
+        rows.sort((a, b) => {
+          let aVal, bVal;
+
+          if (sortType === 'name') {
+            // Sort by filename (case-insensitive)
+            aVal = a.cells[0].dataset.sort;
+            bVal = b.cells[0].dataset.sort;
+          } else if (sortType === 'size') {
+            // Sort by file size (numeric)
+            aVal = parseInt(a.cells[1].dataset.sort || 0);
+            bVal = parseInt(b.cells[1].dataset.sort || 0);
+          } else if (sortType === 'date') {
+            // Sort by upload date
+            aVal = new Date(a.cells[2].dataset.sort);
+            bVal = new Date(b.cells[2].dataset.sort);
+          }
+
+          if (currentSort.direction === 'asc') {
+            return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+          } else {
+            return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
+          }
+        });
+
+        // Re-append sorted rows
+        rows.forEach(row => tbody.appendChild(row));
       });
-    } else {
-      // Fallback for older browsers
-      const textArea = document.createElement('textarea');
-      textArea.value = sources;
-      document.body.appendChild(textArea);
-      textArea.select();
-      try {
-        document.execCommand('copy');
-        window.Components.showToast('Web search sources copied to clipboard', 'success');
-      } catch (err) {
-        console.error('Failed to copy to clipboard:', err);
-        window.Components.showToast('Failed to copy to clipboard', 'error');
+    });
+  }
+
+  /**
+   * Upload a new file
+   */
+  async uploadFile() {
+    try {
+      const filePath = await window.API.openFileDialog({
+        properties: ['openFile'],
+        filters: [
+          { name: 'Supported Files', extensions: ['pdf', 'csv', 'xlsx'] },
+          { name: 'PDF Files', extensions: ['pdf'] },
+          { name: 'CSV Files', extensions: ['csv'] },
+          { name: 'Excel Files', extensions: ['xlsx'] }
+        ]
+      });
+
+      if (!filePath) return;
+
+      window.Components.showToast('Uploading file...', 'info');
+
+      const result = await window.API.uploadFile(filePath);
+
+      if (result.success) {
+        window.Components.showToast(result.message, 'success');
+        await this.loadFiles(); // Refresh the files list
+      } else {
+        window.Components.showToast(result.error, 'error');
       }
-      document.body.removeChild(textArea);
+
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      window.Components.showToast('Failed to upload file', 'error');
+    }
+  }
+
+  /**
+   * View file details
+   */
+  async viewFileDetails(fileId) {
+    try {
+      const result = await window.API.getFileDetails(fileId);
+      
+      if (!result.success) {
+        window.Components.showToast(result.error, 'error');
+        return;
+      }
+
+      const file = result.file;
+      this.showFileDetailsModal(file);
+
+    } catch (error) {
+      console.error('Error getting file details:', error);
+      window.Components.showToast('Failed to load file details', 'error');
+    }
+  }
+
+  /**
+   * Show file details modal
+   */
+  showFileDetailsModal(file) {
+    const fileSize = this.formatFileSize(file.file_size_bytes);
+    const createdDate = new Date(file.created_at).toLocaleString();
+    const existsClass = file.exists_on_disk ? 'text-success' : 'text-danger';
+    const existsIcon = file.exists_on_disk ? 'fa-check-circle' : 'fa-exclamation-triangle';
+    const existsText = file.exists_on_disk ? 'Available on disk' : 'Missing from disk';
+
+    const uploadsHtml = file.provider_uploads && file.provider_uploads.length > 0 
+      ? file.provider_uploads.map(upload => `
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>
+              <strong>${upload.provider}</strong>
+              <br><small class="text-muted">ID: ${upload.provider_file_id}</small>
+            </span>
+            <small class="text-muted">${new Date(upload.uploaded_at).toLocaleString()}</small>
+          </li>
+        `).join('')
+      : '<li class="list-group-item text-muted">No provider uploads yet</li>';
+
+    // CSV preview section
+    let csvPreviewHtml = '';
+    if (file.mime_type === 'text/csv' && file.csv_data) {
+      const csvData = file.csv_data;
+      const previewRecords = csvData.records.slice(0, 2); // Show first 2 rows
+      
+      csvPreviewHtml = `
+        <h6>CSV Data Preview</h6>
+        <div class="mb-3">
+          <div class="row mb-2">
+            <div class="col-md-6">
+              <strong>Total Rows:</strong> ${csvData.total_rows.toLocaleString()}
+            </div>
+            <div class="col-md-6">
+              <strong>Columns:</strong> ${csvData.columns.length}
+            </div>
+          </div>
+          <div class="mb-2">
+            <strong>Column Names:</strong>
+            <div class="d-flex flex-wrap gap-1 mt-1">
+              ${csvData.columns.map(col => `<span class="badge bg-secondary">${Utils.sanitizeHtml(col)}</span>`).join('')}
+            </div>
+          </div>
+          <div>
+            <strong>Sample Data (first 2 rows as JSON records):</strong>
+            <pre class="bg-light p-2 mt-1 small" style="max-height: 200px; overflow-y: auto;"><code>${Utils.sanitizeHtml(JSON.stringify(previewRecords, null, 2))}</code></pre>
+          </div>
+        </div>
+      `;
+    }
+
+    const modalHtml = `
+      <div class="modal fade" id="fileDetailsModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title">
+                <i class="${this.getFileIcon(file.original_filename)} me-2"></i>
+                ${Utils.sanitizeHtml(file.original_filename)}
+              </h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+              <div class="row mb-3">
+                <div class="col-md-6">
+                  <strong>File Size:</strong> ${fileSize}
+                </div>
+                <div class="col-md-6">
+                  <strong>Status:</strong> 
+                  <span class="${existsClass}">
+                    <i class="fas ${existsIcon} me-1"></i>${existsText}
+                  </span>
+                </div>
+              </div>
+              <div class="row mb-3">
+                <div class="col-md-6">
+                  <strong>MIME Type:</strong> ${file.mime_type}
+                </div>
+                <div class="col-md-6">
+                  <strong>Uploaded:</strong> ${createdDate}
+                </div>
+              </div>
+              <div class="mb-3">
+                <strong>File Path:</strong>
+                <br><code>${Utils.sanitizeHtml(file.file_path)}</code>
+              </div>
+              
+              ${csvPreviewHtml}
+              
+              <h6>Provider Uploads</h6>
+              <ul class="list-group mb-3">
+                ${uploadsHtml}
+              </ul>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Remove existing modal if any
+    const existingModal = document.getElementById('fileDetailsModal');
+    if (existingModal) {
+      existingModal.remove();
+    }
+
+    // Add modal to DOM
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    // Show modal
+    const modal = new bootstrap.Modal(document.getElementById('fileDetailsModal'));
+    modal.show();
+
+    // Clean up modal when hidden
+    document.getElementById('fileDetailsModal').addEventListener('hidden.bs.modal', function() {
+      this.remove();
+    });
+  }
+
+  /**
+   * Delete a file
+   */
+  async deleteFile(fileId, fileName) {
+    // Use the createConfirmModal method that exists in Components
+    window.Components.createConfirmModal(
+      'Delete File',
+      `Are you sure you want to delete "${fileName}"? This action cannot be undone.`,
+      async () => {
+        try {
+          const result = await window.API.deleteFile(fileId);
+
+          if (result.success) {
+            window.Components.showToast(result.message, 'success');
+            await this.loadFiles(); // Refresh the files list
+          } else {
+            window.Components.showToast(result.error, 'error');
+          }
+
+        } catch (error) {
+          console.error('Error deleting file:', error);
+          window.Components.showToast('Failed to delete file', 'error');
+        }
+      }
+    );
+  }
+
+  /**
+   * Format file size in human readable format
+   */
+  formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
+  /**
+   * Get appropriate icon for file type
+   */
+  getFileIcon(filename) {
+    const extension = filename.split('.').pop().toLowerCase();
+    switch (extension) {
+      case 'pdf':
+        return 'fas fa-file-pdf';
+      case 'csv':
+        return 'fas fa-file-csv';
+      case 'xlsx':
+      case 'xls':
+        return 'fas fa-file-excel';
+      default:
+        return 'fas fa-file';
     }
   }
 }

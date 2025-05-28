@@ -200,47 +200,78 @@ async def create_prompt_set(payload: dict):
     if not prompts:
         raise HTTPException(status_code=400, detail="At least one prompt is required")
     
-    return logic.create_prompt_set(name, description, prompts)
+    return logic.handle_create_prompt_set(name, description, prompts)
 
 @app.get("/prompt-sets")
 async def get_prompt_sets():
     """Get all prompt sets."""
-    return logic.get_prompt_sets()
+    return logic.handle_get_prompt_sets()
 
 @app.get("/prompt-sets/next-number")
 async def get_next_prompt_set_number():
-    """Get the next available prompt set number for auto-naming."""
-    return {"next_number": logic.get_next_prompt_set_number()}
+    """Get the next available prompt set number."""
+    return logic.handle_get_next_prompt_set_number()
 
 @app.get("/prompt-sets/{prompt_set_id}")
 async def get_prompt_set_details(prompt_set_id: int):
-    """Get detailed information about a specific prompt set."""
-    details = logic.get_prompt_set_details(prompt_set_id)
-    if details is None:
+    """Get details of a specific prompt set."""
+    result = logic.handle_get_prompt_set_details(prompt_set_id)
+    if not result.get("success"):
         raise HTTPException(status_code=404, detail="Prompt set not found")
-    return details
+    return result
 
 @app.put("/prompt-sets/{prompt_set_id}")
 async def update_prompt_set(prompt_set_id: int, payload: dict):
-    """Update a prompt set."""
-    name = payload.get("name")
-    description = payload.get("description")
-    prompts = payload.get("prompts")
+    """Update an existing prompt set."""
+    name = payload.get("name", "")
+    description = payload.get("description", "")
+    prompts = payload.get("prompts", [])
     
-    return logic.update_prompt_set(prompt_set_id, name, description, prompts)
+    return logic.handle_update_prompt_set(prompt_set_id, name, description, prompts)
 
 @app.delete("/prompt-sets/{prompt_set_id}")
 async def delete_prompt_set(prompt_set_id: int):
     """Delete a prompt set."""
-    return logic.delete_prompt_set(prompt_set_id)
+    return logic.handle_delete_prompt_set(prompt_set_id)
+
+# ===== FILE MANAGEMENT ENDPOINTS =====
+
+@app.post("/files/upload")
+async def upload_file(payload: dict):
+    """Upload and register a file in the system."""
+    file_path = payload.get("filePath", "")
+    
+    if not file_path:
+        raise HTTPException(status_code=400, detail="File path is required")
+    
+    return logic.handle_upload_file(file_path)
+
+@app.get("/files")
+async def get_files():
+    """Get all registered files."""
+    return logic.handle_get_files()
+
+@app.get("/files/{file_id}")
+async def get_file_details(file_id: int):
+    """Get details of a specific file."""
+    result = logic.handle_get_file_details(file_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail="File not found")
+    return result
+
+@app.delete("/files/{file_id}")
+async def delete_file(file_id: int):
+    """Delete a file from the system."""
+    return logic.handle_delete_file(file_id)
 
 @app.post("/validate-tokens")
 async def validate_tokens(payload: dict):
-    return logic.validate_tokens(
-        payload.get("prompts", []),
-        payload.get("pdfPaths", []),
-        payload.get("modelNames", [])
-    )
+    """Validate token limits for given prompts, files, and models."""
+    prompts = payload.get("prompts", [])
+    file_paths = payload.get("filePaths", [])
+    model_names = payload.get("modelNames", [])
+    
+    return logic.handle_validate_tokens(prompts, file_paths, model_names)
 
 if __name__ == "__main__":
     import uvicorn

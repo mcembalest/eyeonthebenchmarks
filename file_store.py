@@ -4,7 +4,8 @@ from pathlib import Path
 import datetime
 import json
 import logging
-from typing import Optional, List
+import csv
+from typing import Optional, List, Dict, Any
 
 DB_NAME = "eotb_file_store.sqlite"
 
@@ -34,7 +35,8 @@ def init_db(db_path: Path = Path.cwd()):
             file_path TEXT NOT NULL,
             file_size_bytes INTEGER,
             mime_type TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            csv_data TEXT  -- JSON data for CSV files
         )
     ''')
     
@@ -164,6 +166,7 @@ def init_db(db_path: Path = Path.cwd()):
             total_cost REAL DEFAULT 0,
             web_search_used BOOLEAN DEFAULT 0,
             web_search_sources TEXT,
+            truncation_info TEXT,
             FOREIGN KEY (benchmark_run_id) REFERENCES {BENCHMARK_RUNS_TABLE}(id)
         )       
     ''')
@@ -228,6 +231,26 @@ def init_db(db_path: Path = Path.cwd()):
         else:
             logging.warning(f"Could not add web_search_sources column: {e}")
 
+    # Add truncation_info column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARK_PROMPTS_TABLE} ADD COLUMN truncation_info TEXT')
+        logging.info("Added truncation_info column to benchmark_prompts table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("truncation_info column already exists")
+        else:
+            logging.warning(f"Could not add truncation_info column: {e}")
+
+    # Add csv_data column to files table if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {FILES_TABLE} ADD COLUMN csv_data TEXT')
+        logging.info("Added csv_data column to files table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("csv_data column already exists")
+        else:
+            logging.warning(f"Could not add csv_data column: {e}")
+
     # Benchmark Reports Table
     cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS {BENCHMARK_REPORTS_TABLE} (
@@ -255,6 +278,83 @@ def _calculate_file_hash(file_path: Path) -> str:
     except Exception as e:
         logging.error(f"Error calculating hash for {file_path}: {e}")
         raise
+
+def _get_mime_type(file_path: Path) -> str:
+    """Get MIME type based on file extension."""
+    extension = file_path.suffix.lower()
+    mime_types = {
+        '.pdf': 'application/pdf',
+        '.csv': 'text/csv',
+        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        '.xls': 'application/vnd.ms-excel'
+    }
+    return mime_types.get(extension, 'application/octet-stream')
+
+def parse_csv_to_json_records(file_path: Path, max_rows: int = None) -> Dict[str, Any]:
+    """
+    Parse CSV file into JSON records format (like pandas to_json(orient='records')).
+    
+    Args:
+        file_path: Path to the CSV file
+        max_rows: Maximum number of rows to include (None for all)
+        
+    Returns:
+        Dict with 'records', 'total_rows', 'included_rows', 'columns'
+    """
+    try:
+        records = []
+        total_rows = 0
+        
+        with open(file_path, 'r', encoding='utf-8', newline='') as csvfile:
+            # Detect delimiter
+            sample = csvfile.read(1024)
+            csvfile.seek(0)
+            sniffer = csv.Sniffer()
+            delimiter = sniffer.sniff(sample).delimiter
+            
+            reader = csv.DictReader(csvfile, delimiter=delimiter)
+            columns = reader.fieldnames or []
+            
+            for row_num, row in enumerate(reader):
+                total_rows += 1
+                
+                if max_rows is None or row_num < max_rows:
+                    # Clean up the row data
+                    clean_row = {}
+                    for key, value in row.items():
+                        # Handle None keys (can happen with malformed CSV)
+                        clean_key = key.strip() if key else f"column_{len(clean_row)}"
+                        # Convert empty strings to None for cleaner JSON
+                        clean_value = value.strip() if value and value.strip() else None
+                        clean_row[clean_key] = clean_value
+                    records.append(clean_row)
+                
+                # Stop reading if we've hit our limit
+                if max_rows and row_num >= max_rows:
+                    break
+        
+        return {
+            'records': records,
+            'total_rows': total_rows,
+            'included_rows': len(records),
+            'columns': columns
+        }
+        
+    except Exception as e:
+        logging.error(f"Error parsing CSV {file_path}: {e}")
+        raise
+
+def estimate_json_records_tokens(records: List[Dict[str, Any]]) -> int:
+    """
+    Estimate token count for JSON records.
+    Rough approximation: 1 token ≈ 4 characters for JSON data.
+    """
+    json_str = json.dumps(records, separators=(',', ':'))
+    return len(json_str) // 4
+
+def get_csv_preview(file_path: Path, preview_rows: int = 2) -> Dict[str, Any]:
+    """Get a preview of CSV data for display in UI."""
+    return parse_csv_to_json_records(file_path, max_rows=preview_rows)
 
 def _register_file_with_connection(file_path: Path, cursor, conn) -> int:
     """
@@ -285,7 +385,7 @@ def _register_file_with_connection(file_path: Path, cursor, conn) -> int:
         (file_hash, original_filename, file_path, file_size_bytes, mime_type, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
     ''', (file_hash, file_path.name, str(file_path.resolve()), 
-          file_stats.st_size, "application/pdf", created_at))
+          file_stats.st_size, _get_mime_type(file_path), created_at))
     
     file_id = cursor.lastrowid
     logging.info(f"Registered new file {file_path.name} with ID {file_id}")
@@ -316,15 +416,31 @@ def register_file(file_path: Path, db_path: Path = Path.cwd()) -> int:
         # Register new file
         file_stats = file_path.stat()
         created_at = datetime.datetime.now().isoformat()
+        mime_type = _get_mime_type(file_path)
         
         cursor.execute(f'''
             INSERT INTO {FILES_TABLE} 
             (file_hash, original_filename, file_path, file_size_bytes, mime_type, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (file_hash, file_path.name, str(file_path.resolve()), 
-              file_stats.st_size, "application/pdf", created_at)) # Assuming PDF, adjust if needed
+              file_stats.st_size, mime_type, created_at))
         
         file_id = cursor.lastrowid
+        
+        # If it's a CSV file, parse and store the data
+        if mime_type == 'text/csv':
+            try:
+                csv_data = parse_csv_to_json_records(file_path)
+                # Store CSV data as JSON in the csv_data column
+                cursor.execute(f'''
+                    UPDATE {FILES_TABLE} 
+                    SET csv_data = ?
+                    WHERE id = ?
+                ''', (json.dumps(csv_data), file_id))
+                logging.info(f"Stored CSV data for {file_path.name}: {csv_data['total_rows']} rows, {len(csv_data['columns'])} columns")
+            except Exception as e:
+                logging.warning(f"Could not parse CSV data for {file_path.name}: {e}")
+        
         conn.commit()
         logging.info(f"Registered new file {file_path.name} with ID {file_id}")
         return file_id
@@ -542,6 +658,7 @@ def save_benchmark_prompt(benchmark_run_id: int, prompt: str, response: str,
                          reasoning_cost: float = 0.0, total_cost: float = 0.0,
                          web_search_used: bool = False,
                          web_search_sources: str = "",
+                         truncation_info: str = "",
                          db_path: Path = Path.cwd()) -> Optional[int]:
     """Save a prompt result (response, latency, tokens, costs) for a benchmark run."""
     db_file = db_path / DB_NAME
@@ -555,8 +672,8 @@ def save_benchmark_prompt(benchmark_run_id: int, prompt: str, response: str,
              standard_input_tokens, cached_input_tokens, output_tokens,
              thinking_tokens, reasoning_tokens,
              input_cost, cached_cost, output_cost, thinking_cost, reasoning_cost, total_cost, 
-             web_search_used, web_search_sources)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             web_search_used, web_search_sources, truncation_info)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (benchmark_run_id, str(prompt), str(response),
               float(latency) if latency is not None else 0.0, 
               int(standard_input_tokens) if standard_input_tokens is not None else 0,
@@ -565,7 +682,7 @@ def save_benchmark_prompt(benchmark_run_id: int, prompt: str, response: str,
               int(thinking_tokens) if thinking_tokens is not None else 0,
               int(reasoning_tokens) if reasoning_tokens is not None else 0,
               input_cost, cached_cost, output_cost, thinking_cost, reasoning_cost, total_cost, 
-              1 if web_search_used else 0, web_search_sources))
+              1 if web_search_used else 0, web_search_sources, truncation_info))
         
         prompt_id = cursor.lastrowid
         conn.commit()
@@ -1304,6 +1421,168 @@ def update_benchmark_run(run_id: int, latency: float = None,
         
     except sqlite3.Error as e:
         logging.error(f"SQLite error when updating benchmark run {run_id}: {e}")
+        return False
+    finally:
+        conn.close()
+
+# ===== FILE MANAGEMENT FUNCTIONS =====
+
+def get_all_files(db_path: Path = Path.cwd()) -> List[dict]:
+    """Get all registered files."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute(f'''
+            SELECT id, file_hash, original_filename, file_path, 
+                   file_size_bytes, mime_type, created_at, csv_data
+            FROM {FILES_TABLE}
+            ORDER BY created_at DESC
+        ''')
+        
+        files = []
+        for row in cursor.fetchall():
+            file_dict = dict(row)
+            
+            # Parse CSV data if available
+            if file_dict.get('csv_data'):
+                try:
+                    csv_data = json.loads(file_dict['csv_data'])
+                    file_dict['csv_rows'] = csv_data.get('total_rows', 0)
+                    file_dict['csv_columns'] = len(csv_data.get('columns', []))
+                except json.JSONDecodeError:
+                    file_dict['csv_rows'] = 0
+                    file_dict['csv_columns'] = 0
+            else:
+                file_dict['csv_rows'] = 0
+                file_dict['csv_columns'] = 0
+            
+            # Check if file still exists on disk
+            file_dict['exists_on_disk'] = Path(file_dict['file_path']).exists()
+            files.append(file_dict)
+        
+        return files
+        
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error when getting all files: {e}")
+        return []
+    finally:
+        conn.close()
+
+def get_file_details(file_id: int, db_path: Path = Path.cwd()) -> Optional[dict]:
+    """Get detailed information about a specific file."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute(f'''
+            SELECT id, file_hash, original_filename, file_path, 
+                   file_size_bytes, mime_type, created_at, csv_data
+            FROM {FILES_TABLE}
+            WHERE id = ?
+        ''', (file_id,))
+        
+        row = cursor.fetchone()
+        if not row:
+            return None
+        
+        file_dict = dict(row)
+        
+        # Parse CSV data if available
+        if file_dict.get('csv_data'):
+            try:
+                file_dict['csv_data'] = json.loads(file_dict['csv_data'])
+            except json.JSONDecodeError:
+                logging.warning(f"Could not parse CSV data for file {file_id}")
+                file_dict['csv_data'] = None
+        
+        # Check if file still exists on disk
+        file_dict['exists_on_disk'] = Path(file_dict['file_path']).exists()
+        
+        # Get provider uploads for this file
+        cursor.execute(f'''
+            SELECT provider, provider_file_id, uploaded_at
+            FROM {PROVIDER_FILE_UPLOADS_TABLE}
+            WHERE file_id = ?
+        ''', (file_id,))
+        
+        uploads = []
+        for upload_row in cursor.fetchall():
+            uploads.append({
+                'provider': upload_row[0],
+                'provider_file_id': upload_row[1],
+                'uploaded_at': upload_row[2]
+            })
+        
+        file_dict['provider_uploads'] = uploads
+        
+        # Get benchmarks that use this file
+        cursor.execute(f'''
+            SELECT b.id, b.label, b.created_at
+            FROM {BENCHMARKS_TABLE} b
+            JOIN {BENCHMARK_FILES_TABLE} bf ON b.id = bf.benchmark_id
+            WHERE bf.file_id = ?
+            ORDER BY b.created_at DESC
+        ''', (file_id,))
+        
+        benchmarks = []
+        for benchmark_row in cursor.fetchall():
+            benchmarks.append({
+                'id': benchmark_row[0],
+                'label': benchmark_row[1],
+                'created_at': benchmark_row[2]
+            })
+        
+        file_dict['used_in_benchmarks'] = benchmarks
+        
+        return file_dict
+        
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error when getting file details {file_id}: {e}")
+        return None
+    finally:
+        conn.close()
+
+def delete_file(file_id: int, db_path: Path = Path.cwd()) -> bool:
+    """Delete a file from the system."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    try:
+        conn.execute("BEGIN TRANSACTION")
+        
+        # Check if any benchmarks are using this file
+        cursor.execute(f'''
+            SELECT COUNT(*) FROM {BENCHMARK_FILES_TABLE} WHERE file_id = ?
+        ''', (file_id,))
+        
+        benchmark_count = cursor.fetchone()[0]
+        if benchmark_count > 0:
+            logging.warning(f"Cannot delete file {file_id}: {benchmark_count} benchmarks are using it")
+            return False
+        
+        # Delete provider uploads
+        cursor.execute(f'''
+            DELETE FROM {PROVIDER_FILE_UPLOADS_TABLE} WHERE file_id = ?
+        ''', (file_id,))
+        
+        # Delete file record
+        cursor.execute(f'''
+            DELETE FROM {FILES_TABLE} WHERE id = ?
+        ''', (file_id,))
+        
+        conn.commit()
+        logging.info(f"Deleted file {file_id}")
+        return True
+        
+    except sqlite3.Error as e:
+        conn.rollback()
+        logging.error(f"SQLite error when deleting file {file_id}: {e}")
         return False
     finally:
         conn.close()
