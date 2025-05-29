@@ -591,12 +591,12 @@ def get_base_model_name(model_name: str) -> str:
 
 def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "claude-3-5-haiku-20241022", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, int, bool, str]:
     """
-    Send a query to an Anthropic Claude model with multiple file attachments.
+    Send a query to Anthropic with multiple file attachments.
     
     Args:
         file_paths: List of paths to files to include
         prompt_text: The question to ask the model
-        model_name: The model to use (e.g., "claude-3-5-haiku-20241022")
+        model_name: The model to use
         db_path: Path to the database directory
         web_search: Whether to enable web search for this prompt
         
@@ -604,47 +604,61 @@ def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_nam
         A tuple containing:
             - answer (str): The model's text response
             - standard_input_tokens (int): Tokens used in the input
-            - cached_input_tokens (int): Cached tokens used (always 0 for Anthropic for now)
-            - output_tokens (int): Tokens used in the output (includes thinking tokens for billing)
-            - thinking_tokens (int): Thinking tokens used (for tracking, included in output_tokens)
+            - cached_input_tokens (int): Cached tokens used
+            - output_tokens (int): Tokens used in the output (excludes thinking tokens)
+            - thinking_tokens (int): Thinking tokens used (for tracking, included in billing)
             - web_search_used (bool): Whether web search was actually used
             - web_search_sources (str): Raw web search data as string
     """
-    # Build content with all files and prompt
+    # Build content parts list
     content = []
     
-    # Only add files if web search is not enabled or if the prompt specifically references document content
-    # This prevents accidentally including old files when doing web search-only queries
-    should_include_files = not web_search or any(keyword in prompt_text.lower() for keyword in [
-        'document', 'pdf', 'file', 'report', 'analysis', 'in the document', 'according to the document'
-    ])
+    # Separate CSV files from other files
+    csv_content = []
     
-    if should_include_files and file_paths:
+    # Always include files if they're provided - let the model decide how to use both file data and web search
+    if file_paths:
         # Add files using the Files API (upload and reference by file_id)
         for file_path in file_paths:
-            try:
-                # Upload file and get file_id
-                file_id = ensure_file_uploaded(file_path, db_path)
-                
-                # Add document reference using file_id
-                content.append({
-                    "type": "document",
-                    "source": {
-                        "type": "file",
-                        "file_id": file_id
-                    }
-                })
-                logging.info(f"Added {file_path.name} using Files API with file_id: {file_id}")
-            except Exception as e:
-                logging.error(f"Error uploading file {file_path}: {e}")
-                raise Exception(f"Failed to upload file {file_path}: {e}")
-    elif file_paths and web_search:
-        logging.info(f"Skipping {len(file_paths)} files because web search is enabled and prompt doesn't reference documents")
+            if file_path.suffix.lower() == '.csv':
+                # Parse CSV to markdown format
+                try:
+                    from file_store import parse_csv_to_markdown_format
+                    csv_data = parse_csv_to_markdown_format(file_path)
+                    csv_content.append(f"\n--- CSV Data from {file_path.name} ({csv_data['total_rows']} rows) ---\n{csv_data['markdown_data']}\n")
+                    logging.info(f"Parsed CSV {file_path.name} to markdown: {csv_data['total_rows']} rows")
+                except Exception as e:
+                    logging.error(f"Error parsing CSV {file_path}: {e}")
+                    csv_content.append(f"\n--- Error reading CSV {file_path.name}: {str(e)} ---\n")
+            else:
+                # Handle PDF and other files normally
+                try:
+                    # Upload file and get file_id
+                    file_id = ensure_file_uploaded(file_path, db_path)
+                    
+                    # Add document reference using file_id
+                    content.append({
+                        "type": "document",
+                        "source": {
+                            "type": "file",
+                            "file_id": file_id
+                        }
+                    })
+                    logging.info(f"Added {file_path.name} using Files API with file_id: {file_id}")
+                except Exception as e:
+                    logging.error(f"Error uploading file {file_path}: {e}")
+                    raise Exception(f"Failed to upload file {file_path}: {e}")
+    
+    # Combine CSV content with prompt text
+    enhanced_prompt = prompt_text
+    if csv_content:
+        csv_data_text = ''.join(csv_content)
+        enhanced_prompt = f"{prompt_text}\n\n{csv_data_text}"
     
     # Add prompt text
     content.append({
         "type": "text",
-        "text": prompt_text
+        "text": enhanced_prompt
     })
     
     return anthropic_ask_internal(content, model_name, web_search)
@@ -713,7 +727,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             tools = [{
                 "type": "web_search_20250305",
                 "name": "web_search",
-                "max_uses": 5
+                "max_uses": 2
             }]
         
         # Estimate token count for input (use base model name for API calls)

@@ -358,23 +358,26 @@ app.whenReady().then(async () => {
         const msg = JSON.parse(data);
         console.log('🌐 Main Process: Received WebSocket message:', msg);
         
-        if (mainWindow && mainWindow.webContents && msg.ui_bridge_event) {
-          // Extract the event name from ui_bridge_event and send only the data
-          console.log('🌐 Main Process: Forwarding UI bridge event:', msg.ui_bridge_event, 'with data:', msg.data);
+        if (mainWindow && mainWindow.webContents && (msg.ui_bridge_event || msg.event)) {
+          // Extract the event name - prefer ui_bridge_event for compatibility, fallback to event
+          const eventName = msg.ui_bridge_event || msg.event;
+          const eventData = msg.data || msg;
+          
+          console.log('🌐 Main Process: Forwarding event:', eventName, 'with data:', eventData);
           
           // Special handling for benchmark progress events
-          if (msg.ui_bridge_event === 'benchmark-progress') {
+          if (eventName === 'benchmark-progress') {
             // Make sure we properly identify the initial 'running' status
-            if (msg.data.status === 'running' || msg.data.message?.includes('Starting benchmark')) {
-              msg.data.status = 'running';
+            if (eventData.status === 'running' || eventData.message?.includes('Starting benchmark')) {
+              eventData.status = 'running';
             }
-            console.log('🌐 Main Process: Sending benchmark-progress event to renderer with data:', msg.data);
+            console.log('🌐 Main Process: Sending benchmark-progress event to renderer with data:', eventData);
           }
           
-          mainWindow.webContents.send(msg.ui_bridge_event, msg.data);
+          mainWindow.webContents.send(eventName, eventData);
           console.log('🌐 Main Process: Event sent to renderer successfully');
         } else {
-          console.log('🌐 Main Process: Not forwarding message - missing window, webContents, or ui_bridge_event');
+          console.log('🌐 Main Process: Not forwarding message - missing window, webContents, or event field');
         }
       } catch (e) {
         console.error('🌐 Main Process: Error parsing WS message:', e);

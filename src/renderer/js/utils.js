@@ -581,6 +581,75 @@ class Utils {
       word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
     ).join(' ');
   }
+
+  /**
+   * Show a confirmation dialog
+   * @param {string} title - Dialog title
+   * @param {string} message - Dialog message
+   * @param {string} type - Dialog type (danger, warning, info)
+   * @returns {Promise<boolean>} Whether user confirmed
+   */
+  static showConfirmDialog(title, message, type = 'info') {
+    return new Promise((resolve) => {
+      const modalId = 'confirmDialog' + Date.now();
+      
+      let typeClass = 'text-info';
+      let iconClass = 'fas fa-info-circle';
+      
+      if (type === 'danger') {
+        typeClass = 'text-danger';
+        iconClass = 'fas fa-exclamation-triangle';
+      } else if (type === 'warning') {
+        typeClass = 'text-warning';
+        iconClass = 'fas fa-exclamation-triangle';
+      }
+
+      const modalHtml = `
+        <div class="modal fade" id="${modalId}" tabindex="-1">
+          <div class="modal-dialog">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title ${typeClass}">
+                  <i class="${iconClass} me-2"></i>
+                  ${Utils.sanitizeHtml(title)}
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body">
+                <p>${Utils.sanitizeHtml(message)}</p>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-${type === 'danger' ? 'danger' : 'primary'}" id="${modalId}Confirm">
+                  ${type === 'danger' ? 'Delete' : 'Confirm'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      // Add modal to body
+      document.body.insertAdjacentHTML('beforeend', modalHtml);
+      
+      const modalElement = document.getElementById(modalId);
+      const modal = new bootstrap.Modal(modalElement);
+      
+      // Handle confirm button
+      document.getElementById(`${modalId}Confirm`).addEventListener('click', () => {
+        modal.hide();
+        resolve(true);
+      });
+      
+      // Handle cancel/close
+      modalElement.addEventListener('hidden.bs.modal', () => {
+        modalElement.remove();
+        resolve(false);
+      }, { once: true });
+      
+      modal.show();
+    });
+  }
 }
 
 // Export for use in other modules

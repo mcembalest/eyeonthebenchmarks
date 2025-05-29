@@ -431,7 +431,7 @@ class App {
       selectedPdfLabel.innerHTML = `
         <div class="d-flex justify-content-between align-items-center">
           <span class="small">${Utils.sanitizeHtml(fileName)}</span>
-          <button class="btn btn-sm btn-outline-danger" onclick="window.App.removePdfFile(0)">
+          <button class="btn btn-sm btn-outline-danger" onclick="window.app.removePdfFile(0)">
             <i class="fas fa-times"></i>
           </button>
         </div>
@@ -444,7 +444,7 @@ class App {
             return `
               <div class="d-flex justify-content-between align-items-center">
                 <span class="small">${Utils.sanitizeHtml(fileName)}</span>
-                <button class="btn btn-sm btn-outline-danger" onclick="window.App.removePdfFile(${index})">
+                <button class="btn btn-sm btn-outline-danger" onclick="window.app.removePdfFile(${index})">
                   <i class="fas fa-times"></i>
                 </button>
               </div>
@@ -749,6 +749,49 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       initializationStarted = true;
       console.log('Starting app initialization...');
+      
+      // Set up WebSocket event listeners for real-time updates
+      if (window.API.electronAPI) {
+        console.log('Setting up WebSocket event listeners...');
+        
+        // Listen for benchmark progress updates
+        if (window.API.electronAPI.onBenchmarkProgress) {
+          window.API.electronAPI.onBenchmarkProgress((data) => {
+            console.log('Received benchmark progress:', data);
+            
+            // Update the benchmark details page if it's currently viewing this benchmark
+            if (window.app.router && window.app.router.currentPage === 'viewBenchmarkDetails') {
+              const currentBenchmarkId = window.app.router.pages.viewBenchmarkDetails.currentBenchmarkId;
+              if (currentBenchmarkId && data.benchmark_id === currentBenchmarkId) {
+                // Refresh the benchmark details page
+                window.app.router.pages.viewBenchmarkDetails.refreshBenchmark();
+              }
+            }
+            
+            // Update the benchmarks list page if it's currently active
+            if (window.app.router && window.app.router.currentPage === 'benchmarks') {
+              window.app.router.pages.benchmarks.loadBenchmarks();
+            }
+          });
+        }
+        
+        // Listen for benchmark complete events
+        if (window.API.electronAPI.onBenchmarkComplete) {
+          window.API.electronAPI.onBenchmarkComplete((data) => {
+            console.log('Received benchmark complete:', data);
+            
+            // Refresh the current page
+            if (window.app.router) {
+              if (window.app.router.currentPage === 'viewBenchmarkDetails') {
+                window.app.router.pages.viewBenchmarkDetails.refreshBenchmark();
+              } else if (window.app.router.currentPage === 'benchmarks') {
+                window.app.router.pages.benchmarks.loadBenchmarks();
+              }
+            }
+          });
+        }
+      }
+      
       window.app.init();
     };
     

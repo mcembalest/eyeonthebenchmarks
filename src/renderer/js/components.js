@@ -6,6 +6,36 @@ class Components {
   constructor() {
     this.toastContainer = document.getElementById('toastContainer');
   }
+  
+  /**
+   * Get the display text for a benchmark's status
+   * @param {Object} benchmark - Benchmark data
+   * @returns {string} Status text
+   */
+  getBenchmarkStatusText(benchmark) {
+    const status = benchmark.status || 'pending';
+    
+    // Check if we have progress information
+    if (benchmark.completed_prompts !== undefined && benchmark.total_prompts !== undefined) {
+      if (status === 'in_progress' || status === 'in-progress' || status === 'running') {
+        return `${benchmark.completed_prompts}/${benchmark.total_prompts}`;
+      }
+    }
+    
+    // Map status values to display text
+    const statusMap = {
+      'completed': 'Complete',
+      'complete': 'Complete',
+      'completed_with_errors': 'Complete (with errors)',
+      'in_progress': 'Running',
+      'in-progress': 'Running',
+      'running': 'Running',
+      'pending': 'Pending',
+      'failed': 'Failed'
+    };
+    
+    return statusMap[status] || status;
+  }
 
   /**
    * Show a toast notification
@@ -149,7 +179,7 @@ class Components {
           </h6>
           <span class="badge bg-${statusColor}">
             ${isRunning ? '<i class="fas fa-spinner fa-spin me-1"></i>' : ''}
-            ${benchmark.status === 'complete' ? 'Complete' : 'Running'}
+            ${this.getBenchmarkStatusText(benchmark)}
           </span>
         </div>
         <div class="card-body">
@@ -164,51 +194,35 @@ class Components {
               ).join('') : '<span class="text-muted">No models</span>'}
             </div>
           </div>
-          ${benchmark.description ? `
-            <p class="card-text small text-muted">
-              ${Utils.truncateText(benchmark.description, 80)}
-            </p>
-          ` : ''}
+          
+          <div class="card-text small text-muted mb-3">
+            ${benchmark.description ? Utils.truncateText(benchmark.description, 80) : 'No description'}
+          </div>
         </div>
-        <div class="card-footer bg-transparent">
+        <div class="card-footer">
           <div class="btn-group w-100" role="group">
             <button class="btn btn-outline-primary btn-sm view-btn" data-id="${benchmark.id}">
-              <i class="fas fa-eye me-1"></i>
-              ${isRunning ? 'View Progress' : 'View Results'}
+              <i class="fas fa-eye me-1"></i>View
             </button>
-            <button class="btn btn-outline-secondary btn-sm edit-btn" data-id="${benchmark.id}">
-              <i class="fas fa-edit"></i>
-            </button>
-            <button class="btn btn-outline-danger btn-sm delete-btn" data-id="${benchmark.id}">
-              <i class="fas fa-trash"></i>
-            </button>
+            ${!isRunning ? `
+              <button class="btn btn-outline-secondary btn-sm edit-btn" data-id="${benchmark.id}">
+                <i class="fas fa-edit me-1"></i>Edit
+              </button>
+              <button class="btn btn-outline-danger btn-sm delete-btn" data-id="${benchmark.id}">
+                <i class="fas fa-trash me-1"></i>Delete
+              </button>
+            ` : `
+              <button class="btn btn-outline-secondary btn-sm" disabled>
+                <i class="fas fa-hourglass-half me-1"></i>Running
+              </button>
+            `}
           </div>
         </div>
       </div>
     `;
 
     // Add event listeners
-    const viewBtn = card.querySelector('.view-btn');
-    const editBtn = card.querySelector('.edit-btn');
-    const deleteBtn = card.querySelector('.delete-btn');
-
-    if (viewBtn && callbacks.onView) {
-      viewBtn.addEventListener('click', () => callbacks.onView(benchmark.id));
-    }
-
-    if (editBtn && callbacks.onEdit) {
-      editBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        callbacks.onEdit(benchmark);
-      });
-    }
-
-    if (deleteBtn && callbacks.onDelete) {
-      deleteBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        callbacks.onDelete(benchmark.id);
-      });
-    }
+    this.addBenchmarkCardEventListeners(card, benchmark, callbacks);
 
     return card;
   }
@@ -234,7 +248,7 @@ class Components {
       <td>
         <span class="badge bg-${statusColor}">
           ${isRunning ? '<i class="fas fa-spinner fa-spin me-1"></i>' : ''}
-          ${benchmark.status === 'complete' ? 'Complete' : 'Running'}
+          ${this.getBenchmarkStatusText(benchmark)}
         </span>
       </td>
       <td>
@@ -258,17 +272,35 @@ class Components {
           <button class="btn btn-outline-primary view-btn" data-id="${benchmark.id}">
             <i class="fas fa-eye"></i>
           </button>
-          <button class="btn btn-outline-secondary edit-btn" data-id="${benchmark.id}">
-            <i class="fas fa-edit"></i>
-          </button>
-          <button class="btn btn-outline-danger delete-btn" data-id="${benchmark.id}">
-            <i class="fas fa-trash"></i>
-          </button>
+          ${!isRunning ? `
+            <button class="btn btn-outline-secondary edit-btn" data-id="${benchmark.id}">
+              <i class="fas fa-edit"></i>
+            </button>
+            <button class="btn btn-outline-danger delete-btn" data-id="${benchmark.id}">
+              <i class="fas fa-trash"></i>
+            </button>
+          ` : `
+            <button class="btn btn-outline-secondary" disabled title="Running">
+              <i class="fas fa-hourglass-half"></i>
+            </button>
+          `}
         </div>
       </td>
     `;
 
     // Add event listeners
+    this.addBenchmarkRowEventListeners(row, benchmark, callbacks);
+
+    return row;
+  }
+
+  /**
+   * Add event listeners to a benchmark table row
+   * @param {HTMLElement} row - Benchmark row element
+   * @param {Object} benchmark - Benchmark data
+   * @param {Object} callbacks - Event callbacks
+   */
+  addBenchmarkRowEventListeners(row, benchmark, callbacks) {
     const viewBtn = row.querySelector('.view-btn');
     const editBtn = row.querySelector('.edit-btn');
     const deleteBtn = row.querySelector('.delete-btn');
@@ -298,8 +330,6 @@ class Components {
     if (callbacks.onView) {
       row.addEventListener('click', () => callbacks.onView(benchmark.id));
     }
-
-    return row;
   }
 
   /**
@@ -502,6 +532,42 @@ class Components {
           modelsRow.innerHTML = '<span class="text-muted">No models</span>';
         }
       }
+    }
+  }
+
+  /**
+   * Add event listeners to a benchmark card
+   * @param {HTMLElement} card - Benchmark card element
+   * @param {Object} benchmark - Benchmark data
+   * @param {Object} callbacks - Event callbacks
+   */
+  addBenchmarkCardEventListeners(card, benchmark, callbacks) {
+    // Add event listeners
+    const viewBtn = card.querySelector('.view-btn');
+    const editBtn = card.querySelector('.edit-btn');
+    const deleteBtn = card.querySelector('.delete-btn');
+
+    if (viewBtn && callbacks.onView) {
+      viewBtn.addEventListener('click', () => callbacks.onView(benchmark.id));
+    }
+
+    if (editBtn && callbacks.onEdit) {
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        callbacks.onEdit(benchmark);
+      });
+    }
+
+    if (deleteBtn && callbacks.onDelete) {
+      deleteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        callbacks.onDelete(benchmark.id);
+      });
+    }
+
+    // Row click to view details
+    if (callbacks.onView) {
+      card.addEventListener('click', () => callbacks.onView(benchmark.id));
     }
   }
 }

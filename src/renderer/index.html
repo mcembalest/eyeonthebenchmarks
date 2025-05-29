@@ -160,7 +160,15 @@
                 
                 <!-- Model Selection -->
                 <div class="mb-4">
-                  <h6 class="text-muted mb-3">Models</h6>
+                  <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0">Models</h6>
+                    <div class="form-check form-switch">
+                      <input class="form-check-input" type="checkbox" id="selectAllModelsToggle">
+                      <label class="form-check-label text-muted small" for="selectAllModelsToggle">
+                        Select All
+                      </label>
+                    </div>
+                  </div>
                   <div id="modelList" class="model-list">
                     <div class="text-center">
                       <div class="spinner-border spinner-border-sm text-primary" role="status">

@@ -11,6 +11,19 @@ import logging
 from pathlib import Path
 import time
 
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
+print(f"Added {project_root} to Python path")
+sys.stdout.flush()
+
+from dotenv import load_dotenv
+load_dotenv()
+
+from runner import run_benchmark_from_db, set_emit_progress_callback
+from file_store import (save_benchmark_run, save_benchmark_prompt_atomic, 
+                        update_benchmark_run, update_worker_heartbeat, 
+                        mark_prompt_failed)
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -46,67 +59,7 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name, web_
     t0 = time.time()
     
     try:
-        # Add the current directory to sys.path
-        project_root = Path(__file__).parent
-        sys.path.insert(0, str(project_root))
-        print(f"Added {project_root} to Python path")
-        sys.stdout.flush()
-        
-        # Load environment variables
-        from dotenv import load_dotenv
-        load_dotenv()
-        
-        # Check if we have the required API keys
-        openai_key = os.environ.get('OPENAI_API_KEY')
-        google_key = os.environ.get('GOOGLE_API_KEY')
-        
-        if openai_key:
-            print(f"OPENAI_API_KEY is set (length: {len(openai_key)})")
-        if google_key:
-            print(f"GOOGLE_API_KEY is set (length: {len(google_key)})")
-        
-        if not openai_key and not google_key:
-            error_msg = "Neither OPENAI_API_KEY nor GOOGLE_API_KEY is set!"
-            print(f"ERROR: {error_msg}")
-            emit_progress({
-                "job_id": job_id,
-                "benchmark_id": benchmark_id,
-                "model_name": model_name,
-                "status": "error",
-                "message": error_msg
-            })
-            return {"success": False, "error": error_msg}
-        
-        sys.stdout.flush()
-        
-        # Import the run_benchmark function directly
-        print("Importing run_benchmark_from_db from runner module...")
-        sys.stdout.flush()
-        
-        try:
-            from runner import run_benchmark_from_db, set_emit_progress_callback
-            from file_store import save_benchmark_run, save_benchmark_prompt, update_benchmark_run
-            print("Successfully imported run_benchmark_from_db function and database functions")
-            sys.stdout.flush()
-        except ImportError as e:
-            error_msg = f"Failed to import required modules: {str(e)}"
-            print(f"ERROR: {error_msg}")
-            sys.stdout.flush()
-            emit_progress({
-                "job_id": job_id,
-                "benchmark_id": benchmark_id,
-                "model_name": model_name,
-                "status": "error",
-                "message": error_msg
-            })
-            return {"success": False, "error": error_msg}
-        
-        # Create benchmark run record first (we'll update totals later)
-        print(f"Creating benchmark run record for model {model_name}...")
-        sys.stdout.flush()
-        
-        # Determine provider based on model name
-        if model_name.startswith("gemini-") or model_name == "imagen-3":
+        if model_name.startswith("gemini-"):
             provider = "google"
         elif model_name.startswith("claude-"):
             provider = "anthropic"
@@ -118,16 +71,16 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name, web_
             benchmark_id=benchmark_id,
             model_name=model_name,
             provider=provider,
-            report="",  # Will be updated later
-            latency=0.0,  # Will be updated later
-            total_standard_input_tokens=0,  # Will be updated later
-            total_cached_input_tokens=0,  # Will be updated later
-            total_output_tokens=0,  # Will be updated later
-            total_tokens=0,  # Will be updated later
-            total_input_cost=0.0,  # Will be updated later
-            total_cached_cost=0.0,  # Will be updated later
-            total_output_cost=0.0,  # Will be updated later
-            total_cost=0.0  # Will be updated later
+            report="", 
+            latency=0.0,
+            total_standard_input_tokens=0,
+            total_cached_input_tokens=0,
+            total_output_tokens=0,
+            total_tokens=0,
+            total_input_cost=0.0,
+            total_cached_cost=0.0,
+            total_output_cost=0.0,
+            total_cost=0.0
         )
         
         if not run_id:
@@ -152,8 +105,11 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name, web_
                 print(f"Saving prompt {prompt_index + 1} result to database...")
                 sys.stdout.flush()
                 
-                # Save the individual prompt result
-                prompt_id = save_benchmark_prompt(
+                # Update worker heartbeat to show activity
+                update_worker_heartbeat(run_id)
+                
+                # Save the individual prompt result atomically
+                prompt_id = save_benchmark_prompt_atomic(
                     benchmark_run_id=run_id,
                     prompt=prompt_result["prompt_text"],
                     response=prompt_result["model_answer"],
@@ -170,7 +126,8 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name, web_
                     reasoning_cost=prompt_result.get("reasoning_cost", 0.0),
                     total_cost=prompt_result["total_cost"],
                     web_search_used=prompt_result.get("web_search_used", False),
-                    web_search_sources=prompt_result.get("web_search_sources", "")
+                    web_search_sources=prompt_result.get("web_search_sources", ""),
+                    truncation_info=prompt_result.get("truncation_info", "")
                 )
                 
                 if prompt_id:
@@ -194,6 +151,16 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name, web_
             except Exception as e:
                 print(f"❌ Error saving prompt {prompt_index + 1}: {str(e)}")
                 sys.stdout.flush()
+                # Try to mark the prompt as failed
+                try:
+                    mark_prompt_failed(
+                        benchmark_run_id=run_id,
+                        prompt=prompt_result.get("prompt_text", f"Prompt {prompt_index + 1}"),
+                        error_message=str(e)
+                    )
+                except Exception as mark_error:
+                    print(f"Failed to mark prompt as failed: {mark_error}")
+                    sys.stdout.flush()
         
         # Set up a custom progress callback
         def progress_callback(progress_data):
@@ -207,6 +174,23 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name, web_
         
         # Set the progress callback
         set_emit_progress_callback(progress_callback)
+        
+        # Start heartbeat thread
+        import threading
+        heartbeat_stop = threading.Event()
+        
+        def heartbeat_worker():
+            """Send periodic heartbeat updates"""
+            while not heartbeat_stop.is_set():
+                try:
+                    update_worker_heartbeat(run_id)
+                except Exception as e:
+                    print(f"Failed to update heartbeat: {e}")
+                # Wait 30 seconds before next heartbeat
+                heartbeat_stop.wait(30)
+        
+        heartbeat_thread = threading.Thread(target=heartbeat_worker, daemon=True)
+        heartbeat_thread.start()
         
         # Log start of benchmark
         print(f"Starting benchmark {benchmark_id} with model {model_name}")
@@ -226,6 +210,9 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name, web_
         print(f"\n🔄 STARTING BENCHMARK WITH MODEL {model_name}...")
         sys.stdout.flush()
         result = run_benchmark_from_db(prompts, benchmark_id, model_name, on_prompt_complete=on_prompt_complete, web_search_enabled=web_search_enabled)
+        
+        # Stop heartbeat thread
+        heartbeat_stop.set()
         duration = time.time() - t0
         print(f"\n✅ BENCHMARK COMPLETED IN {duration:.2f} SECONDS")
         sys.stdout.flush()

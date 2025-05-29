@@ -458,22 +458,29 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
         print(f"⚠️ WARNING: Model {model_name} does not support web search. Disabling web search for this request.")
         web_search = False
     
-    # Only process files if web search is not enabled or if the prompt specifically references document content
-    # This prevents accidentally including old files when doing web search-only queries
-    should_include_files = not web_search or any(keyword in prompt_text.lower() for keyword in [
-        'document', 'pdf', 'file', 'report', 'analysis', 'in the document', 'according to the document'
-    ])
-    
-    # Ensure all files are uploaded to OpenAI
+    # Separate CSV files from other files and build content
     file_ids = []
-    if should_include_files and file_paths:
-        for file_path in file_paths:
-            file_id = ensure_file_uploaded(file_path, db_path)
-            file_ids.append(file_id)
-    elif file_paths and web_search:
-        print(f"⚠️ Skipping {len(file_paths)} files because web search is enabled and prompt doesn't reference documents")
+    csv_content = []
     
-    # Build content with all files
+    # Always include files if they're provided - let the model decide how to use both file data and web search
+    if file_paths:
+        for file_path in file_paths:
+            if file_path.suffix.lower() == '.csv':
+                # Parse CSV to markdown format
+                try:
+                    from file_store import parse_csv_to_markdown_format
+                    csv_data = parse_csv_to_markdown_format(file_path)
+                    csv_content.append(f"\n--- CSV Data from {file_path.name} ({csv_data['total_rows']} rows) ---\n{csv_data['markdown_data']}\n")
+                    logging.info(f"Parsed CSV {file_path.name} to markdown: {csv_data['total_rows']} rows")
+                except Exception as e:
+                    logging.error(f"Error parsing CSV {file_path}: {e}")
+                    csv_content.append(f"\n--- Error reading CSV {file_path.name}: {str(e)} ---\n")
+            else:
+                # Handle PDF and other files normally
+                file_id = ensure_file_uploaded(file_path, db_path)
+                file_ids.append(file_id)
+    
+    # Build content with all non-CSV files
     content = []
     for file_id in file_ids:
         content.append({
@@ -481,7 +488,7 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
             "file_id": file_id,
         })
     
-    # Enhance prompt for web search if enabled
+    # Enhance prompt for web search if enabled and combine with CSV content
     enhanced_prompt = prompt_text
     if web_search:
         # Use OpenAI's official recommended approach for o3/o4-mini models
@@ -491,6 +498,11 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
         else:
             # For other models, add a lighter encouragement
             enhanced_prompt = f"Please use web search if needed to provide current, accurate information for this query.\n\n{prompt_text}"
+    
+    # Combine CSV content with prompt text
+    if csv_content:
+        csv_data_text = ''.join(csv_content)
+        enhanced_prompt = f"{enhanced_prompt}\n\n{csv_data_text}"
     
     content.append({
         "type": "input_text",

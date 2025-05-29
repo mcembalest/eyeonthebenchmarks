@@ -189,50 +189,62 @@ def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
     # Build content parts list
     content_parts = []
     
-    # Only process files if web search is not enabled or if the prompt specifically references document content
-    # This prevents accidentally including old files when doing web search-only queries
-    should_include_files = not web_search or any(keyword in prompt_text.lower() for keyword in [
-        'document', 'pdf', 'file', 'report', 'analysis', 'in the document', 'according to the document'
-    ])
+    # Separate CSV files from other files
+    csv_content = []
     
+    # Always include files if they're provided - let the model decide how to use both file data and web search
     # Add files as base64-encoded bytes directly
-    if should_include_files and file_paths:
+    if file_paths:
         for file_path in file_paths:
-            try:
-                # Read file and encode as base64
-                with open(file_path, 'rb') as f:
-                    file_data = f.read()
-                
-                # Encode to base64
-                base64_data = base64.b64encode(file_data).decode('utf-8')
-                
-                # Create Part from bytes with proper MIME type
-                if file_path.suffix.lower() == '.pdf':
-                    mime_type = "application/pdf"
-                elif file_path.suffix.lower() in ['.csv']:
-                    mime_type = "text/csv"
-                elif file_path.suffix.lower() in ['.xlsx', '.xls']:
-                    mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                else:
-                    mime_type = "application/octet-stream"
-                
-                # Add as Part.from_bytes
-                part = types.Part.from_bytes(
-                    mime_type=mime_type,
-                    data=base64.b64decode(base64_data)
-                )
-                content_parts.append(part)
-                
-                logging.info(f"Added file {file_path.name} as base64 bytes ({len(file_data)} bytes)")
-                
-            except Exception as e:
-                logging.error(f"Error reading file {file_path}: {e}")
-                raise Exception(f"Failed to read file {file_path}: {e}")
-    elif file_paths and web_search:
-        logging.info(f"Skipping {len(file_paths)} files because web search is enabled and prompt doesn't reference documents")
+            if file_path.suffix.lower() == '.csv':
+                # Parse CSV to markdown format
+                try:
+                    from file_store import parse_csv_to_markdown_format
+                    csv_data = parse_csv_to_markdown_format(file_path)
+                    csv_content.append(f"\n--- CSV Data from {file_path.name} ({csv_data['total_rows']} rows) ---\n{csv_data['markdown_data']}\n")
+                    logging.info(f"Parsed CSV {file_path.name} to markdown: {csv_data['total_rows']} rows")
+                except Exception as e:
+                    logging.error(f"Error parsing CSV {file_path}: {e}")
+                    csv_content.append(f"\n--- Error reading CSV {file_path.name}: {str(e)} ---\n")
+            else:
+                # Handle PDF and other files normally as binary
+                try:
+                    # Read file and encode as base64
+                    with open(file_path, 'rb') as f:
+                        file_data = f.read()
+                    
+                    # Encode to base64
+                    base64_data = base64.b64encode(file_data).decode('utf-8')
+                    
+                    # Create Part from bytes with proper MIME type
+                    if file_path.suffix.lower() == '.pdf':
+                        mime_type = "application/pdf"
+                    elif file_path.suffix.lower() in ['.xlsx', '.xls']:
+                        mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    else:
+                        mime_type = "application/octet-stream"
+                    
+                    # Add as Part.from_bytes
+                    part = types.Part.from_bytes(
+                        mime_type=mime_type,
+                        data=base64.b64decode(base64_data)
+                    )
+                    content_parts.append(part)
+                    
+                    logging.info(f"Added file {file_path.name} as base64 bytes ({len(file_data)} bytes)")
+                    
+                except Exception as e:
+                    logging.error(f"Error reading file {file_path}: {e}")
+                    raise Exception(f"Failed to read file {file_path}: {e}")
+    
+    # Combine CSV content with prompt text
+    enhanced_prompt = prompt_text
+    if csv_content:
+        csv_data_text = ''.join(csv_content)
+        enhanced_prompt = f"{prompt_text}\n\n{csv_data_text}"
     
     # Add prompt text as Part
-    content_parts.append(types.Part.from_text(text=prompt_text))
+    content_parts.append(types.Part.from_text(text=enhanced_prompt))
     
     # Create Content object with all parts
     contents = [
@@ -406,10 +418,36 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
                                 if hasattr(entry_point, 'rendered_content'):
                                     web_search_content += f"Search entry point:\n{entry_point.rendered_content}\n---\n"
                             
-                            # Extract web search queries
-                            if hasattr(candidate.grounding_metadata, 'web_search_queries') and candidate.grounding_metadata.web_search_queries:
-                                web_search_queries = len(candidate.grounding_metadata.web_search_queries)
-                                web_search_content += f"Search queries: {', '.join(candidate.grounding_metadata.web_search_queries)}\n---\n"
+                            # Extract web search queries with comprehensive error handling
+                            if hasattr(candidate.grounding_metadata, 'web_search_queries'):
+                                try:
+                                    queries = candidate.grounding_metadata.web_search_queries
+                                    if queries is not None:
+                                        # Safely get length - handle case where queries might not be iterable
+                                        if hasattr(queries, '__len__'):
+                                            web_search_queries = len(queries)
+                                        elif hasattr(queries, '__iter__'):
+                                            web_search_queries = sum(1 for _ in queries)
+                                        else:
+                                            web_search_queries = 1  # Assume 1 query if we can't count
+                                        
+                                        # Safely join queries for display
+                                        if hasattr(queries, '__iter__') and not isinstance(queries, str):
+                                            try:
+                                                query_list = list(queries)
+                                                web_search_content += f"Search queries: {', '.join(str(q) for q in query_list)}\n---\n"
+                                            except Exception as join_e:
+                                                logging.warning(f"Could not join web search queries: {join_e}")
+                                                web_search_content += f"Search queries detected but could not be listed\n---\n"
+                                        else:
+                                            web_search_content += f"Search query: {str(queries)}\n---\n"
+                                    else:
+                                        web_search_queries = 1  # Default if queries is None
+                                        web_search_content += f"Search queries detected but were None\n---\n"
+                                except Exception as e:
+                                    logging.warning(f"Could not process web search queries: {e}")
+                                    web_search_queries = 1  # Assume 1 query if we can't count
+                                    web_search_content += f"Search queries detected but could not be processed: {str(e)}\n---\n"
                         elif hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
                             for part in candidate.content.parts:
                                 # Look for function calls or tool usage indicators
@@ -437,9 +475,6 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
             # Log web search detection
             if web_search_used:
                 if web_search_tokens > 0:
-                    # Google's total_token_count already includes grounding tokens
-                    # The grounding tokens are distributed across the total but not broken down separately
-                    # We don't need to add them manually since we use total_token_count as authoritative
                     logging.info(f"Web search detected: {web_search_queries} queries, {web_search_tokens} grounding tokens (already included in total)")
                     print(f"   🌐 Web search used: {web_search_queries} queries")
                     print(f"   📊 Grounding tokens: {web_search_tokens} (already included in total_token_count)")
@@ -465,11 +500,18 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
                             if hasattr(part, 'text') and part.text:
                                 clean_response_text += part.text
             
-            # Debug logging to understand what we're getting
-            logging.info(f"Clean response text extracted: {len(clean_response_text)} characters")
+            # Ensure clean_response_text is never None
+            if clean_response_text is None:
+                clean_response_text = ""
+            
+            # Debug logging to understand what we're getting - safely handle None
+            response_length = len(clean_response_text) if clean_response_text is not None else 0
+            logging.info(f"Clean response text extracted: {response_length} characters")
             if hasattr(response, 'text'):
-                logging.info(f"Raw response.text length: {len(response.text)} characters")
-                logging.info(f"Raw response.text preview: {response.text[:200]}...")
+                raw_text_length = len(response.text) if response.text is not None else 0
+                logging.info(f"Raw response.text length: {raw_text_length} characters")
+                if response.text:
+                    logging.info(f"Raw response.text preview: {response.text[:200]}...")
             
             # If we couldn't extract clean text, there's a problem with the response structure
             if not clean_response_text:

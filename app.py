@@ -39,7 +39,7 @@ from file_store import (
     init_db as init_file_store_db,
     save_benchmark,
     save_benchmark_run,
-    save_benchmark_prompt,
+    save_benchmark_prompt_atomic,
     load_benchmark_details,
     find_benchmark_by_files,
     delete_benchmark,
@@ -973,7 +973,8 @@ class AppLogic:
                     
                     logging.info(f"Updated progress for {model_name}: {completed_prompts}/{total_prompts} prompts ({progress_percentage:.1f}%)")
             
-            self.ui_bridge.notify_benchmark_progress(job_id, self.jobs[job_id])
+            # REMOVED: This line was causing infinite loop by re-emitting progress events
+            # self.ui_bridge.notify_benchmark_progress(job_id, self.jobs[job_id])
 
     def handle_run_finished(self, result: dict, job_id: int, model_name_for_run: str):
         worker_key = f"{job_id}_{model_name_for_run}"
@@ -1151,8 +1152,8 @@ class AppLogic:
                     web_search_used = p.get('web_search_used', False)
                     web_search_sources = p.get('web_search_sources', '')
 
-                    # Use the updated save_benchmark_prompt function with thinking/reasoning token tracking
-                    save_benchmark_prompt(
+                    # Use the atomic save function to update progress tracking
+                    save_benchmark_prompt_atomic(
                         benchmark_run_id=run_id, 
                         prompt=prompt, 
                         response=response, 
@@ -1772,25 +1773,25 @@ class AppLogic:
         Process CSV file for a specific model, applying token budget limits.
         
         Returns:
-            Dict with 'data' (JSON string), 'truncation_info', 'included_rows', 'total_rows'
+            Dict with 'data' (markdown string), 'truncation_info', 'included_rows', 'total_rows'
         """
         try:
-            from file_store import parse_csv_to_json_records, estimate_json_records_tokens
+            from file_store import parse_csv_to_markdown_format, estimate_markdown_tokens
             
             # Get model's token budget
             token_budget = self.get_model_token_budget(model_name)
             
             # Parse full CSV
-            csv_data = parse_csv_to_json_records(Path(csv_file_path))
+            csv_data = parse_csv_to_markdown_format(Path(csv_file_path))
             total_rows = csv_data['total_rows']
             
             # Estimate tokens for full dataset
-            full_tokens = estimate_json_records_tokens(csv_data['records'])
+            full_tokens = estimate_markdown_tokens(csv_data['markdown_data'])
             
             if full_tokens <= token_budget:
                 # No truncation needed
                 return {
-                    'data': json.dumps(csv_data['records'], separators=(',', ':')),
+                    'data': csv_data['markdown_data'],
                     'truncation_info': None,
                     'included_rows': total_rows,
                     'total_rows': total_rows,
@@ -1803,8 +1804,8 @@ class AppLogic:
             
             while left <= right:
                 mid = (left + right) // 2
-                subset_data = parse_csv_to_json_records(Path(csv_file_path), max_rows=mid)
-                subset_tokens = estimate_json_records_tokens(subset_data['records'])
+                subset_data = parse_csv_to_markdown_format(Path(csv_file_path), max_rows=mid)
+                subset_tokens = estimate_markdown_tokens(subset_data['markdown_data'])
                 
                 if subset_tokens <= token_budget:
                     best_rows = mid
@@ -1813,8 +1814,8 @@ class AppLogic:
                     right = mid - 1
             
             # Get the final truncated data
-            truncated_data = parse_csv_to_json_records(Path(csv_file_path), max_rows=best_rows)
-            final_tokens = estimate_json_records_tokens(truncated_data['records'])
+            truncated_data = parse_csv_to_markdown_format(Path(csv_file_path), max_rows=best_rows)
+            final_tokens = estimate_markdown_tokens(truncated_data['markdown_data'])
             
             # Create truncation info
             truncation_info = {
@@ -1830,7 +1831,7 @@ class AppLogic:
             }
             
             return {
-                'data': json.dumps(truncated_data['records'], separators=(',', ':')),
+                'data': truncated_data['markdown_data'],
                 'truncation_info': truncation_info,
                 'included_rows': best_rows,
                 'total_rows': total_rows,
@@ -1840,6 +1841,188 @@ class AppLogic:
         except Exception as e:
             logging.error(f"Error processing CSV for model {model_name}: {e}")
             raise
+
+    def handle_sync_benchmark(self, benchmark_id: int) -> dict:
+        """
+        Sync a benchmark by rerunning only missing, failed, or pending prompts.
+        
+        Args:
+            benchmark_id: ID of the benchmark to sync
+            
+        Returns:
+            dict: Status of the sync operation
+        """
+        try:
+            logger = logging.getLogger(__name__)
+            logger.info(f"Starting sync for benchmark {benchmark_id}")
+            
+            # PREVENT DUPLICATE LAUNCHES: Check if this benchmark is currently running
+            active_jobs = [job for job in self.jobs.values() 
+                          if job.get('benchmark_id') == benchmark_id 
+                          and job.get('status') in ['running', 'pending', 'syncing']]
+            
+            if active_jobs:
+                return {
+                    "success": False, 
+                    "error": f"Cannot sync benchmark {benchmark_id} - it is currently running or syncing. Please wait for it to complete first."
+                }
+            
+            # Check for active workers for this benchmark
+            active_workers = [worker_key for worker_key, worker in self.workers.items() 
+                             if worker.is_alive() and hasattr(worker, 'benchmark_id') 
+                             and worker.benchmark_id == benchmark_id]
+            
+            if active_workers:
+                return {
+                    "success": False, 
+                    "error": f"Cannot sync benchmark {benchmark_id} - {len(active_workers)} workers are still active. Please wait for them to complete first."
+                }
+            
+            # Get sync analysis
+            db_path = Path(__file__).parent
+            from file_store import get_benchmark_sync_status
+            
+            sync_status = get_benchmark_sync_status(benchmark_id, db_path)
+            
+            if "error" in sync_status:
+                return {"success": False, "error": sync_status["error"]}
+            
+            if not sync_status.get("sync_needed", False):
+                return {
+                    "success": True, 
+                    "message": "Benchmark is already complete - no sync needed",
+                    "sync_needed": False,
+                    "prompts_synced": 0
+                }
+            
+            # Prepare data for partial benchmark run
+            total_prompts_to_sync = sync_status["total_prompts_to_sync"]
+            models_needing_sync = sync_status["models_needing_sync"]
+            
+            logger.info(f"Sync needed: {total_prompts_to_sync} prompts across {len(models_needing_sync)} models")
+            
+            # Get benchmark details to extract files and other info
+            from file_store import get_benchmark_details
+            benchmark_details = get_benchmark_details(benchmark_id, db_path)
+            
+            if not benchmark_details:
+                return {"success": False, "error": "Could not load benchmark details"}
+            
+            # Extract file paths from benchmark
+            file_paths = [f['file_path'] for f in benchmark_details.get('files', [])]
+            
+            # Create a job for tracking
+            job_id = self._get_next_job_id()
+            
+            # Extract just the model names that need syncing
+            models_to_sync = [model_info["model_name"] for model_info in models_needing_sync]
+            
+            # Initialize job tracking
+            self.jobs[job_id] = {
+                'status': 'syncing',
+                'label': f"Sync: {sync_status['benchmark_label']}",
+                'description': f"Syncing {total_prompts_to_sync} prompts",
+                'pdf_paths': file_paths,
+                'benchmark_id': benchmark_id,
+                'total_models': len(models_to_sync),
+                'completed_models': 0,
+                'prompts_count': total_prompts_to_sync,
+                'start_time': datetime.now().isoformat(),
+                'models_details': {model_name: {'status': 'pending', 'start_time': None, 'end_time': None} for model_name in models_to_sync},
+                'is_sync': True,  # Flag to indicate this is a sync operation
+                'sync_info': sync_status
+            }
+            
+            # Start sync workers for each model that needs syncing
+            workers_started = 0
+            
+            for model_info in models_needing_sync:
+                model_name = model_info["model_name"]
+                prompts_to_sync = model_info["prompts_to_sync"]
+                
+                # Convert prompts to the format expected by the worker
+                prompts_for_worker = [
+                    {"prompt_text": prompt["prompt_text"]} 
+                    for prompt in prompts_to_sync
+                ]
+                
+                logger.info(f"Starting sync worker for model {model_name} with {len(prompts_for_worker)} prompts")
+                
+                # Create callbacks
+                def create_finished_callback(jid, mname):
+                    return lambda result: self.handle_run_finished(result, job_id=jid, model_name_for_run=mname)
+                    
+                def create_progress_callback(jid, mname):
+                    return lambda progress_data: self.handle_benchmark_progress(jid, mname, progress_data)
+                
+                # Create worker for this model's prompts
+                worker = BenchmarkWorker(
+                    job_id=job_id,
+                    benchmark_id=benchmark_id,
+                    prompts=prompts_for_worker,
+                    pdf_paths=file_paths,
+                    model_name=model_name,
+                    on_progress=create_progress_callback(job_id, model_name),
+                    on_finished=create_finished_callback(job_id, model_name),
+                    web_search_enabled=benchmark_details.get('use_web_search', False)
+                )
+                
+                # Store worker
+                worker_key = f"{job_id}_{model_name}"
+                self.workers[worker_key] = worker
+                
+                # Start the worker
+                worker.start()
+                workers_started += 1
+                
+                logger.info(f"Started sync worker for {model_name}")
+            
+            # Notify UI about the sync job
+            self.ui_bridge.notify_benchmark_progress(job_id, self.jobs[job_id])
+            
+            logger.info(f"Sync started for benchmark {benchmark_id}: {workers_started} workers, {total_prompts_to_sync} prompts")
+            
+            return {
+                "success": True,
+                "job_id": job_id,
+                "benchmark_id": benchmark_id,
+                "message": f"Sync started for {total_prompts_to_sync} prompts across {workers_started} models",
+                "sync_needed": True,
+                "prompts_to_sync": total_prompts_to_sync,
+                "models_to_sync": workers_started,
+                "sync_details": sync_status
+            }
+            
+        except Exception as e:
+            error_msg = f"Error syncing benchmark {benchmark_id}: {str(e)}"
+            logger.exception(error_msg)
+            return {"success": False, "error": error_msg}
+
+    def handle_get_sync_status(self, benchmark_id: int) -> dict:
+        """
+        Get sync status for a benchmark without starting a sync.
+        
+        Args:
+            benchmark_id: ID of the benchmark to check
+            
+        Returns:
+            dict: Sync status information
+        """
+        try:
+            db_path = Path(__file__).parent
+            from file_store import get_benchmark_sync_status
+            
+            sync_status = get_benchmark_sync_status(benchmark_id, db_path)
+            
+            if "error" in sync_status:
+                return {"success": False, "error": sync_status["error"]}
+            
+            return {"success": True, "sync_status": sync_status}
+            
+        except Exception as e:
+            error_msg = f"Error getting sync status for benchmark {benchmark_id}: {str(e)}"
+            logging.error(error_msg)
+            return {"success": False, "error": error_msg}
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

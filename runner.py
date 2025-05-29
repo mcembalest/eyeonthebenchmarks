@@ -1,44 +1,17 @@
 from pathlib import Path
 from time import perf_counter
-import time
-import PyPDF2 # For PDF text extraction
-import os # For os.path.getsize
+import os
 import logging
 from typing import List, Dict, Any, Optional
 
-# Import model functions
 from models_openai import openai_ask_with_files
 from models_google import google_ask_with_files
 from models_anthropic import anthropic_ask_with_files
-
-# Import file store functions
-from file_store import get_benchmark_files
-
-# Import cost calculation functions
 from models_openai import calculate_cost as openai_calculate_cost
 from models_google import calculate_cost as google_calculate_cost
 from models_anthropic import calculate_cost as anthropic_calculate_cost
 
-def extract_text_and_page_count(pdf_path: Path) -> tuple[str, int]:
-    """Extract text and page count from a PDF file."""
-    try:
-        text = ""
-        page_count = 0
-        with open(pdf_path, "rb") as f:
-            reader = PyPDF2.PdfReader(f)
-            page_count = len(reader.pages)
-            for page_num in range(page_count):
-                page = reader.pages[page_num]
-                text += page.extract_text() or ""
-        if not text.strip() and page_count > 0:
-            emit_progress({"message": f"Warning: No text extracted from {pdf_path}. The PDF might be image-based or empty."})
-        emit_progress({"message": f"Successfully extracted text from {pdf_path}. Length: {len(text)}, Pages: {page_count}"})
-        return text, page_count
-    except Exception as e:
-        emit_progress({"message": f"Error extracting text or page count from {pdf_path}: {e}"})
-        raise
-
-# simple_score function removed as scoring is out of MVP scope
+from file_store import get_benchmark_files
 
 _emit_progress_callback = None
 

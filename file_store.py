@@ -167,6 +167,10 @@ def init_db(db_path: Path = Path.cwd()):
             web_search_used BOOLEAN DEFAULT 0,
             web_search_sources TEXT,
             truncation_info TEXT,
+            status TEXT DEFAULT 'pending',
+            started_at TEXT,
+            completed_at TEXT,
+            error_message TEXT,
             FOREIGN KEY (benchmark_run_id) REFERENCES {BENCHMARK_RUNS_TABLE}(id)
         )       
     ''')
@@ -240,6 +244,72 @@ def init_db(db_path: Path = Path.cwd()):
             logging.debug("truncation_info column already exists")
         else:
             logging.warning(f"Could not add truncation_info column: {e}")
+
+    # Add status column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARK_PROMPTS_TABLE} ADD COLUMN status TEXT DEFAULT \'pending\'')
+        logging.info("Added status column to benchmark_prompts table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("status column already exists")
+        else:
+            logging.warning(f"Could not add status column: {e}")
+
+    # Add started_at column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARK_PROMPTS_TABLE} ADD COLUMN started_at TEXT')
+        logging.info("Added started_at column to benchmark_prompts table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("started_at column already exists")
+        else:
+            logging.warning(f"Could not add started_at column: {e}")
+
+    # Add completed_at column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARK_PROMPTS_TABLE} ADD COLUMN completed_at TEXT')
+        logging.info("Added completed_at column to benchmark_prompts table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("completed_at column already exists")
+        else:
+            logging.warning(f"Could not add completed_at column: {e}")
+
+    # Add error_message column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARK_PROMPTS_TABLE} ADD COLUMN error_message TEXT')
+        logging.info("Added error_message column to benchmark_prompts table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("error_message column already exists")
+        else:
+            logging.warning(f"Could not add error_message column: {e}")
+
+    # Update existing records to have proper status based on their current data
+    try:
+        # Mark records with responses as completed
+        cursor.execute(f'''
+            UPDATE {BENCHMARK_PROMPTS_TABLE} 
+            SET status = 'completed', 
+                completed_at = COALESCE(completed_at, datetime('now'))
+            WHERE response IS NOT NULL 
+            AND response != '' 
+            AND status IS NULL
+        ''')
+        
+        # Mark records that start with ERROR as failed
+        cursor.execute(f'''
+            UPDATE {BENCHMARK_PROMPTS_TABLE} 
+            SET status = 'failed',
+                error_message = COALESCE(error_message, response),
+                completed_at = COALESCE(completed_at, datetime('now'))
+            WHERE response LIKE 'ERROR%' 
+            AND status != 'failed'
+        ''')
+        
+        logging.info("Updated existing records with proper status values")
+    except sqlite3.OperationalError as e:
+        logging.warning(f"Could not update existing record statuses: {e}")
 
     # Add csv_data column to files table if it doesn't exist (for existing databases)
     try:
@@ -343,6 +413,102 @@ def parse_csv_to_json_records(file_path: Path, max_rows: int = None) -> Dict[str
     except Exception as e:
         logging.error(f"Error parsing CSV {file_path}: {e}")
         raise
+
+def parse_csv_to_markdown_format(file_path: Path, max_rows: int = None) -> Dict[str, Any]:
+    """
+    Parse CSV file into markdown format for LLM prompts.
+    
+    Args:
+        file_path: Path to the CSV file
+        max_rows: Maximum number of rows to include (None for all)
+        
+    Returns:
+        Dict with 'markdown_data', 'total_rows', 'included_rows', 'columns'
+    """
+    try:
+        records = []
+        total_rows = 0
+        
+        with open(file_path, 'r', encoding='utf-8', newline='') as csvfile:
+            # Detect delimiter
+            sample = csvfile.read(1024)
+            csvfile.seek(0)
+            sniffer = csv.Sniffer()
+            delimiter = sniffer.sniff(sample).delimiter
+            
+            reader = csv.DictReader(csvfile, delimiter=delimiter)
+            columns = reader.fieldnames or []
+            
+            for row_num, row in enumerate(reader):
+                total_rows += 1
+                
+                if max_rows is None or row_num < max_rows:
+                    # Clean up the row data
+                    clean_row = {}
+                    for key, value in row.items():
+                        # Handle None keys (can happen with malformed CSV)
+                        clean_key = key.strip() if key else f"column_{len(clean_row)}"
+                        # Keep empty strings as empty strings for markdown (not None)
+                        clean_value = value.strip() if value else ""
+                        clean_row[clean_key] = clean_value
+                    records.append(clean_row)
+                
+                # Stop reading if we've hit our limit
+                if max_rows and row_num >= max_rows:
+                    break
+        
+        # Format records as markdown
+        markdown_data = format_records_as_markdown(records)
+        
+        return {
+            'markdown_data': markdown_data,
+            'total_rows': total_rows,
+            'included_rows': len(records),
+            'columns': columns
+        }
+        
+    except Exception as e:
+        logging.error(f"Error parsing CSV {file_path}: {e}")
+        raise
+
+def format_records_as_markdown(records: List[Dict[str, Any]]) -> str:
+    """
+    Convert CSV records to markdown format.
+    
+    Args:
+        records: List of dictionaries representing CSV rows
+        
+    Returns:
+        String in markdown format
+    """
+    if not records or len(records) == 0:
+        return 'No data available'
+
+    return '\n'.join(records_entry_to_markdown(record) for record in records)
+
+def records_entry_to_markdown(record: Dict[str, Any]) -> str:
+    """
+    Convert a single CSV record to markdown format.
+    
+    Args:
+        record: Dictionary representing a single CSV row
+        
+    Returns:
+        String in markdown format for this record
+    """
+    entries = []
+    for key, value in record.items():
+        # Include all fields, even empty ones (show as empty string)
+        entries.append(f"  {key}: {value}")
+    
+    return f"- {chr(10).join(entries)}"
+
+def estimate_markdown_tokens(markdown_data: str) -> int:
+    """
+    Estimate token count for markdown data.
+    Rough approximation: 1 token ≈ 4 characters for text data.
+    """
+    return len(markdown_data) // 4
 
 def estimate_json_records_tokens(records: List[Dict[str, Any]]) -> int:
     """
@@ -666,14 +832,19 @@ def save_benchmark_prompt(benchmark_run_id: int, prompt: str, response: str,
     cursor = conn.cursor()
     
     try:
+        # Determine status based on response content
+        prompt_status = 'failed' if str(response).startswith('ERROR') else 'completed'
+        error_message = str(response) if prompt_status == 'failed' else None
+        
         cursor.execute(f'''
             INSERT INTO {BENCHMARK_PROMPTS_TABLE} 
             (benchmark_run_id, prompt, response, latency, 
              standard_input_tokens, cached_input_tokens, output_tokens,
              thinking_tokens, reasoning_tokens,
              input_cost, cached_cost, output_cost, thinking_cost, reasoning_cost, total_cost, 
-             web_search_used, web_search_sources, truncation_info)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             web_search_used, web_search_sources, truncation_info,
+             status, started_at, completed_at, error_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (benchmark_run_id, str(prompt), str(response),
               float(latency) if latency is not None else 0.0, 
               int(standard_input_tokens) if standard_input_tokens is not None else 0,
@@ -682,7 +853,8 @@ def save_benchmark_prompt(benchmark_run_id: int, prompt: str, response: str,
               int(thinking_tokens) if thinking_tokens is not None else 0,
               int(reasoning_tokens) if reasoning_tokens is not None else 0,
               input_cost, cached_cost, output_cost, thinking_cost, reasoning_cost, total_cost, 
-              1 if web_search_used else 0, web_search_sources, truncation_info))
+              1 if web_search_used else 0, web_search_sources, truncation_info,
+              prompt_status, datetime.datetime.now().isoformat(), datetime.datetime.now().isoformat(), error_message))
         
         prompt_id = cursor.lastrowid
         conn.commit()
@@ -764,14 +936,19 @@ def load_all_benchmarks(db_path: Path = Path.cwd()) -> List[dict]:
 def get_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> Optional[dict]:
     """Get detailed information about a specific benchmark, including runs and prompts (responses only)."""
     db_file = db_path / DB_NAME
-    conn = sqlite3.connect(db_file)
+    # Use WAL mode and timeout to handle concurrent access
+    conn = sqlite3.connect(db_file, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
     try:
-        # Get benchmark info
+        # Get benchmark info including progress fields
         cursor.execute(f'''
-            SELECT id, created_at, label, description, status
+            SELECT id, created_at, label, description, status,
+                   total_prompts, completed_prompts, failed_prompts, 
+                   updated_at, worker_status
             FROM {BENCHMARKS_TABLE}
             WHERE id = ?
         ''', (benchmark_id,))
@@ -786,12 +963,14 @@ def get_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> Opti
         # Get files
         benchmark['files'] = get_benchmark_files(benchmark_id, db_path)
         
-        # Get runs
+        # Get runs including progress and status fields
         cursor.execute(f'''
             SELECT id as run_id, model_name, provider, report, latency, created_at as run_created_at,
                    total_standard_input_tokens, total_cached_input_tokens,
                    total_output_tokens, total_tokens,
-                   total_input_cost, total_cached_cost, total_output_cost, total_cost
+                   total_input_cost, total_cached_cost, total_output_cost, total_cost,
+                   status as run_status, completed_prompts as run_completed_prompts, 
+                   total_prompts as run_total_prompts, last_heartbeat
             FROM {BENCHMARK_RUNS_TABLE}
             WHERE benchmark_id = ?
             ORDER BY created_at DESC
@@ -801,7 +980,7 @@ def get_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> Opti
         for run_row_data in cursor.fetchall():
             run = dict(run_row_data) # Convert row to dict
 
-            # Get prompts for this run
+            # Get prompts for this run including status fields
             cursor.execute(f'''
                 SELECT id as prompt_id, prompt, response, latency as prompt_latency,
                        standard_input_tokens, cached_input_tokens, output_tokens,
@@ -811,7 +990,8 @@ def get_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> Opti
                             THEN web_search_used ELSE 0 END as web_search_used,
                        CASE WHEN (SELECT COUNT(*) FROM pragma_table_info('{BENCHMARK_PROMPTS_TABLE}') 
                                  WHERE name='web_search_sources') > 0 
-                            THEN web_search_sources ELSE '' END as web_search_sources
+                            THEN web_search_sources ELSE '' END as web_search_sources,
+                       status as prompt_status, started_at, completed_at, error_message
                 FROM {BENCHMARK_PROMPTS_TABLE}
                 WHERE benchmark_run_id = ?
                 ORDER BY id
@@ -1586,3 +1766,561 @@ def delete_file(file_id: int, db_path: Path = Path.cwd()) -> bool:
         return False
     finally:
         conn.close()
+
+# ============================================================================
+# Atomic benchmark progress tracking functions
+# ============================================================================
+
+def update_benchmark_progress(benchmark_id: int, db_path: Path = Path.cwd()) -> bool:
+    """
+    Atomically update benchmark progress counters based on completed prompts.
+    This should be called after each prompt completion.
+    """
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    try:
+        # Start transaction for atomic update
+        cursor.execute("BEGIN EXCLUSIVE")
+        
+        # Count total expected prompts (models × prompts)
+        cursor.execute(f'''
+            SELECT COUNT(DISTINCT br.id) as model_count,
+                   COUNT(DISTINCT psi.id) as prompt_count
+            FROM {BENCHMARK_RUNS_TABLE} br
+            JOIN {BENCHMARKS_TABLE} b ON br.benchmark_id = b.id
+            LEFT JOIN {PROMPT_SET_ITEMS_TABLE} psi ON b.prompt_set_id = psi.prompt_set_id
+            WHERE b.id = ?
+        ''', (benchmark_id,))
+        
+        row = cursor.fetchone()
+        model_count = row[0] or 0
+        prompt_count = row[1] or 0
+        total_prompts = model_count * prompt_count if prompt_count > 0 else 0
+        
+        # Count completed prompts
+        cursor.execute(f'''
+            SELECT COUNT(*) 
+            FROM {BENCHMARK_PROMPTS_TABLE} bp
+            JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
+            WHERE br.benchmark_id = ? AND bp.status = 'completed'
+        ''', (benchmark_id,))
+        
+        completed_prompts = cursor.fetchone()[0] or 0
+        
+        # Count failed prompts
+        cursor.execute(f'''
+            SELECT COUNT(*) 
+            FROM {BENCHMARK_PROMPTS_TABLE} bp
+            JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
+            WHERE br.benchmark_id = ? AND bp.status = 'failed'
+        ''', (benchmark_id,))
+        
+        failed_prompts = cursor.fetchone()[0] or 0
+        
+        # Determine overall status
+        if completed_prompts + failed_prompts >= total_prompts and total_prompts > 0:
+            status = 'completed' if failed_prompts == 0 else 'completed_with_errors'
+        elif completed_prompts > 0 or failed_prompts > 0:
+            status = 'in_progress'
+        else:
+            status = 'pending'
+        
+        # Update benchmark with atomic operation
+        cursor.execute(f'''
+            UPDATE {BENCHMARKS_TABLE}
+            SET total_prompts = ?,
+                completed_prompts = ?,
+                failed_prompts = ?,
+                status = ?,
+                updated_at = ?
+            WHERE id = ?
+        ''', (total_prompts, completed_prompts, failed_prompts, 
+              status, datetime.datetime.now().isoformat(), benchmark_id))
+        
+        # Update individual benchmark_run progress
+        cursor.execute(f'''
+            UPDATE {BENCHMARK_RUNS_TABLE} br
+            SET completed_prompts = (
+                    SELECT COUNT(*)
+                    FROM {BENCHMARK_PROMPTS_TABLE} bp
+                    WHERE bp.benchmark_run_id = br.id AND bp.status = 'completed'
+                ),
+                total_prompts = (
+                    SELECT COUNT(*)
+                    FROM {BENCHMARK_PROMPTS_TABLE} bp
+                    WHERE bp.benchmark_run_id = br.id
+                ),
+                status = CASE
+                    WHEN (
+                        SELECT COUNT(*)
+                        FROM {BENCHMARK_PROMPTS_TABLE} bp
+                        WHERE bp.benchmark_run_id = br.id AND bp.status = 'completed'
+                    ) >= (
+                        SELECT COUNT(*)
+                        FROM {BENCHMARK_PROMPTS_TABLE} bp
+                        WHERE bp.benchmark_run_id = br.id
+                    ) AND (
+                        SELECT COUNT(*)
+                        FROM {BENCHMARK_PROMPTS_TABLE} bp
+                        WHERE bp.benchmark_run_id = br.id
+                    ) > 0 THEN 'completed'
+                    WHEN (
+                        SELECT COUNT(*)
+                        FROM {BENCHMARK_PROMPTS_TABLE} bp
+                        WHERE bp.benchmark_run_id = br.id AND bp.status IN ('completed', 'failed')
+                    ) > 0 THEN 'in_progress'
+                    ELSE 'pending'
+                END
+            WHERE br.benchmark_id = ?
+        ''', (benchmark_id,))
+        
+        cursor.execute("COMMIT")
+        return True
+        
+    except sqlite3.Error as e:
+        cursor.execute("ROLLBACK")
+        logging.error(f"Failed to update benchmark progress: {e}")
+        return False
+    finally:
+        conn.close()
+
+def save_benchmark_prompt_atomic(benchmark_run_id: int, prompt: str, response: str, 
+                                latency: float, standard_input_tokens: int, 
+                                cached_input_tokens: int, output_tokens: int,
+                                thinking_tokens: int = 0, reasoning_tokens: int = 0,
+                                input_cost: float = 0.0, cached_cost: float = 0.0,
+                                output_cost: float = 0.0, thinking_cost: float = 0.0,
+                                reasoning_cost: float = 0.0, total_cost: float = 0.0,
+                                web_search_used: bool = False,
+                                web_search_sources: str = "",
+                                truncation_info: str = "",
+                                db_path: Path = Path.cwd()) -> Optional[int]:
+    """
+    Save a prompt result atomically with progress tracking.
+    This replaces save_benchmark_prompt for better consistency.
+    """
+    db_file = db_path / DB_NAME
+    # Use WAL mode and timeout to handle concurrent access
+    conn = sqlite3.connect(db_file, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    cursor = conn.cursor()
+    
+    try:
+        # Start transaction
+        cursor.execute("BEGIN EXCLUSIVE")
+        
+        # Get benchmark_id from the run
+        cursor.execute(f'''
+            SELECT benchmark_id FROM {BENCHMARK_RUNS_TABLE} WHERE id = ?
+        ''', (benchmark_run_id,))
+        
+        result = cursor.fetchone()
+        if not result:
+            raise ValueError(f"Benchmark run {benchmark_run_id} not found")
+        
+        benchmark_id = result[0]
+        
+        # Determine status based on response content
+        prompt_status = 'failed' if str(response).startswith('ERROR') else 'completed'
+        error_message = str(response) if prompt_status == 'failed' else None
+        
+        # Insert the prompt with status tracking
+        cursor.execute(f'''
+            INSERT INTO {BENCHMARK_PROMPTS_TABLE} 
+            (benchmark_run_id, prompt, response, latency, 
+             standard_input_tokens, cached_input_tokens, output_tokens,
+             thinking_tokens, reasoning_tokens,
+             input_cost, cached_cost, output_cost, thinking_cost, reasoning_cost, total_cost, 
+             web_search_used, web_search_sources, truncation_info,
+             status, started_at, completed_at, error_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (benchmark_run_id, str(prompt), str(response),
+              float(latency) if latency is not None else 0.0, 
+              int(standard_input_tokens) if standard_input_tokens is not None else 0,
+              int(cached_input_tokens) if cached_input_tokens is not None else 0,
+              int(output_tokens) if output_tokens is not None else 0,
+              int(thinking_tokens) if thinking_tokens is not None else 0,
+              int(reasoning_tokens) if reasoning_tokens is not None else 0,
+              input_cost, cached_cost, output_cost, thinking_cost, reasoning_cost, total_cost, 
+              1 if web_search_used else 0, web_search_sources, truncation_info,
+              prompt_status, datetime.datetime.now().isoformat(), datetime.datetime.now().isoformat(), error_message))
+        
+        prompt_id = cursor.lastrowid
+        
+        # Update benchmark progress manually within this transaction
+        # Count total expected prompts (models × prompts)
+        cursor.execute(f'''
+            SELECT COUNT(DISTINCT br.id) as model_count,
+                   COUNT(DISTINCT psi.id) as prompt_count
+            FROM {BENCHMARK_RUNS_TABLE} br
+            JOIN {BENCHMARKS_TABLE} b ON br.benchmark_id = b.id
+            LEFT JOIN {PROMPT_SET_ITEMS_TABLE} psi ON b.prompt_set_id = psi.prompt_set_id
+            WHERE b.id = ?
+        ''', (benchmark_id,))
+        
+        row = cursor.fetchone()
+        model_count = row[0] or 0
+        prompt_count = row[1] or 0
+        total_prompts = model_count * prompt_count if prompt_count > 0 else 0
+        
+        # Count completed prompts
+        cursor.execute(f'''
+            SELECT COUNT(*) 
+            FROM {BENCHMARK_PROMPTS_TABLE} bp
+            JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
+            WHERE br.benchmark_id = ? AND bp.status = 'completed'
+        ''', (benchmark_id,))
+        
+        completed_prompts = cursor.fetchone()[0] or 0
+        
+        # Count failed prompts
+        cursor.execute(f'''
+            SELECT COUNT(*) 
+            FROM {BENCHMARK_PROMPTS_TABLE} bp
+            JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
+            WHERE br.benchmark_id = ? AND bp.status = 'failed'
+        ''', (benchmark_id,))
+        
+        failed_prompts = cursor.fetchone()[0] or 0
+        
+        # Determine overall status
+        if completed_prompts + failed_prompts >= total_prompts and total_prompts > 0:
+            status = 'completed' if failed_prompts == 0 else 'completed_with_errors'
+        elif completed_prompts > 0 or failed_prompts > 0:
+            status = 'in_progress'
+        else:
+            status = 'pending'
+        
+        # Update benchmark with atomic operation
+        cursor.execute(f'''
+            UPDATE {BENCHMARKS_TABLE}
+            SET total_prompts = ?,
+                completed_prompts = ?,
+                failed_prompts = ?,
+                status = ?,
+                updated_at = ?
+            WHERE id = ?
+        ''', (total_prompts, completed_prompts, failed_prompts, 
+              status, datetime.datetime.now().isoformat(), benchmark_id))
+        
+        cursor.execute("COMMIT")
+        return prompt_id
+        
+    except sqlite3.Error as e:
+        try:
+            cursor.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass  # Transaction might not be active
+        logging.error(f"SQLite error when saving benchmark prompt atomically: {e}")
+        return None
+    finally:
+        conn.close()
+
+def update_worker_heartbeat(benchmark_run_id: int, db_path: Path = Path.cwd()) -> bool:
+    """Update the last heartbeat timestamp for a benchmark run."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute(f'''
+            UPDATE {BENCHMARK_RUNS_TABLE}
+            SET last_heartbeat = ?
+            WHERE id = ?
+        ''', (datetime.datetime.now().isoformat(), benchmark_run_id))
+        
+        conn.commit()
+        return cursor.rowcount > 0
+        
+    except sqlite3.Error as e:
+        logging.error(f"Failed to update worker heartbeat: {e}")
+        return False
+    finally:
+        conn.close()
+
+def mark_prompt_failed(benchmark_run_id: int, prompt: str, error_message: str, 
+                      db_path: Path = Path.cwd()) -> bool:
+    """Mark a prompt as failed with an error message."""
+    db_file = db_path / DB_NAME
+    # Use WAL mode and timeout to handle concurrent access
+    conn = sqlite3.connect(db_file, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("BEGIN EXCLUSIVE")
+        
+        # Insert failed prompt
+        cursor.execute(f'''
+            INSERT INTO {BENCHMARK_PROMPTS_TABLE} 
+            (benchmark_run_id, prompt, response, status, error_message, 
+             started_at, completed_at, latency)
+            VALUES (?, ?, '', 'failed', ?, ?, ?, 0)
+        ''', (benchmark_run_id, prompt, error_message, 
+              datetime.datetime.now().isoformat(), 
+              datetime.datetime.now().isoformat()))
+        
+        # Get benchmark_id and update progress
+        cursor.execute(f'''
+            SELECT benchmark_id FROM {BENCHMARK_RUNS_TABLE} WHERE id = ?
+        ''', (benchmark_run_id,))
+        
+        result = cursor.fetchone()
+        if result:
+            benchmark_id = result[0]
+            
+            # Update benchmark progress manually within this transaction
+            # Count completed and failed prompts
+            cursor.execute(f'''
+                SELECT COUNT(*) 
+                FROM {BENCHMARK_PROMPTS_TABLE} bp
+                JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
+                WHERE br.benchmark_id = ? AND bp.status = 'completed'
+            ''', (benchmark_id,))
+            
+            completed_prompts = cursor.fetchone()[0] or 0
+            
+            cursor.execute(f'''
+                SELECT COUNT(*) 
+                FROM {BENCHMARK_PROMPTS_TABLE} bp
+                JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
+                WHERE br.benchmark_id = ? AND bp.status = 'failed'
+            ''', (benchmark_id,))
+            
+            failed_prompts = cursor.fetchone()[0] or 0
+            
+            # Update benchmark counters
+            cursor.execute(f'''
+                UPDATE {BENCHMARKS_TABLE}
+                SET completed_prompts = ?,
+                    failed_prompts = ?,
+                    updated_at = ?
+                WHERE id = ?
+            ''', (completed_prompts, failed_prompts, 
+                  datetime.datetime.now().isoformat(), benchmark_id))
+        
+        cursor.execute("COMMIT")
+        return True
+        
+    except sqlite3.Error as e:
+        try:
+            cursor.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass  # Transaction might not be active
+        logging.error(f"Failed to mark prompt as failed: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_benchmark_sync_status(benchmark_id: int, db_path: Path = Path.cwd()) -> Dict[str, Any]:
+    """
+    Analyze a benchmark to determine what prompts need to be synced/rerun.
+    
+    Returns:
+        Dict with sync analysis including missing, failed, and pending prompts
+    """
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    try:
+        # Get benchmark info including prompt set
+        cursor.execute(f'''
+            SELECT b.id, b.label, b.prompt_set_id, b.intended_models
+            FROM {BENCHMARKS_TABLE} b
+            WHERE b.id = ?
+        ''', (benchmark_id,))
+        
+        benchmark_row = cursor.fetchone()
+        if not benchmark_row:
+            return {"error": f"Benchmark {benchmark_id} not found"}
+        
+        benchmark = dict(benchmark_row)
+        
+        # Get expected prompts from prompt set
+        expected_prompts = []
+        if benchmark['prompt_set_id']:
+            cursor.execute(f'''
+                SELECT prompt_text, order_index
+                FROM {PROMPT_SET_ITEMS_TABLE}
+                WHERE prompt_set_id = ?
+                ORDER BY order_index
+            ''', (benchmark['prompt_set_id'],))
+            
+            expected_prompts = [dict(row) for row in cursor.fetchall()]
+        else:
+            # For benchmarks without prompt sets, derive expected prompts from existing runs
+            # Get all unique prompts that have been used in this benchmark
+            cursor.execute(f'''
+                SELECT DISTINCT bp.prompt
+                FROM {BENCHMARK_PROMPTS_TABLE} bp
+                JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
+                WHERE br.benchmark_id = ?
+                ORDER BY bp.id
+            ''', (benchmark_id,))
+            
+            prompt_rows = cursor.fetchall()
+            expected_prompts = [
+                {"prompt_text": row[0], "order_index": i} 
+                for i, row in enumerate(prompt_rows)
+            ]
+        
+        # Get intended models
+        intended_models = []
+        if benchmark['intended_models']:
+            try:
+                intended_models = json.loads(benchmark['intended_models'])
+            except (json.JSONDecodeError, TypeError):
+                intended_models = []
+        
+        # Get existing runs for this benchmark
+        cursor.execute(f'''
+            SELECT id as run_id, model_name, provider
+            FROM {BENCHMARK_RUNS_TABLE}
+            WHERE benchmark_id = ?
+        ''', (benchmark_id,))
+        
+        all_runs = [dict(row) for row in cursor.fetchall()]
+        
+        sync_analysis = {
+            "benchmark_id": benchmark_id,
+            "benchmark_label": benchmark['label'],
+            "expected_prompts": len(expected_prompts),
+            "intended_models": intended_models,
+            "existing_runs": [f"{run['model_name']}_{run['provider']}" for run in all_runs],
+            "models_needing_sync": [],
+            "total_prompts_to_sync": 0,
+            "sync_needed": False
+        }
+        
+        # For each intended model, check what prompts need syncing
+        for model_name in intended_models:
+            # Find ALL runs for this model
+            model_runs = [run for run in all_runs if run['model_name'] == model_name]
+            
+            if not model_runs:
+                # No run exists for this model - all prompts need to be created
+                sync_analysis["models_needing_sync"].append({
+                    "model_name": model_name,
+                    "run_id": None,
+                    "missing_prompts": len(expected_prompts),
+                    "failed_prompts": 0,
+                    "pending_prompts": 0,
+                    "prompts_to_sync": expected_prompts,
+                    "reason": "No run exists for this model"
+                })
+                sync_analysis["total_prompts_to_sync"] += len(expected_prompts)
+                sync_analysis["sync_needed"] = True
+                continue
+            
+            # Track prompts that need syncing (deduplicated by prompt text)
+            prompts_needing_sync = {}  # prompt_text -> prompt_info
+            
+            # Check what prompts need syncing for this model
+            for expected_prompt in expected_prompts:
+                prompt_text = expected_prompt['prompt_text']
+                
+                # Check if this prompt was completed successfully in ANY run
+                completed_successfully = False
+                latest_failed_info = None
+                latest_pending_info = None
+                available_run_id = None
+                
+                for model_run in model_runs:
+                    available_run_id = model_run['run_id']  # Track any available run ID
+                    
+                    # Get existing prompts for this specific run
+                    cursor.execute(f'''
+                        SELECT prompt, status, error_message, response
+                        FROM {BENCHMARK_PROMPTS_TABLE}
+                        WHERE benchmark_run_id = ? AND prompt = ?
+                    ''', (model_run['run_id'], prompt_text))
+                    
+                    existing_prompt = cursor.fetchone()
+                    
+                    if existing_prompt:
+                        existing_prompt = dict(existing_prompt)
+                        
+                        if existing_prompt['status'] == 'completed' and existing_prompt['response'] and not existing_prompt['response'].startswith('ERROR'):
+                            # Found a successful completion - no need to sync this prompt
+                            completed_successfully = True
+                            break
+                        elif existing_prompt['status'] == 'failed' or (existing_prompt['response'] and existing_prompt['response'].startswith('ERROR')):
+                            # Track the latest failed attempt
+                            latest_failed_info = {
+                                "prompt_text": prompt_text,
+                                "order_index": expected_prompt['order_index'],
+                                "reason": "failed",
+                                "status": existing_prompt['status'],
+                                "error_message": existing_prompt['error_message'],
+                                "response": existing_prompt['response'][:100] + "..." if len(existing_prompt['response']) > 100 else existing_prompt['response'],
+                                "run_id": model_run['run_id']
+                            }
+                        elif existing_prompt['status'] in ['pending', 'in_progress']:
+                            # Track the latest pending attempt
+                            latest_pending_info = {
+                                "prompt_text": prompt_text,
+                                "order_index": expected_prompt['order_index'],
+                                "reason": "pending",
+                                "status": existing_prompt['status'],
+                                "run_id": model_run['run_id']
+                            }
+                
+                # If not completed successfully, add to sync list
+                if not completed_successfully:
+                    if latest_failed_info:
+                        prompts_needing_sync[prompt_text] = latest_failed_info
+                    elif latest_pending_info:
+                        prompts_needing_sync[prompt_text] = latest_pending_info
+                    else:
+                        # Missing prompt - doesn't exist in any run
+                        prompts_needing_sync[prompt_text] = {
+                            "prompt_text": prompt_text,
+                            "order_index": expected_prompt['order_index'],
+                            "reason": "missing",
+                            "status": None,
+                            "run_id": available_run_id
+                        }
+            
+            if prompts_needing_sync:
+                # Count by reason
+                missing_count = sum(1 for p in prompts_needing_sync.values() if p['reason'] == 'missing')
+                failed_count = sum(1 for p in prompts_needing_sync.values() if p['reason'] == 'failed')
+                pending_count = sum(1 for p in prompts_needing_sync.values() if p['reason'] == 'pending')
+                
+                sync_analysis["models_needing_sync"].append({
+                    "model_name": model_name,
+                    "run_id": model_runs[0]['run_id'],  # Use first run for compatibility
+                    "missing_prompts": missing_count,
+                    "failed_prompts": failed_count,
+                    "pending_prompts": pending_count,
+                    "prompts_to_sync": list(prompts_needing_sync.values()),
+                    "reason": f"{missing_count} missing, {failed_count} failed, {pending_count} pending across {len(model_runs)} runs"
+                })
+                sync_analysis["total_prompts_to_sync"] += len(prompts_needing_sync)
+                sync_analysis["sync_needed"] = True
+        
+        return sync_analysis
+        
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error when analyzing benchmark sync status: {e}")
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+def needs_sync(benchmark_id: int, db_path: Path = Path.cwd()) -> bool:
+    """
+    Quick check if a benchmark needs syncing.
+    
+    Returns:
+        True if the benchmark has missing, failed, or pending prompts
+    """
+    sync_status = get_benchmark_sync_status(benchmark_id, db_path)
+    return sync_status.get("sync_needed", False)

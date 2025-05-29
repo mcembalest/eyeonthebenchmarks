@@ -103,6 +103,16 @@ async def update_benchmark_endpoint(payload: dict):
     new_description = payload.get("newDescription") or payload.get("new_description")
     return logic.handle_update_benchmark_details(int(benchmark_id), new_label, new_description)
 
+@app.get("/benchmarks/{benchmark_id}/sync-status")
+async def get_benchmark_sync_status(benchmark_id: int):
+    """Get sync status for a benchmark."""
+    return logic.handle_get_sync_status(benchmark_id)
+
+@app.post("/benchmarks/{benchmark_id}/sync")
+async def sync_benchmark(benchmark_id: int):
+    """Sync a benchmark by rerunning missing, failed, or pending prompts."""
+    return logic.handle_sync_benchmark(benchmark_id)
+
 @app.get("/models")
 async def list_models():
     return [

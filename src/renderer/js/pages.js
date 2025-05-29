@@ -12,6 +12,7 @@ class Pages {
     this.prompts = [];
     this.selectedModels = [];
     this.refreshInterval = null; // For auto-refreshing running benchmarks
+    this.resultsTableZoom = 1.0; // For zoom functionality in results table
     
     // Initialize prompt set properties
     this.promptSetPrompts = [];
@@ -278,6 +279,89 @@ class Pages {
     if (loadPromptSetBtn) {
       loadPromptSetBtn.onclick = () => this.showLoadPromptSetModal();
     }
+    
+    // Set up select all models toggle
+    this.setupSelectAllModelsToggle();
+  }
+  
+  /**
+   * Set up the select all models toggle functionality
+   */
+  setupSelectAllModelsToggle() {
+    const selectAllToggle = document.getElementById('selectAllModelsToggle');
+    if (!selectAllToggle) return;
+    
+    selectAllToggle.addEventListener('change', (e) => {
+      const isChecked = e.target.checked;
+      const modelCheckboxes = document.querySelectorAll('#modelList input[type="checkbox"]');
+      
+      modelCheckboxes.forEach(checkbox => {
+        checkbox.checked = isChecked;
+        
+        // Trigger change event to update PDF display if needed
+        checkbox.dispatchEvent(new Event('change'));
+      });
+      
+      // Show a quick toast to confirm the action
+      const count = modelCheckboxes.length;
+      const action = isChecked ? 'selected' : 'deselected';
+      window.Components.showToast(`${count} models ${action}`, 'info', 2000);
+    });
+    
+    // Also update the toggle state when individual checkboxes change
+    const updateToggleState = () => {
+      const modelCheckboxes = document.querySelectorAll('#modelList input[type="checkbox"]');
+      const checkedBoxes = document.querySelectorAll('#modelList input[type="checkbox"]:checked');
+      
+      if (checkedBoxes.length === 0) {
+        // No models selected
+        selectAllToggle.checked = false;
+        selectAllToggle.indeterminate = false;
+      } else if (checkedBoxes.length === modelCheckboxes.length) {
+        // All models selected
+        selectAllToggle.checked = true;
+        selectAllToggle.indeterminate = false;
+      } else {
+        // Some models selected
+        selectAllToggle.checked = false;
+        selectAllToggle.indeterminate = true;
+      }
+    };
+    
+    // Set up listeners on individual model checkboxes (needs to be done after models load)
+    const setupIndividualCheckboxListeners = () => {
+      const modelCheckboxes = document.querySelectorAll('#modelList input[type="checkbox"]');
+      modelCheckboxes.forEach(checkbox => {
+        checkbox.addEventListener('change', updateToggleState);
+      });
+      
+      // Update initial state
+      updateToggleState();
+    };
+    
+    // If models are already loaded, set up listeners immediately
+    const modelCheckboxes = document.querySelectorAll('#modelList input[type="checkbox"]');
+    if (modelCheckboxes.length > 0) {
+      setupIndividualCheckboxListeners();
+    } else {
+      // Otherwise, wait for models to load with a MutationObserver
+      const modelList = document.getElementById('modelList');
+      if (modelList) {
+        const observer = new MutationObserver((mutations) => {
+          mutations.forEach((mutation) => {
+            if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+              const checkboxes = modelList.querySelectorAll('input[type="checkbox"]');
+              if (checkboxes.length > 0) {
+                setupIndividualCheckboxListeners();
+                observer.disconnect(); // Stop observing once we've set up the listeners
+              }
+            }
+          });
+        });
+        
+        observer.observe(modelList, { childList: true, subtree: true });
+      }
+    }
   }
 
   /**
@@ -521,6 +605,9 @@ class Pages {
     const detailsContainer = document.getElementById('detailsContainer');
     
     try {
+      // Store current benchmark ID for refresh tracking
+      this.currentBenchmarkId = benchmarkId;
+      
       // Show loading state
       detailsContainer.innerHTML = '';
       detailsContainer.appendChild(window.Components.createSpinner('Loading benchmark details...'));
@@ -567,7 +654,9 @@ class Pages {
       clearInterval(this.refreshInterval);
     }
     
-    // Set up auto-refresh every 3 seconds
+    // WebSocket real-time updates have replaced polling
+    // The benchmark will be updated instantly via WebSocket events
+    // Keeping polling as a fallback for now, but with longer interval
     this.refreshInterval = setInterval(async () => {
       try {
         // Check if we're still on the details page for this benchmark
@@ -576,7 +665,7 @@ class Pages {
           return;
         }
         
-        // Fetch updated details
+        // Fetch updated details as fallback
         const details = await window.API.getBenchmarkDetails(benchmarkId);
         this.renderBenchmarkDetails(details);
         
@@ -594,7 +683,24 @@ class Pages {
         console.error('Error refreshing benchmark details:', error);
         // Continue trying to refresh even if there's an error
       }
-    }, 3000); // Refresh every 3 seconds
+    }, 10000); // Reduced frequency to 10 seconds as WebSocket provides real-time updates
+  }
+
+  /**
+   * Refresh the current benchmark (called by WebSocket events)
+   */
+  async refreshBenchmark() {
+    if (this.currentBenchmarkId) {
+      console.log('Refreshing benchmark via WebSocket event:', this.currentBenchmarkId);
+      try {
+        const details = await window.API.getBenchmarkDetails(this.currentBenchmarkId);
+        if (details) {
+          this.renderBenchmarkDetails(details);
+        }
+      } catch (error) {
+        console.error('Error refreshing benchmark:', error);
+      }
+    }
   }
 
   /**
@@ -604,28 +710,80 @@ class Pages {
   renderBenchmarkDetails(details) {
     const detailsContainer = document.getElementById('detailsContainer');
 
-    // Get the ACTUAL total number of prompts in the benchmark
-    // This should be consistent across all models - use the maximum found
-    let totalPromptsInBenchmark = 0;
+    // Get the total number of prompts from the database progress fields
+    let totalPromptsInBenchmark = details.total_prompts || 0;
+    let completedPromptsInBenchmark = details.completed_prompts || 0;
+    let failedPromptsInBenchmark = details.failed_prompts || 0;
+    
+    // Calculate better progress metrics based on user's request
+    // Count unique prompts and models
+    const uniquePromptsSet = new Set();
+    const uniqueModelsSet = new Set();
+    const promptCompletionByModel = new Map(); // prompt_text -> Set of completed models
+    const modelCompletionByPrompt = new Map(); // model_key -> Set of completed prompts
+    
     if (details.runs && details.runs.length > 0) {
-      // Find the maximum number of prompts across all runs (should be the same for all models)
-      totalPromptsInBenchmark = Math.max(...details.runs.map(run => {
+      details.runs.forEach(run => {
+        const modelKey = `${run.model_name}_${run.provider}`;
+        uniqueModelsSet.add(modelKey);
+        
         if (run.prompts && run.prompts.length > 0) {
-          return run.prompts.length;
+          run.prompts.forEach(prompt => {
+            if (prompt.prompt) {
+              uniquePromptsSet.add(prompt.prompt);
+              
+              // Track which models completed each prompt
+              if (!promptCompletionByModel.has(prompt.prompt)) {
+                promptCompletionByModel.set(prompt.prompt, new Set());
+              }
+              
+              // Track which prompts each model completed  
+              if (!modelCompletionByPrompt.has(modelKey)) {
+                modelCompletionByPrompt.set(modelKey, new Set());
+              }
+              
+              // Check if this prompt has a valid response (completed)
+              const hasValidResponse = prompt.response && 
+                                     prompt.response.trim().length > 0 && 
+                                     !prompt.response.startsWith('ERROR');
+              
+              if (hasValidResponse) {
+                promptCompletionByModel.get(prompt.prompt).add(modelKey);
+                modelCompletionByPrompt.get(modelKey).add(prompt.prompt);
+              }
+            }
+          });
         }
-        return 0;
-      }), 0);
-      
-      // If no prompts found yet, try to get from intended models or estimate
-      if (totalPromptsInBenchmark === 0) {
-        // For running benchmarks where no prompts are saved yet, we might need to estimate
-        // This is a fallback - ideally we'd store this info in the benchmark record
-        totalPromptsInBenchmark = 0; // Will show "TBD"
-      }
+      });
     }
     
-    // Determine if this is a running benchmark
-    const isRunning = details.status === 'running' || details.status === 'in-progress';
+    // Calculate prompts that are complete across ALL models (no errors)
+    const totalUniquePrompts = uniquePromptsSet.size;
+    const totalUniqueModels = uniqueModelsSet.size;
+    
+    let fullyCompletedPrompts = 0;
+    promptCompletionByModel.forEach((completedModels, promptText) => {
+      if (completedModels.size === totalUniqueModels) {
+        fullyCompletedPrompts++;
+      }
+    });
+    
+    // Calculate models that completed ALL prompts (no errors)
+    let fullyCompletedModels = 0;
+    modelCompletionByPrompt.forEach((completedPrompts, modelKey) => {
+      if (completedPrompts.size === totalUniquePrompts) {
+        fullyCompletedModels++;
+      }
+    });
+    
+    // If progress fields are not available, fall back to calculating from runs
+    if (totalPromptsInBenchmark === 0 && details.runs && details.runs.length > 0) {
+      // Calculate total prompts as models × prompts per model
+      totalPromptsInBenchmark = totalUniqueModels * totalUniquePrompts;
+    }
+    
+    // Determine if this is a running benchmark based on the status field
+    const isRunning = details.status === 'running' || details.status === 'in-progress' || details.status === 'in_progress';
     
     // Deduplicate models and build per-model table data
     const uniqueModels = new Map();
@@ -633,57 +791,98 @@ class Pages {
       details.runs.forEach(run => {
         const modelKey = `${run.model_name}_${run.provider}`;
         if (!uniqueModels.has(modelKey)) {
-          uniqueModels.set(modelKey, run);
+          // Initialize with first run
+          uniqueModels.set(modelKey, {
+            ...run,
+            aggregated_cost: 0,
+            aggregated_tokens: 0,
+            aggregated_latency: 0,
+            aggregated_completed_prompts: 0,
+            aggregated_total_prompts: 0,
+            all_runs: []
+          });
         }
+        
+        // Add this run to the aggregation
+        const aggregatedRun = uniqueModels.get(modelKey);
+        aggregatedRun.all_runs.push(run);
+        
+        // Aggregate run-level totals (from database) - more reliable than prompt-level calculation
+        if (run.total_cost) {
+          aggregatedRun.aggregated_cost += run.total_cost;
+        }
+        if (run.total_standard_input_tokens || run.total_cached_input_tokens || run.total_output_tokens) {
+          aggregatedRun.aggregated_tokens += (run.total_standard_input_tokens || 0) + 
+                                            (run.total_cached_input_tokens || 0) + 
+                                            (run.total_output_tokens || 0);
+        }
+        if (run.latency) {
+          aggregatedRun.aggregated_latency += run.latency;
+        }
+      });
+      
+      // After collecting all runs, deduplicate prompts for each model
+      uniqueModels.forEach((aggregatedRun, modelKey) => {
+        const allPrompts = new Set(); // Track unique prompts by text
+        const completedPrompts = new Set(); // Track completed prompts by text
+        
+        // Collect all unique prompts across all runs for this model
+        aggregatedRun.all_runs.forEach(runData => {
+          if (runData.prompts && runData.prompts.length > 0) {
+            runData.prompts.forEach(prompt => {
+              if (prompt.prompt) {
+                allPrompts.add(prompt.prompt);
+                if (prompt.response && prompt.response.trim().length > 0) {
+                  completedPrompts.add(prompt.prompt);
+                }
+              }
+            });
+          }
+        });
+        
+        // Set the deduplicated counts
+        aggregatedRun.aggregated_total_prompts = allPrompts.size;
+        aggregatedRun.aggregated_completed_prompts = completedPrompts.size;
       });
     }
     
     let modelTableRows = '';
     if (uniqueModels.size > 0) {
-      modelTableRows = Array.from(uniqueModels.values()).map(run => {
-        const modelName = run.model_name || 'Unknown Model';
-        const provider = run.provider || 'unknown';
+      modelTableRows = Array.from(uniqueModels.values()).map(aggregatedRun => {
+        const modelName = aggregatedRun.model_name || 'Unknown Model';
+        const provider = aggregatedRun.provider || 'unknown';
         
         // Calculate metrics for this specific model based on completed prompts
-        let modelCost = 0;
-        let modelTokens = 0;
+        let modelCost = aggregatedRun.aggregated_cost;
+        let modelTokens = aggregatedRun.aggregated_tokens;
         // Latency is stored in milliseconds in the database (newer runs) or seconds (older runs)
         // Handle both cases by detecting magnitude
-        let modelLatencyMs = run.latency || 0;
+        let modelLatencyMs = aggregatedRun.aggregated_latency;
         // If latency is less than 1000, it's likely stored in seconds (old format)
         if (modelLatencyMs > 0 && modelLatencyMs < 1000) {
           modelLatencyMs = modelLatencyMs * 1000; // Convert to milliseconds
         }
         
         // If run.latency is 0 or missing, calculate it from individual prompt latencies
-        if (modelLatencyMs === 0 && run.prompts && run.prompts.length > 0) {
-          run.prompts.forEach(prompt => {
-            if (prompt.response && prompt.response.trim().length > 0) { // Only count completed prompts
-              let promptLatencyMs = prompt.prompt_latency || 0;
-              // Handle both milliseconds and seconds format for prompt latency
-              if (promptLatencyMs > 0 && promptLatencyMs < 1000) {
-                promptLatencyMs = promptLatencyMs * 1000; // Convert to milliseconds
-              }
-              modelLatencyMs += promptLatencyMs;
+        if (modelLatencyMs === 0 && aggregatedRun.all_runs.length > 0) {
+          aggregatedRun.all_runs.forEach(run => {
+            if (run.prompts && run.prompts.length > 0) {
+              run.prompts.forEach(prompt => {
+                if (prompt.response && prompt.response.trim().length > 0) { // Only count completed prompts
+                  let promptLatencyMs = prompt.prompt_latency || 0;
+                  // Handle both milliseconds and seconds format for prompt latency
+                  if (promptLatencyMs > 0 && promptLatencyMs < 1000) {
+                    promptLatencyMs = promptLatencyMs * 1000; // Convert to milliseconds
+                  }
+                  modelLatencyMs += promptLatencyMs;
+                }
+              });
             }
           });
         }
         
-        let completedPrompts = 0;
-        let totalPromptsForThisModel = 0;
-        
-        if (run.prompts && run.prompts.length > 0) {
-          totalPromptsForThisModel = run.prompts.length;
-          run.prompts.forEach(prompt => {
-            if (prompt.response && prompt.response.trim().length > 0) { // Only count completed prompts
-              modelCost += prompt.total_cost || 0;
-              modelTokens += (prompt.standard_input_tokens || 0) + 
-                            (prompt.cached_input_tokens || 0) + 
-                            (prompt.output_tokens || 0);
-              completedPrompts++;
-            }
-          });
-        }
+        let completedPrompts = aggregatedRun.aggregated_completed_prompts;
+        let totalPromptsForThisModel = aggregatedRun.aggregated_total_prompts;
         
         // Convert latency to minutes and seconds format
         const formatLatency = (ms) => {
@@ -698,15 +897,23 @@ class Pages {
           }
         };
         
-        // Determine status for this model based on actual completion state
+        // Determine status for this model based on database status fields
         let statusContent = '';
         let latencyContent = '';
         let costContent = '';
         let tokensContent = '';
         
-        // A model is considered complete if it has completed all its prompts OR if the benchmark is not running
-        const modelIsComplete = !isRunning || (totalPromptsForThisModel > 0 && completedPrompts === totalPromptsForThisModel);
-        const modelHasStarted = completedPrompts > 0 || totalPromptsForThisModel > 0;
+        // Use the run_status field from database if available, otherwise fall back to old logic
+        const runStatus = aggregatedRun.all_runs[0].run_status || '';
+        const runCompletedPrompts = aggregatedRun.all_runs[0].run_completed_prompts || completedPrompts;
+        const runTotalPrompts = aggregatedRun.all_runs[0].run_total_prompts || totalPromptsForThisModel;
+        
+        // A model is considered complete based on the status field
+        const modelIsComplete = runStatus === 'completed' || 
+                               (!isRunning && completedPrompts > 0) ||
+                               (runTotalPrompts > 0 && runCompletedPrompts >= runTotalPrompts);
+        const modelHasStarted = runStatus === 'in_progress' || runStatus === 'completed' || 
+                               completedPrompts > 0 || totalPromptsForThisModel > 0;
         
         if (!modelHasStarted && isRunning) {
           // Model hasn't started yet
@@ -717,7 +924,7 @@ class Pages {
         } else if (!modelIsComplete && isRunning) {
           // Model is in progress
           statusContent = '<i class="fas fa-clock text-warning me-2"></i>';
-          latencyContent = `<span class="text-info">${formatLatency(modelLatencyMs)}</span> <small class="text-muted">(${completedPrompts}/${totalPromptsForThisModel})</small>`;
+          latencyContent = `<span class="text-info">${formatLatency(modelLatencyMs)}</span> <small class="text-muted">(${runCompletedPrompts}/${runTotalPrompts || 'TBD'})</small>`;
           costContent = `<span class="text-info">${Utils.formatCurrency(modelCost)}</span> <small class="text-muted">(partial)</small>`;
           tokensContent = `<span class="text-info">${Utils.formatNumber(modelTokens)}</span> <small class="text-muted">(partial)</small>`;
         } else if (modelIsComplete && completedPrompts > 0) {
@@ -767,12 +974,18 @@ class Pages {
       `;
     }
 
-    // Add running indicator to the header if needed (without confusing progress fraction)
+    // Add running indicator to the header if needed with actual progress
     const runningBanner = isRunning ? `
       <div class="alert alert-info d-flex align-items-center mb-4">
         <div class="spinner-border spinner-border-sm text-info me-3" role="status"></div>
-        <div>
+        <div class="flex-grow-1">
           <strong>Benchmark Running</strong> - Results will update automatically as models complete
+          <div class="small mt-1">
+            <strong>Prompts complete:</strong> ${fullyCompletedPrompts}/${totalUniquePrompts} 
+            <span class="mx-2">•</span>
+            <strong>Models complete:</strong> ${fullyCompletedModels}/${totalUniqueModels}
+            ${failedPromptsInBenchmark > 0 ? `<span class="text-danger mx-2">(${failedPromptsInBenchmark} total failures)</span>` : ''}
+          </div>
         </div>
       </div>
     ` : '';
@@ -799,15 +1012,37 @@ class Pages {
 
       <!-- Basic Info -->
       <div class="row mb-4">
-        <div class="col-md-4">
+        <div class="col-md-3">
           <div class="card text-center">
             <div class="card-body">
-              <h4 class="text-info mb-1">${totalPromptsInBenchmark || 'TBD'}</h4>
-              <small class="text-muted">Prompts</small>
+              <h4 class="text-primary mb-1">${fullyCompletedPrompts}/${totalUniquePrompts}</h4>
+              <small class="text-muted">Prompts Complete</small>
+              ${isRunning && totalUniquePrompts > 0 ? `
+                <div class="progress mt-2" style="height: 5px;">
+                  <div class="progress-bar bg-primary" role="progressbar" 
+                       style="width: ${(fullyCompletedPrompts / totalUniquePrompts) * 100}%">
+                  </div>
+                </div>
+              ` : ''}
             </div>
           </div>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
+          <div class="card text-center">
+            <div class="card-body">
+              <h4 class="text-success mb-1">${fullyCompletedModels}/${totalUniqueModels}</h4>
+              <small class="text-muted">Models Complete</small>
+              ${isRunning && totalUniqueModels > 0 ? `
+                <div class="progress mt-2" style="height: 5px;">
+                  <div class="progress-bar bg-success" role="progressbar" 
+                       style="width: ${(fullyCompletedModels / totalUniqueModels) * 100}%">
+                  </div>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        </div>
+        <div class="col-md-3">
           <div class="card text-center">
             <div class="card-body">
               <h4 class="text-dark mb-1">${Utils.formatDate(details.created_at).split(',')[0]}</h4>
@@ -815,7 +1050,7 @@ class Pages {
             </div>
           </div>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
           <div class="card text-center">
             <div class="card-body">
               <h4 class="text-secondary mb-1">${details.status || 'complete'}</h4>
@@ -857,11 +1092,38 @@ class Pages {
 
       <!-- Detailed Results -->
       <div class="results-section">
-        <h4 class="mb-3">
-          <i class="fas me-2"></i>Detailed Results
-        </h4>
-        <div id="resultsContainer">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h4 class="mb-0">
+            <i class="fas me-2"></i>Results
+          </h4>
+          <div class="d-flex gap-2 align-items-center">
+            ${!isRunning && details.runs && details.runs.length > 0 ? `
+              <button class="btn btn-warning" id="syncBenchmarkBtn" data-benchmark-id="${details.id}">
+                <i class="fas fa-sync-alt me-1"></i>Sync Missing/Failed
+              </button>
+            ` : ''}
+            <div class="btn-group" role="group" aria-label="Results view">
+              <input type="radio" class="btn-check" name="resultsView" id="readAllView" autocomplete="off" checked>
+              <label class="btn btn-outline-primary" for="readAllView">
+                <i class="fas fa-list me-1"></i>Read All Results
+              </label>
+              
+              <input type="radio" class="btn-check" name="resultsView" id="tableView" autocomplete="off">
+              <label class="btn btn-outline-primary" for="tableView">
+                <i class="fas fa-table me-1"></i>Results Table
+              </label>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Read All Results View -->
+        <div id="readAllResultsContainer" style="max-height: 70vh; overflow-y: auto; padding-bottom: 2rem;">
           ${this.renderModelResults(details.runs || [])}
+        </div>
+        
+        <!-- Results Table View -->
+        <div id="resultsTableContainer" style="display: none; max-height: 70vh; overflow-y: auto; padding-bottom: 2rem;">
+          ${this.renderResultsTable(details.runs || [])}
         </div>
       </div>
     `;
@@ -877,10 +1139,50 @@ class Pages {
       exportBtn.addEventListener('click', () => this.exportBenchmark(details.id));
     }
 
+    const syncBtn = document.getElementById('syncBenchmarkBtn');
+    if (syncBtn) {
+      syncBtn.addEventListener('click', () => this.syncBenchmark(details.id));
+    }
+
+    // Add view switching event listeners
+    const readAllViewBtn = document.getElementById('readAllView');
+    const tableViewBtn = document.getElementById('tableView');
+    const readAllContainer = document.getElementById('readAllResultsContainer');
+    const tableContainer = document.getElementById('resultsTableContainer');
+
+    if (readAllViewBtn && tableViewBtn && readAllContainer && tableContainer) {
+      readAllViewBtn.addEventListener('change', () => {
+        if (readAllViewBtn.checked) {
+          // Clean up any modal issues before switching views
+          this.cleanupModals();
+          readAllContainer.style.display = 'block';
+          tableContainer.style.display = 'none';
+        }
+      });
+
+      tableViewBtn.addEventListener('change', () => {
+        if (tableViewBtn.checked) {
+          // Clean up any modal issues before switching views
+          this.cleanupModals();
+          readAllContainer.style.display = 'none';
+          tableContainer.style.display = 'block';
+          // Re-setup table interactivity after switching to table view
+          setTimeout(() => {
+            this.setupResultsTableInteractivity();
+          }, 100);
+        }
+      });
+    }
+
     // Add table sorting functionality (only if not running to avoid conflicts)
     if (!isRunning) {
       this.setupTableSorting();
     }
+
+    // Set up results table interactivity if it exists
+    setTimeout(() => {
+      this.setupResultsTableInteractivity();
+    }, 100);
   }
 
   /**
@@ -947,6 +1249,105 @@ class Pages {
   }
 
   /**
+   * Set up results table interactivity (click handlers, zoom, pan)
+   */
+  setupResultsTableInteractivity() {
+    const tableWrapper = document.getElementById('resultsTableWrapper');
+    const table = document.getElementById('resultsTable');
+    
+    if (!tableWrapper || !table) return;
+
+    // Set up click handlers for response cells using event delegation
+    tableWrapper.addEventListener('click', (e) => {
+      const cell = e.target.closest('.response-cell');
+      if (cell) {
+        const promptText = cell.getAttribute('data-prompt-text');
+        const responseText = cell.getAttribute('data-response-text');
+        const modalTitle = cell.getAttribute('data-modal-title');
+        
+        if (promptText && responseText) {
+          this.showResponseModal(promptText, responseText, modalTitle);
+        }
+      }
+    });
+
+    // Set up zoom with mouse wheel
+    tableWrapper.addEventListener('wheel', (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? 0.9 : 1.1;
+        this.zoomResultsTable(delta);
+      }
+    });
+
+    // Set up panning functionality
+    let isDragging = false;
+    let startX, startY, scrollLeft, scrollTop;
+
+    tableWrapper.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.response-cell, th, button')) return; // Don't interfere with clicks
+      
+      isDragging = true;
+      tableWrapper.style.cursor = 'grabbing';
+      startX = e.pageX - tableWrapper.offsetLeft;
+      startY = e.pageY - tableWrapper.offsetTop;
+      scrollLeft = tableWrapper.scrollLeft;
+      scrollTop = tableWrapper.scrollTop;
+    });
+
+    tableWrapper.addEventListener('mouseleave', () => {
+      isDragging = false;
+      tableWrapper.style.cursor = 'grab';
+    });
+
+    tableWrapper.addEventListener('mouseup', () => {
+      isDragging = false;
+      tableWrapper.style.cursor = 'grab';
+    });
+
+    tableWrapper.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      e.preventDefault();
+      const x = e.pageX - tableWrapper.offsetLeft;
+      const y = e.pageY - tableWrapper.offsetTop;
+      const walkX = (x - startX) * 2;
+      const walkY = (y - startY) * 2;
+      tableWrapper.scrollLeft = scrollLeft - walkX;
+      tableWrapper.scrollTop = scrollTop - walkY;
+    });
+
+    // Initialize zoom level
+    if (!this.resultsTableZoom) {
+      this.resultsTableZoom = 1.0;
+    }
+  }
+
+  /**
+   * Zoom the results table
+   * @param {number} factor - Zoom factor (1.0 = 100%, 1.1 = 110%, 0.9 = 90%)
+   */
+  zoomResultsTable(factor) {
+    const table = document.getElementById('resultsTable');
+    if (!table) return;
+
+    if (factor === 1.0) {
+      // Reset zoom
+      this.resultsTableZoom = 1.0;
+    } else {
+      // Apply zoom factor
+      this.resultsTableZoom = Math.max(0.5, Math.min(3.0, this.resultsTableZoom * factor));
+    }
+
+    table.style.transform = `scale(${this.resultsTableZoom})`;
+    
+    // Update zoom display in button
+    const resetBtn = document.querySelector('.btn-group button[title="Reset Zoom"]');
+    if (resetBtn) {
+      resetBtn.textContent = `${Math.round(this.resultsTableZoom * 100)}%`;
+    }
+  }
+
+  /**
    * Render model results
    * @param {Array} runs - Benchmark runs
    * @returns {string} HTML string
@@ -961,56 +1362,99 @@ class Pages {
     runs.forEach(run => {
       const modelKey = `${run.model_name}_${run.provider}`;
       if (!uniqueModels.has(modelKey)) {
-        uniqueModels.set(modelKey, run);
-      }
-    });
-
-    return Array.from(uniqueModels.values()).map(run => {
-      const modelDisplayName = Utils.formatModelName(run.model_name) || 'Unknown Model';
-      const provider = run.provider || 'unknown';
-      const runDate = Utils.formatDate(run.run_created_at);
-      
-      // Calculate stats based on completed prompts only
-      let runTokens = 0;
-      let runCost = 0;
-      let completedPrompts = 0;
-      
-      if (run.prompts) {
-        run.prompts.forEach(prompt => {
-          if (prompt.response) { // Only count completed prompts
-            runTokens += (prompt.standard_input_tokens || 0) + 
-                        (prompt.cached_input_tokens || 0) + 
-                        (prompt.output_tokens || 0);
-            runCost += prompt.total_cost || 0;
-            completedPrompts++;
-          }
+        uniqueModels.set(modelKey, {
+          model_name: run.model_name,
+          provider: run.provider,
+          aggregated_cost: 0,
+          aggregated_tokens: 0,
+          aggregated_latency: 0,
+          aggregated_total_prompts: 0,
+          aggregated_completed_prompts: 0,
+          all_runs: [],
         });
       }
+      
+      const aggregatedRun = uniqueModels.get(modelKey);
+      aggregatedRun.all_runs.push(run);
+      
+      // Aggregate run-level totals (from database) - more reliable than prompt-level calculation
+      if (run.total_cost) {
+        aggregatedRun.aggregated_cost += run.total_cost;
+      }
+      if (run.total_standard_input_tokens || run.total_cached_input_tokens || run.total_output_tokens) {
+        aggregatedRun.aggregated_tokens += (run.total_standard_input_tokens || 0) + 
+                                          (run.total_cached_input_tokens || 0) + 
+                                          (run.total_output_tokens || 0);
+      }
+      if (run.latency) {
+        aggregatedRun.aggregated_latency += run.latency;
+      }
+    });
+    
+    // After adding all runs, calculate unique prompts and completion status
+    uniqueModels.forEach((aggregatedRun, modelKey) => {
+      const allPrompts = new Set(); // Track unique prompts by text
+      const completedPrompts = new Set(); // Track completed prompts by text
+      
+      // Collect all unique prompts across all runs for this model
+      aggregatedRun.all_runs.forEach(runData => {
+        if (runData.prompts && runData.prompts.length > 0) {
+          runData.prompts.forEach(prompt => {
+            if (prompt.prompt) {
+              allPrompts.add(prompt.prompt);
+              if (prompt.response && prompt.response.trim().length > 0) {
+                completedPrompts.add(prompt.prompt);
+              }
+            }
+          });
+        }
+      });
+      
+      // Set the deduplicated counts
+      aggregatedRun.aggregated_total_prompts = allPrompts.size;
+      aggregatedRun.aggregated_completed_prompts = completedPrompts.size;
+    });
+
+    return Array.from(uniqueModels.values()).map(aggregatedRun => {
+      const modelDisplayName = Utils.formatModelName(aggregatedRun.model_name) || 'Unknown Model';
+      const provider = aggregatedRun.provider || 'unknown';
+      const runDate = Utils.formatDate(aggregatedRun.all_runs[0].run_created_at);
+      
+      // Calculate stats based on completed prompts only
+      let runTokens = aggregatedRun.aggregated_tokens;
+      let runCost = aggregatedRun.aggregated_cost;
+      let completedPrompts = aggregatedRun.aggregated_completed_prompts;
       
       const providerColor = Utils.getProviderColor(provider);
       
       // Determine if this run is still in progress
-      const totalPrompts = run.prompts ? run.prompts.length : 0;
-      const isRunning = completedPrompts < totalPrompts && totalPrompts > 0;
+      const totalPrompts = aggregatedRun.aggregated_total_prompts;
+      // Use the run's status if available, otherwise fall back to checking completed vs total
+      const isRunning = aggregatedRun.all_runs[0].run_status === 'in_progress' || aggregatedRun.all_runs[0].run_status === 'pending' || 
+                       (aggregatedRun.all_runs[0].run_status !== 'completed' && completedPrompts < totalPrompts && totalPrompts > 0);
       const hasResults = completedPrompts > 0;
       
       // Latency handling - support both old (seconds) and new (milliseconds) formats
-      let totalLatencyMs = run.latency || 0;
+      let totalLatencyMs = aggregatedRun.aggregated_latency;
       // If latency is less than 1000, it's likely stored in seconds (old format)
       if (totalLatencyMs > 0 && totalLatencyMs < 1000) {
         totalLatencyMs = totalLatencyMs * 1000; // Convert to milliseconds
       }
       
       // If run.latency is 0 or missing, calculate it from individual prompt latencies
-      if (totalLatencyMs === 0 && run.prompts && run.prompts.length > 0) {
-        run.prompts.forEach(prompt => {
-          if (prompt.response && prompt.response.trim().length > 0) { // Only count completed prompts
-            let promptLatencyMs = prompt.prompt_latency || 0;
-            // Handle both milliseconds and seconds format for prompt latency
-            if (promptLatencyMs > 0 && promptLatencyMs < 1000) {
-              promptLatencyMs = promptLatencyMs * 1000; // Convert to milliseconds
-            }
-            totalLatencyMs += promptLatencyMs;
+      if (totalLatencyMs === 0 && aggregatedRun.all_runs.length > 0) {
+        aggregatedRun.all_runs.forEach(run => {
+          if (run.prompts && run.prompts.length > 0) {
+            run.prompts.forEach(prompt => {
+              if (prompt.response && prompt.response.trim().length > 0) { // Only count completed prompts
+                let promptLatencyMs = prompt.prompt_latency || 0;
+                // Handle both milliseconds and seconds format for prompt latency
+                if (promptLatencyMs > 0 && promptLatencyMs < 1000) {
+                  promptLatencyMs = promptLatencyMs * 1000; // Convert to milliseconds
+                }
+                totalLatencyMs += promptLatencyMs;
+              }
+            });
           }
         });
       }
@@ -1028,10 +1472,42 @@ class Pages {
         }
       };
       
-      // Generate prompts HTML with status indicators
+      // Generate prompts HTML with status indicators - deduplicate prompts across runs
       let promptsHtml = '';
-      if (run.prompts && run.prompts.length > 0) {
-        promptsHtml = run.prompts.map((prompt, index) => {
+      if (aggregatedRun.all_runs.length > 0) {
+        // Collect all unique prompts for this model across all runs
+        const uniquePromptsMap = new Map(); // prompt_text -> best_prompt_data
+        
+        aggregatedRun.all_runs.forEach((run, runIndex) => {
+          if (run.prompts && run.prompts.length > 0) {
+            run.prompts.forEach((prompt, promptIndex) => {
+              if (prompt.prompt) {
+                // If we already have this prompt, keep the one with a response (prefer completed over pending)
+                const existing = uniquePromptsMap.get(prompt.prompt);
+                const hasResponse = prompt.response && prompt.response.trim().length > 0;
+                const existingHasResponse = existing && existing.response && existing.response.trim().length > 0;
+                
+                // Keep the prompt if:
+                // 1. We don't have this prompt yet, OR
+                // 2. This prompt has a response and the existing one doesn't, OR  
+                // 3. Both have responses but this one is more recent (later run)
+                if (!existing || 
+                    (hasResponse && !existingHasResponse) ||
+                    (hasResponse && existingHasResponse && runIndex >= existing.runIndex)) {
+                  uniquePromptsMap.set(prompt.prompt, {
+                    ...prompt,
+                    promptIndex: promptIndex,
+                    runIndex: runIndex
+                  });
+                }
+              }
+            });
+          }
+        });
+        
+        // Now render the deduplicated prompts
+        const uniquePrompts = Array.from(uniquePromptsMap.values());
+        promptsHtml = uniquePrompts.map((prompt, index) => {
           const isCompleted = prompt.response && prompt.response.trim().length > 0;
           
           if (isCompleted) {
@@ -1179,7 +1655,225 @@ class Pages {
           </div>
         </div>
       `;
+    }).join('') + '<div style="height: 2rem;"></div>'; // Add extra space at the bottom for scrolling
+  }
+
+  /**
+   * Render results table view with prompts as rows and models as columns
+   * @param {Array} runs - Benchmark runs
+   * @returns {string} HTML string
+   */
+  renderResultsTable(runs) {
+    if (!runs || runs.length === 0) {
+      return '<div class="text-center text-muted py-4"><h5>No results available</h5></div>';
+    }
+
+    // Deduplicate runs by model name and provider
+    const uniqueModels = new Map();
+    runs.forEach(run => {
+      const modelKey = `${run.model_name}_${run.provider}`;
+      if (!uniqueModels.has(modelKey)) {
+        uniqueModels.set(modelKey, run);
+      }
+    });
+
+    const modelRuns = Array.from(uniqueModels.values());
+    
+    // Get all unique prompts across all models
+    const allPrompts = new Set();
+    modelRuns.forEach(run => {
+      if (run.prompts) {
+        run.prompts.forEach(prompt => {
+          if (prompt.prompt) {
+            allPrompts.add(prompt.prompt);
+          }
+        });
+      }
+    });
+
+    const promptsList = Array.from(allPrompts);
+
+    if (promptsList.length === 0) {
+      return '<div class="text-center text-muted py-4"><h5>No prompts found</h5></div>';
+    }
+
+    // Create header row with model names
+    const headerCells = modelRuns.map(run => {
+      const modelDisplayName = Utils.formatModelName(run.model_name) || 'Unknown Model';
+      const provider = run.provider || 'unknown';
+      return `
+        <th class="text-center" style="min-width: 200px; max-width: 300px;">
+          <div class="d-flex flex-column align-items-center">
+            ${Utils.createProviderImage(provider, 'mb-1')}
+            <small class="fw-bold text-truncate" style="max-width: 100%;" title="${Utils.sanitizeHtml(modelDisplayName)}">
+              ${Utils.sanitizeHtml(modelDisplayName)}
+            </small>
+          </div>
+        </th>
+      `;
     }).join('');
+
+    // Create data rows
+    const dataRows = promptsList.map((promptText, promptIndex) => {
+      const promptCells = modelRuns.map(run => {
+        // Find the matching prompt in this model's run
+        const matchingPrompt = run.prompts ? run.prompts.find(p => p.prompt === promptText) : null;
+        
+        if (!matchingPrompt) {
+          // No prompt found for this model
+          return `
+            <td class="p-2 text-center" style="background-color: #f8f9fa;">
+              <small class="text-muted">No data</small>
+            </td>
+          `;
+        }
+
+        const hasResponse = matchingPrompt.response && matchingPrompt.response.trim().length > 0;
+        const isError = matchingPrompt.response && matchingPrompt.response.startsWith('ERROR');
+        
+        if (!hasResponse) {
+          // Pending/in-progress
+          return `
+            <td class="p-2 text-center" style="background-color: #fff3cd;">
+              <div class="d-flex justify-content-center align-items-center" style="min-height: 60px;">
+                <small class="text-warning">
+                  <i class="fas fa-clock me-1"></i>Pending
+                </small>
+              </div>
+            </td>
+          `;
+        }
+
+        if (isError) {
+          // Error response
+          const errorMessage = matchingPrompt.response.substring(0, 100) + (matchingPrompt.response.length > 100 ? '...' : '');
+          return `
+            <td class="p-2 response-cell" style="background-color: #f8d7da; cursor: pointer;" 
+                title="Click to view error details"
+                data-prompt-text="${Utils.escapeHtmlAttribute(promptText)}"
+                data-response-text="${Utils.escapeHtmlAttribute(matchingPrompt.response)}"
+                data-modal-title="Error Response">
+              <div style="min-height: 60px; max-height: 120px; overflow-y: auto;">
+                <small class="text-danger fw-bold">ERROR</small>
+                <div class="small text-danger" style="font-size: 0.75rem; line-height: 1.2;">
+                  ${Utils.sanitizeHtml(errorMessage)}
+                </div>
+              </div>
+            </td>
+          `;
+        }
+
+        // Successful response
+        const responseLength = matchingPrompt.response.length;
+        const truncatedResponse = matchingPrompt.response.substring(0, 200) + (responseLength > 200 ? '...' : '');
+        
+        // Adjust font size based on response length
+        let fontSize = '0.75rem';
+        if (responseLength > 1000) fontSize = '0.65rem';
+        if (responseLength > 2000) fontSize = '0.6rem';
+        
+        // Web search indicator
+        const webSearchIndicator = matchingPrompt.web_search_used ? 
+          `<i class="fas fa-globe text-info me-1" title="Used web search"></i>` : '';
+
+        return `
+          <td class="p-2 response-cell" style="background-color: #d1edff; cursor: pointer;" 
+              title="Click to view full response"
+              data-prompt-text="${Utils.escapeHtmlAttribute(promptText)}"
+              data-response-text="${Utils.escapeHtmlAttribute(matchingPrompt.response)}"
+              data-modal-title="${Utils.escapeHtmlAttribute(Utils.formatModelName(run.model_name))} Response">
+            <div style="min-height: 60px; max-height: 120px; overflow-y: auto;">
+              <div class="d-flex justify-content-between align-items-start mb-1">
+                <div class="d-flex align-items-center">
+                  ${webSearchIndicator}
+                  <small class="text-success fw-bold">✓</small>
+                </div>
+                <small class="text-muted">${responseLength.toLocaleString()} chars</small>
+              </div>
+              <div class="small" style="font-size: ${fontSize}; line-height: 1.2; word-break: break-word;">
+                ${Utils.sanitizeHtml(truncatedResponse)}
+              </div>
+            </div>
+          </td>
+        `;
+      }).join('');
+
+      return `
+        <tr>
+          <td class="p-2 bg-light" style="max-width: 300px; position: sticky; left: 0; z-index: 1;">
+            <div style="max-height: 120px; overflow-y: auto;">
+              <strong class="small text-primary">Prompt ${promptIndex + 1}</strong>
+              <div class="small text-muted mt-1" style="font-size: 0.75rem; line-height: 1.2;">
+                ${Utils.sanitizeHtml(promptText.substring(0, 150) + (promptText.length > 150 ? '...' : ''))}
+              </div>
+            </div>
+          </td>
+          ${promptCells}
+        </tr>
+      `;
+    }).join('');
+
+    return `
+      <div class="mb-3 d-flex justify-content-between align-items-center">
+        <div class="small text-muted">
+          <i class="fas fa-mouse me-1"></i>
+          <strong>Navigation:</strong> Drag to pan • Ctrl/Cmd + scroll to zoom • Click cells for details • Use scrollbars for precise positioning
+        </div>
+        <div class="btn-group btn-group-sm" role="group">
+          <button class="btn btn-outline-secondary" onclick="window.Pages.zoomResultsTable(0.9)" title="Zoom Out">
+            <i class="fas fa-search-minus"></i>
+          </button>
+          <button class="btn btn-outline-secondary" onclick="window.Pages.zoomResultsTable(1.0)" title="Reset Zoom">
+            100%
+          </button>
+          <button class="btn btn-outline-secondary" onclick="window.Pages.zoomResultsTable(1.1)" title="Zoom In">
+            <i class="fas fa-search-plus"></i>
+          </button>
+        </div>
+      </div>
+      
+      <div class="table-responsive" id="resultsTableWrapper" style="
+        overflow: auto; 
+        cursor: grab; 
+        user-select: none;
+        border: 1px solid #dee2e6;
+        border-radius: 0.375rem;
+      ">
+        <table class="table table-bordered table-sm" id="resultsTable" style="
+          font-size: 0.8rem; 
+          margin: 0;
+          transform-origin: top left;
+          transition: transform 0.1s ease;
+        ">
+          <thead class="table-light">
+            <tr>
+              <th style="position: sticky; left: 0; z-index: 2; background-color: #f8f9fa; min-width: 250px; max-width: 300px;">
+                <strong>Prompts</strong>
+                <div class="small text-muted mt-1">${promptsList.length} prompts total</div>
+              </th>
+              ${headerCells}
+            </tr>
+          </thead>
+          <tbody>
+            ${dataRows}
+          </tbody>
+        </table>
+      </div>
+      
+      <div class="mt-3 mb-4 small text-muted">
+        <strong>Legend:</strong>
+        <span class="ms-3">
+          <span class="badge bg-info me-2">✓ Completed</span>
+          <span class="badge bg-warning me-2">⏳ Pending</span>
+          <span class="badge bg-danger me-2">❌ Error</span>
+          <span class="badge bg-secondary">📝 No Data</span>
+        </span>
+        <div class="mt-1">
+          <i class="fas fa-info-circle me-1"></i>
+          Click on any response cell to view the full content. Font size scales based on response length.
+        </div>
+      </div>
+    `;
   }
 
   /**
@@ -1274,41 +1968,34 @@ class Pages {
    * Delete benchmark
    * @param {number} benchmarkId - Benchmark ID
    */
-  deleteBenchmark(benchmarkId) {
-    window.Components.createConfirmModal(
+  async deleteBenchmark(benchmarkId) {
+    const confirmed = await window.Utils.showConfirmDialog(
       'Delete Benchmark',
       'Are you sure you want to delete this benchmark? This action cannot be undone.',
-      async () => {
-        try {
-          // Add to deleted set immediately
-          this.deletedBenchmarkIds.add(benchmarkId);
-          
-          // Remove from UI immediately
-          const card = document.querySelector(`[data-benchmark-id="${benchmarkId}"]`);
-          if (card) {
-            card.remove();
-          }
-
-          await window.API.deleteBenchmark(benchmarkId);
-          
-          window.Components.showToast('Benchmark deleted successfully', 'success');
-          
-          // Refresh benchmarks
-          await this.loadBenchmarks(false);
-          
-        } catch (error) {
-          console.error('Error deleting benchmark:', error);
-          
-          // Remove from deleted set on error
-          this.deletedBenchmarkIds.delete(benchmarkId);
-          
-          window.Components.showToast(`Failed to delete benchmark: ${error.message}`, 'error');
-          
-          // Refresh to restore UI
-          await this.loadBenchmarks(false);
-        }
-      }
+      'danger'
     );
+
+    if (!confirmed) return;
+
+    try {
+      const result = await window.API.deleteBenchmark(benchmarkId);
+      
+      if (result.success) {
+        window.Components.showToast('Benchmark deleted successfully', 'success');
+        
+        // Remove from local data and mark as deleted
+        this.benchmarksData = this.benchmarksData.filter(b => b.id !== benchmarkId);
+        this.deletedBenchmarkIds.add(benchmarkId);
+        
+        // Re-render the view
+        this.renderBenchmarks();
+      } else {
+        throw new Error(result.error || 'Failed to delete benchmark');
+      }
+    } catch (error) {
+      console.error('Error deleting benchmark:', error);
+      window.Components.showToast(`Failed to delete benchmark: ${error.message}`, 'error');
+    }
   }
 
   /**
@@ -1398,6 +2085,9 @@ class Pages {
 
         modelList.appendChild(providerDiv);
       });
+      
+      // Set up select all toggle after models are loaded
+      this.setupSelectAllModelsToggle();
 
     } catch (error) {
       console.error('Error loading models:', error);
@@ -2534,13 +3224,18 @@ class Pages {
   async loadPromptSet(promptSetId) {
     try {
       const promptSet = await window.API.getPromptSetDetails(promptSetId);
+      console.log('Loaded prompt set:', promptSet);
+      
+      if (!promptSet) {
+        throw new Error('Prompt set not found');
+      }
       
       // Populate form
-      document.getElementById('promptSetName').value = promptSet.name;
+      document.getElementById('promptSetName').value = promptSet.name || '';
       document.getElementById('promptSetDescription').value = promptSet.description || '';
       
       // Load prompts
-      this.promptSetPrompts = promptSet.prompts.map(p => ({
+      this.promptSetPrompts = (promptSet.prompts || []).map(p => ({
         ...p,
         isNew: false
       }));
@@ -2662,6 +3357,11 @@ class Pages {
   async editPromptSet(promptSetId) {
     try {
       const promptSet = await window.API.getPromptSetDetails(promptSetId);
+      console.log('Editing prompt set:', promptSet);
+      
+      if (!promptSet) {
+        throw new Error('Prompt set not found');
+      }
       
       // Show the creation form
       this.showPromptSetCreation();
@@ -2669,11 +3369,11 @@ class Pages {
       // Wait for the form to be rendered
       setTimeout(() => {
         // Populate form with existing data
-        document.getElementById('promptSetName').value = promptSet.name;
+        document.getElementById('promptSetName').value = promptSet.name || '';
         document.getElementById('promptSetDescription').value = promptSet.description || '';
         
         // Load prompts with proper structure for editing
-        this.promptSetPrompts = promptSet.prompts.map((p, index) => ({
+        this.promptSetPrompts = (promptSet.prompts || []).map((p, index) => ({
           id: Date.now() + index, // Generate unique IDs for editing
           prompt_text: p.prompt_text,
           order_index: index,
@@ -2949,7 +3649,31 @@ class Pages {
     // Clean up modal on hide
     document.getElementById('webSearchModal').addEventListener('hidden.bs.modal', () => {
       document.getElementById('webSearchModal').remove();
+      // Additional cleanup to prevent backdrop issues
+      this.cleanupWebSearchModal();
     });
+  }
+
+  /**
+   * Clean up web search modal backdrop
+   */
+  cleanupWebSearchModal() {
+    // Remove any leftover web search modal backdrops
+    const backdrops = document.querySelectorAll('.modal-backdrop');
+    backdrops.forEach(backdrop => {
+      // Only remove if there are no other active modals
+      if (document.querySelectorAll('.modal.show').length === 0) {
+        backdrop.remove();
+      }
+    });
+    
+    // Reset body state if no other modals are active
+    if (document.querySelectorAll('.modal.show').length === 0) {
+      document.body.classList.remove('modal-open');
+      document.body.style.overflow = '';
+      document.body.style.paddingRight = '';
+      document.documentElement.style.overflow = '';
+    }
   }
 
   /**
@@ -2962,6 +3686,122 @@ class Pages {
     }).catch(err => {
       console.error('Failed to copy sources:', err);
       window.Components.showToast('Failed to copy sources', 'error');
+    });
+  }
+
+  /**
+   * Show response modal with full prompt and response content
+   * @param {string} promptText - The prompt text
+   * @param {string} responseText - The response text
+   * @param {string} title - Modal title
+   */
+  showResponseModal(promptText, responseText, title = 'Response Details') {
+    const modalHtml = `
+      <div class="modal fade" id="responseModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title">
+                <i class="fas fa-comment-dots me-2"></i>
+                ${Utils.sanitizeHtml(title)}
+              </h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+              <div class="mb-4">
+                <h6 class="text-primary mb-2">
+                  <i class="fas fa-question-circle me-1"></i>Prompt:
+                </h6>
+                <div class="p-3 bg-light border rounded">
+                  <pre style="white-space: pre-wrap; margin: 0; font-family: inherit;">${Utils.sanitizeHtml(promptText)}</pre>
+                </div>
+              </div>
+              
+              <div>
+                <h6 class="text-success mb-2">
+                  <i class="fas fa-reply me-1"></i>Response:
+                </h6>
+                <div class="p-3 bg-white border rounded" style="max-height: 400px; overflow-y: auto;">
+                  <div style="white-space: pre-wrap; font-family: inherit;">${this.formatPromptResponse(responseText)}</div>
+                </div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" onclick="window.Pages.copyResponseToClipboard('${Utils.sanitizeHtml(responseText).replace(/'/g, "\\'")}')">
+                <i class="fas fa-copy me-1"></i>Copy Response
+              </button>
+              <button type="button" class="btn btn-outline-primary" onclick="window.Pages.copyFullConversation('${Utils.sanitizeHtml(promptText).replace(/'/g, "\\'")}', '${Utils.sanitizeHtml(responseText).replace(/'/g, "\\'")}')">
+                <i class="fas fa-clipboard me-1"></i>Copy Both
+              </button>
+              <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Force cleanup of any existing modal state
+    this.cleanupModals();
+
+    // Add modal to DOM
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    
+    // Show the modal
+    const modal = new bootstrap.Modal(document.getElementById('responseModal'));
+    modal.show();
+
+    // Enhanced cleanup on hide
+    document.getElementById('responseModal').addEventListener('hidden.bs.modal', () => {
+      this.cleanupModals();
+    });
+  }
+
+  /**
+   * Clean up modal backdrop and reset body state
+   */
+  cleanupModals() {
+    // Remove any existing response modals
+    const existingModals = document.querySelectorAll('#responseModal');
+    existingModals.forEach(modal => modal.remove());
+    
+    // Remove any leftover modal backdrops
+    const backdrops = document.querySelectorAll('.modal-backdrop');
+    backdrops.forEach(backdrop => backdrop.remove());
+    
+    // Reset body classes that might be left over
+    document.body.classList.remove('modal-open');
+    document.body.style.overflow = '';
+    document.body.style.paddingRight = '';
+    
+    // Force body to be scrollable again
+    document.documentElement.style.overflow = '';
+  }
+
+  /**
+   * Copy response to clipboard
+   * @param {string} responseText - The response text to copy
+   */
+  copyResponseToClipboard(responseText) {
+    navigator.clipboard.writeText(responseText).then(() => {
+      window.Components.showToast('Response copied to clipboard', 'success');
+    }).catch(err => {
+      console.error('Failed to copy response:', err);
+      window.Components.showToast('Failed to copy response', 'error');
+    });
+  }
+
+  /**
+   * Copy full conversation to clipboard
+   * @param {string} promptText - The prompt text
+   * @param {string} responseText - The response text
+   */
+  copyFullConversation(promptText, responseText) {
+    const fullText = `PROMPT:\n${promptText}\n\nRESPONSE:\n${responseText}`;
+    navigator.clipboard.writeText(fullText).then(() => {
+      window.Components.showToast('Full conversation copied to clipboard', 'success');
+    }).catch(err => {
+      console.error('Failed to copy conversation:', err);
+      window.Components.showToast('Failed to copy conversation', 'error');
     });
   }
 
@@ -3226,6 +4066,23 @@ class Pages {
   }
 
   /**
+   * Convert CSV records to markdown format
+   */
+  formatCsvRecordsAsMarkdown(records) {
+    if (!records || records.length === 0) {
+      return 'No data available';
+    }
+
+    return records.map(record => {
+      const entries = Object.entries(record)
+        .filter(([key, value]) => value !== null && value !== undefined)
+        .map(([key, value]) => `  ${key}: ${value}`)
+        .join('\n');
+      return `- ${entries}`;
+    }).join('\n');
+  }
+
+  /**
    * Show file details modal
    */
   showFileDetailsModal(file) {
@@ -3252,6 +4109,7 @@ class Pages {
     if (file.mime_type === 'text/csv' && file.csv_data) {
       const csvData = file.csv_data;
       const previewRecords = csvData.records.slice(0, 2); // Show first 2 rows
+      const markdownData = this.formatCsvRecordsAsMarkdown(previewRecords);
       
       csvPreviewHtml = `
         <h6>CSV Data Preview</h6>
@@ -3271,8 +4129,8 @@ class Pages {
             </div>
           </div>
           <div>
-            <strong>Sample Data (first 2 rows as JSON records):</strong>
-            <pre class="bg-light p-2 mt-1 small" style="max-height: 200px; overflow-y: auto;"><code>${Utils.sanitizeHtml(JSON.stringify(previewRecords, null, 2))}</code></pre>
+            <strong>Sample Data (first 2 rows):</strong>
+            <pre class="bg-light p-2 mt-1 small" style="max-height: 200px; overflow-y: auto;"><code>${Utils.sanitizeHtml(markdownData)}</code></pre>
           </div>
         </div>
       `;
@@ -3401,6 +4259,75 @@ class Pages {
         return 'fas fa-file-excel';
       default:
         return 'fas fa-file';
+    }
+  }
+
+  /**
+   * Sync benchmark - rerun missing, failed, or pending prompts
+   * @param {number} benchmarkId - Benchmark ID
+   */
+  async syncBenchmark(benchmarkId) {
+    try {
+      // First get sync status to show user what will be synced
+      const statusResult = await window.API.getBenchmarkSyncStatus(benchmarkId);
+      
+      if (!statusResult.success) {
+        throw new Error(statusResult.error || 'Failed to get sync status');
+      }
+      
+      const syncStatus = statusResult.sync_status;
+      
+      if (!syncStatus.sync_needed) {
+        window.Components.showToast('Benchmark is already complete - no sync needed', 'info');
+        return;
+      }
+      
+      // Show confirmation dialog with sync details
+      const modelsNeedingSync = syncStatus.models_needing_sync.length;
+      const totalPrompts = syncStatus.total_prompts_to_sync;
+      
+      const confirmed = await window.Utils.showConfirmDialog(
+        'Sync Benchmark',
+        `This will rerun ${totalPrompts} prompts across ${modelsNeedingSync} models. Continue?`,
+        'warning'
+      );
+
+      if (!confirmed) return;
+
+      // Start the sync
+      const result = await window.API.syncBenchmark(benchmarkId);
+      
+      if (result.success) {
+        window.Components.showToast(
+          `Sync started: ${result.prompts_to_sync} prompts across ${result.models_to_sync} models`, 
+          'success'
+        );
+        
+        // Update the benchmark status to show it's running
+        const benchmark = this.benchmarksData.find(b => b.id === benchmarkId);
+        if (benchmark) {
+          benchmark.status = 'running';
+        }
+        
+        // If we're on the details page for this benchmark, refresh it
+        if (this.currentBenchmarkId === benchmarkId) {
+          setTimeout(() => {
+            this.viewBenchmarkDetails(benchmarkId);
+          }, 1000);
+        } else {
+          // Otherwise just refresh the home page
+          this.renderBenchmarks();
+          setTimeout(() => {
+            this.loadBenchmarks(false);
+          }, 1000);
+        }
+        
+      } else {
+        throw new Error(result.error || 'Failed to start sync');
+      }
+    } catch (error) {
+      console.error('Error syncing benchmark:', error);
+      window.Components.showToast(`Failed to sync benchmark: ${error.message}`, 'error');
     }
   }
 }

@@ -162,22 +162,62 @@ class API {
 
   /**
    * Delete a benchmark
-   * @param {number} id - Benchmark ID
-   * @returns {Promise<Object>} Delete result
+   * @param {number} benchmarkId - Benchmark ID
+   * @returns {Promise<Object>} API response
    */
-  async deleteBenchmark(id) {
-    if (!id) throw new Error('Benchmark ID is required');
-
+  async deleteBenchmark(benchmarkId) {
     try {
-      const result = await this.electronAPI.deleteBenchmark(id);
+      const result = await this.makeRequest('/delete', {
+        method: 'POST',
+        body: JSON.stringify({ benchmark_id: benchmarkId })
+      });
       
-      // Clear cache since data has changed
+      // Clear benchmarks cache since we deleted one
       this.clearCache('benchmarks');
       
       return result;
     } catch (error) {
       console.error('Error deleting benchmark:', error);
-      throw new Error(`Failed to delete benchmark: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Get sync status for a benchmark
+   * @param {number} benchmarkId - Benchmark ID
+   * @returns {Promise<Object>} API response with sync status
+   */
+  async getBenchmarkSyncStatus(benchmarkId) {
+    try {
+      const result = await this.makeRequest(`/benchmarks/${benchmarkId}/sync-status`);
+      
+      // The API already returns {success: true, sync_status: {...}}, so return it directly
+      return result;
+    } catch (error) {
+      console.error('Error getting benchmark sync status:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Sync a benchmark by rerunning missing, failed, or pending prompts
+   * @param {number} benchmarkId - Benchmark ID
+   * @returns {Promise<Object>} API response
+   */
+  async syncBenchmark(benchmarkId) {
+    try {
+      const result = await this.makeRequest(`/benchmarks/${benchmarkId}/sync`, {
+        method: 'POST'
+      });
+      
+      // Clear benchmarks cache since status will change
+      this.clearCache('benchmarks');
+      
+      // The API already returns {success: true, ...}, so return it directly
+      return result;
+    } catch (error) {
+      console.error('Error syncing benchmark:', error);
+      return { success: false, error: error.message };
     }
   }
 
@@ -406,7 +446,9 @@ class API {
     const cacheKey = `prompt_set_${promptSetId}`;
     
     try {
-      const details = await this.makeRequest(`/prompt-sets/${promptSetId}`);
+      const response = await this.makeRequest(`/prompt-sets/${promptSetId}`);
+      // Handle potential data structure mismatch - extract prompt_set if wrapped
+      const details = response.prompt_set || response;
       this.cache.set(cacheKey, details);
       return details;
     } catch (error) {
