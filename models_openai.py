@@ -7,6 +7,9 @@ import openai
 from file_store import register_file, get_provider_file_id, register_provider_upload
 import tiktoken
 
+# Import vector search functionality
+from vector_search import VectorSearchManager, FileSearchResponse
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -51,215 +54,6 @@ AVAILABLE_MODELS = [
     "o4-mini"
 ]
 
-"""web search
-Web search
-Allow models to search the web for the latest information before generating a response.
-Using the Responses API, you can enable web search by configuring it in the tools array in an API request to generate content. Like any other tool, the model can choose to search the web or not based on the content of the input prompt.
-
-Web search tool example
-from openai import OpenAI
-client = OpenAI()
-
-response = client.responses.create(
-    model="gpt-4.1",
-    tools=[{"type": "web_search_preview"}],
-    input="What was a positive news story from today?"
-)
-
-print(response.output_text)
-Web search tool versions
-You can also force the use of the web_search_preview tool by using the tool_choice parameter, and setting it to {type: "web_search_preview"} - this can help ensure lower latency and more consistent results.
-
-Output and citations
-Model responses that use the web search tool will include two parts:
-
-A web_search_call output item with the ID of the search call.
-A message output item containing:
-The text result in message.content[0].text
-Annotations message.content[0].annotations for the cited URLs
-By default, the model's response will include inline citations for URLs found in the web search results. In addition to this, the url_citation annotation object will contain the URL, title and location of the cited source.
-
-When displaying web results or information contained in web results to end users, inline citations must be made clearly visible and clickable in your user interface.
-
-[
-  {
-    "type": "web_search_call",
-    "id": "ws_67c9fa0502748190b7dd390736892e100be649c1a5ff9609",
-    "status": "completed"
-  },
-  {
-    "id": "msg_67c9fa077e288190af08fdffda2e34f20be649c1a5ff9609",
-    "type": "message",
-    "status": "completed",
-    "role": "assistant",
-    "content": [
-      {
-        "type": "output_text",
-        "text": "On March 6, 2025, several news...",
-        "annotations": [
-          {
-            "type": "url_citation",
-            "start_index": 2606,
-            "end_index": 2758,
-            "url": "https://...",
-            "title": "Title..."
-          }
-        ]
-      }
-    ]
-  }
-]
-
-Search context size
-When using this tool, the search_context_size parameter controls how much context is retrieved from the web to help the tool formulate a response. The tokens used by the search tool do not affect the context window of the main model specified in the model parameter in your response creation request. These tokens are also not carried over from one turn to another — they're simply used to formulate the tool response and then discarded.
-
-Choosing a context size impacts:
-
-Cost: Pricing of our search tool varies based on the value of this parameter. Higher context sizes are more expensive. See tool pricing here.
-Quality: Higher search context sizes generally provide richer context, resulting in more accurate, comprehensive answers.
-Latency: Higher context sizes require processing more tokens, which can slow down the tool's response time.
-Available values:
-
-high: Most comprehensive context, highest cost, slower response.
-medium (default): Balanced context, cost, and latency.
-low: Least context, lowest cost, fastest response, but potentially lower answer quality.
-Again, tokens used by the search tool do not impact main model's token usage and are not carried over from turn to turn. Check the pricing page for details on costs associated with each context size.
-
-Customizing search context size
-from openai import OpenAI
-client = OpenAI()
-
-response = client.responses.create(
-    model="gpt-4.1",
-    tools=[{
-        "type": "web_search_preview",
-        "search_context_size": "low",
-    }],
-    input="What movie won best picture in 2025?",
-)
-
-print(response.output_text)"""
-
-"""openai context windows
-
-GPT 4.1 and 4.1-mini
-1,047,576 context window
-
-GPT 4o and 4o-mini
-128,000 context window
-
-o3 and o4-mini
-200,000 context window
-
-token counting with tiktoken
-
->>> import tiktoken
->>> encoding = tiktoken.get_encoding("o200k_base")
->>> tokens = encoding.encode("asdfasdfasdfasdfasdfasdfasdfasdf")
->>> tokens
-[178858, 178858, 178858, 178858, 178858, 178858, 178858, 178858]
->>> num_tokens = len(tokens)
->>> num_tokens
-8
-"""
-
-"""gpt 4o pricing
-Model	Input	Cached input	Output
-gpt-4o
-gpt-4o-2024-08-06
-$2.50
-$1.25
-$10.00"""
-
-"""gpt 4o-mini pricing
-Model	Input	Cached input	Output
-gpt-4o-mini
-gpt-4o-mini-2024-07-18
-$0.15
-$0.075
-$0.60"""
-
-"""gpt 4.1 pricing
-Model	Input	Cached input	Output
-gpt-4.1
-gpt-4.1-2025-04-14
-$2.00
-$0.50
-$8.00"""
-
-"""gpt 4.1 mini pricing
-Model	Input	Cached input	Output
-gpt-4.1-mini
-gpt-4.1-mini-2025-04-14
-$0.40
-$0.10
-$1.60"""
-
-"""o3 pricing
-Model	Input	Cached input	Output
-o3
-o3-2025-04-16
-$10.00
-$2.50
-$40.00"""
-
-"""o4 mini pricing
-Model	Input	Cached input	Output
-o4-mini
-o4-mini-2025-04-16
-$1.10
-$0.275
-$4.40"""
-
-
-"""tools pricing
-
-Built-in tools
-The tokens used for built-in tools are billed at the chosen model's per-token rates.
-GB refers to binary gigabytes of storage (also known as gibibyte), where 1GB is 2^30 bytes.
-
-Tool	Cost
-Code Interpreter
-$0.03
-container
-File Search Storage
-$0.10
-GB/day (1GB free)
-File Search Tool Call (Responses API only*)
-$2.50
-1k calls (*Does not apply on Assistants API)
-Web Search
-Web search tool pricing is inclusive of tokens used to synthesize information
-from the web. Pricing depends on model and search context size. See below."""
-
-
-"""Web search pricing
-Web search is a built-in tool with pricing that depends on both the model used and the search context size. The billing dashboard will report these line items as 'web search tool calls | gpt-4o' and 'web search tool calls | gpt-4o-mini'.
-
-Model	Search context size	Cost
-gpt-4.1, gpt-4o, or gpt-4o-search-preview
-low
-$30.00
-1k calls
-medium (default)
-$35.00
-1k calls
-high
-$50.00
-1k calls
-gpt-4.1-mini, gpt-4o-mini, or gpt-4o-mini-search-preview
-low
-$25.00
-1k calls
-medium (default)
-$27.50
-1k calls
-high
-$30.00
-1k calls
-"""
-
-
 
 COSTS = {
     "gpt-4.1": {"input": 2.00, "cached": 0.50, "output": 8.00, "search_cost": 0.035},
@@ -276,70 +70,6 @@ SEARCH_CONTEXT_COSTS = {
     "medium": 0.035,  # $35/1k searches (default)
     "high": 0.05,   # $50/1k searches
 }
-
-
-"""openai model response structure
-
-USE THIS TO GET THE STRUCTURE OF THE RESPONSE FROM THE OPENAI API
-
-FOCUS ON OUTPUT TEXT, TOKEN USAGE, AND THE RESPONSE STRUCTURE
-
-{
-  "id": "resp_67ccd3a9da748190baa7f1570fe91ac604becb25c45c1d41",
-  "object": "response",
-  "created_at": 1741476777,
-  "status": "completed",
-  "error": null,
-  "incomplete_details": null,
-  "instructions": null,
-  "max_output_tokens": null,
-  "model": "gpt-4o-2024-08-06",
-  "output": [
-    {
-      "type": "message",
-      "id": "msg_67ccd3acc8d48190a77525dc6de64b4104becb25c45c1d41",
-      "status": "completed",
-      "role": "assistant",
-      "content": [
-        {
-          "type": "output_text",
-          "text": "The image depicts a scenic landscape with a wooden boardwalk or pathway leading through lush, green grass under a blue sky with some clouds. The setting suggests a peaceful natural area, possibly a park or nature reserve. There are trees and shrubs in the background.",
-          "annotations": []
-        }
-      ]
-    }
-  ],
-  "parallel_tool_calls": true,
-  "previous_response_id": null,
-  "reasoning": {
-    "effort": null,
-    "summary": null
-  },
-  "store": true,
-  "temperature": 1,
-  "text": {
-    "format": {
-      "type": "text"
-    }
-  },
-  "tool_choice": "auto",
-  "tools": [],
-  "top_p": 1,
-  "truncation": "disabled",
-  "usage": {
-    "input_tokens": 328,
-    "input_tokens_details": {
-      "cached_tokens": 0
-    },
-    "output_tokens": 52,
-    "output_tokens_details": {
-      "reasoning_tokens": 0
-    },
-    "total_tokens": 380
-  },
-  "user": null,
-  "metadata": {}
-}"""
 
 def ensure_file_uploaded(file_path: Path, db_path: Path = Path.cwd()) -> str:
     """
@@ -410,7 +140,7 @@ def openai_upload(pdf_path: Path) -> str:
             logging.info(f"Sending file to OpenAI API: {pdf_path.name}")
             response = client.files.create(
                 file=file_stream,
-                purpose="user_data"  # Changed from "assistants"
+                purpose="user_data"  
             )
         
         if not hasattr(response, 'id'):
@@ -453,7 +183,7 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
             - web_search_sources (str): Raw web search data as string
     """
     # Check if the model supports web search
-    web_search_supported_models = ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"]
+    web_search_supported_models = ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "o3", "o4-mini"]
     if web_search and model_name not in web_search_supported_models:
         print(f"⚠️ WARNING: Model {model_name} does not support web search. Disabling web search for this request.")
         web_search = False
@@ -493,8 +223,9 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
     if web_search:
         # Use OpenAI's official recommended approach for o3/o4-mini models
         if any(model in model_name.lower() for model in ["o3", "o4"]):
-            # Straightforward prompt as recommended by OpenAI - avoid complex instructions
-            enhanced_prompt = f"Search for the latest information about {prompt_text}. Provide current data and sources."
+            # Following o3/o4-mini best practices: be proactive and explicit about tool usage
+            # Direct instruction to use the web search tool
+            enhanced_prompt = f"Search the web for current information about this query: {prompt_text}"
         else:
             # For other models, add a lighter encouragement
             enhanced_prompt = f"Please use web search if needed to provide current, accurate information for this query.\n\n{prompt_text}"
@@ -512,10 +243,18 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
     # Set up tools for web search if enabled
     tools = []
     if web_search:
-        tools.append({
+        web_search_tool = {
             "type": "web_search_preview",
-            "search_context_size": "medium",  # Default to medium context size
-        })
+            "search_context_size": "medium",
+        }
+        
+        # For o3/o4-mini models, add strict mode when available and enhance tool description
+        if any(model in model_name.lower() for model in ["o3", "o4"]):
+            # Note: web_search_preview is a built-in tool, so we can't add custom descriptions
+            # but we can ensure proper configuration
+            web_search_tool["search_context_size"] = "medium"
+        
+        tools.append(web_search_tool)
     
     return openai_ask_internal(content, model_name, tools)
 
@@ -568,7 +307,7 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
 
         # Format the API input for Responses API
         # For web search to work properly, we need to use a simpler input format
-        if tools:  # If web search is enabled, use simpler format
+        if tools:  
             # Extract just the text content for web search compatibility
             text_content = ""
             for item in content:
@@ -581,15 +320,43 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
             if any(item.get("type") == "input_file" for item in content):
                 print("   ⚠️ WARNING: Files cannot be used with web search. Using text-only input.")
             
-            api_input = text_content
+            # For o3/o4-mini models with tools, use developer message format for better tool usage
+            if any(model in model_name.lower() for model in ["o3", "o4"]):
+                api_input = [
+                    {
+                        "role": "developer",
+                        "content": "You are a research assistant. Use the available tools proactively to find accurate, current information for the user's query."
+                    },
+                    {
+                        "role": "user",
+                        "content": text_content
+                    }
+                ]
+            else:
+                api_input = text_content
         else:
             # Use the complex format for non-web-search requests
-            api_input = [
-                {
-                    "role": "user",
-                    "content": content
+            # For o3/o4-mini models, add developer context when no tools are present
+            if any(model in model_name.lower() for model in ["o3", "o4"]):
+                # Add developer context for o3/o4-mini following best practices
+                developer_context = {
+                    "role": "developer", 
+                    "content": "You are a helpful AI assistant. Be proactive in using tools to accomplish the user's goals. Provide accurate, helpful responses based on the files and information provided."
                 }
-            ]
+                api_input = [
+                    developer_context,
+                    {
+                        "role": "user", 
+                        "content": content
+                    }
+                ]
+            else:
+                api_input = [
+                    {
+                        "role": "user",
+                        "content": content
+                    }
+                ]
         
         logging.info(f"Preparing to make OpenAI API call with model {model_name}")
         
@@ -690,7 +457,7 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
             # Print stack trace summary - first 3 lines
             print(f"\n   Error traceback (first 3 lines):")
             for i, line in enumerate(stack_trace.split("\n")[:4]):
-                if i > 0:  # Skip the first line which just says 'Traceback'
+                if i > 0:  
                     print(f"   {line[:100]}..." if len(line) > 100 else f"   {line}")
                     
             raise ValueError(f"OpenAI API call failed: {str(e)}")
@@ -981,3 +748,222 @@ def get_context_limit_openai(model_name: str) -> int:
         return 200000   # o3/o4 series
     else:
         raise ValueError(f"Unknown OpenAI model: {model_name}. Cannot determine context limit.")
+
+
+# ===== VECTOR SEARCH INTEGRATION =====
+
+def openai_ask_with_vector_search(vector_store_ids: List[str], prompt_text: str, 
+                                 model_name: str = "gpt-4o-mini", 
+                                 max_results: int = 20,
+                                 include_search_results: bool = False,
+                                 filters: Dict[str, Any] = None) -> Tuple[str, int, int, int, int, bool, str, List[Dict[str, Any]]]:
+    """
+    Ask OpenAI using vector search over knowledge bases.
+    
+    Args:
+        vector_store_ids: List of vector store IDs to search
+        prompt_text: The question/prompt
+        model_name: OpenAI model to use
+        max_results: Maximum number of search results
+        include_search_results: Whether to include raw search results
+        filters: Optional metadata filters
+        
+    Returns:
+        Tuple of (answer, standard_input_tokens, cached_input_tokens, output_tokens, 
+                 reasoning_tokens, file_search_used, search_sources, citations)
+    """
+    try:
+        print(f"\n🔍 VECTOR SEARCH WITH {model_name.upper()}:")
+        print(f"   Vector stores: {vector_store_ids}")
+        print(f"   Query: '{prompt_text[:100]}...'" if len(prompt_text) > 100 else f"   Query: '{prompt_text}'")
+        print(f"   Max results: {max_results}")
+        
+        # Initialize vector search manager
+        vector_manager = VectorSearchManager()
+        
+        # Enhance prompt for o3/o4-mini models following best practices
+        enhanced_query = prompt_text
+        if any(model in model_name.lower() for model in ["o3", "o4"]):
+            enhanced_query = f"""You are a research assistant with access to document search capabilities.
+
+Use the file search tool to find relevant information from the provided documents. Base your response on the documents found and cite specific sources.
+
+Do NOT promise to search documents later. If document search is needed, use it now; otherwise respond with available knowledge.
+
+User query: {prompt_text}"""
+        
+        # Perform vector search with responses API
+        search_response = vector_manager.file_search_with_responses_api(
+            vector_store_ids=vector_store_ids,
+            query=enhanced_query,
+            model=model_name,
+            max_results=max_results,
+            include_search_results=include_search_results,
+            filters=filters
+        )
+        
+        # Extract response details
+        answer = search_response.response_text
+        citations = search_response.citations
+        search_results = search_response.search_results
+        
+        # Format search sources
+        search_sources = f"Search call ID: {search_response.search_call_id}\n"
+        if citations:
+            search_sources += f"Citations: {len(citations)} file citations found\n"
+            for i, citation in enumerate(citations):
+                if hasattr(citation, 'file_id') and hasattr(citation, 'filename'):
+                    search_sources += f"  {i+1}. {citation.filename} (ID: {citation.file_id})\n"
+        
+        # For now, we can't get exact token counts from the Responses API
+        # This is a limitation we need to handle
+        print(f"   ⚠️ Note: Token counting not available with Responses API file search")
+        print(f"   Response length: {len(answer)} characters")
+        print(f"   Citations found: {len(citations)}")
+        
+        # Estimate tokens (rough approximation)
+        # OpenAI typically uses ~4 characters per token
+        estimated_output_tokens = len(answer) // 4
+        estimated_input_tokens = len(prompt_text) // 4
+        
+        print(f"\n💬 VECTOR SEARCH ANSWER FROM {model_name.upper()}:")
+        print(f"   '{answer[:150]}...'" if len(answer) > 150 else f"   '{answer}'")
+        print(f"   Estimated tokens - Input: {estimated_input_tokens}, Output: {estimated_output_tokens}")
+        print(f"   Citations: {len(citations)}")
+        print(f"=================================================")
+        
+        # Return in the same format as other OpenAI functions
+        # Note: Token counts are estimates since Responses API doesn't provide exact counts
+        return (
+            answer,
+            estimated_input_tokens,  # standard_input_tokens (estimated)
+            0,  # cached_input_tokens (not available)
+            estimated_output_tokens,  # output_tokens (estimated)
+            0,  # reasoning_tokens (not available)
+            True,  # file_search_used
+            search_sources,  # search_sources
+            citations  # citations (additional return value)
+        )
+        
+    except Exception as e:
+        logging.error(f"Error in vector search: {str(e)}", exc_info=True)
+        raise Exception(f"Vector search failed: {str(e)}") from e
+
+
+def create_vector_store_from_files(name: str, file_paths: List[Path], 
+                                  description: str = None,
+                                  expires_after_days: int = None,
+                                  db_path: Path = Path.cwd()) -> str:
+    """
+    Create a vector store and upload files to it.
+    
+    Args:
+        name: Name for the vector store
+        file_paths: List of files to upload
+        description: Optional description
+        expires_after_days: Optional expiration in days
+        db_path: Database path for local tracking
+        
+    Returns:
+        Vector store ID
+    """
+    try:
+        from file_store import register_vector_store, register_vector_store_file
+        
+        print(f"\n📚 CREATING VECTOR STORE: {name}")
+        print(f"   Files to upload: {len(file_paths)}")
+        
+        # Initialize vector search manager
+        vector_manager = VectorSearchManager()
+        
+        # Create vector store with files
+        vector_store_id = vector_manager.create_vector_store(
+            name=name,
+            file_paths=file_paths,
+            expires_after_days=expires_after_days
+        )
+        
+        # Register in local database
+        register_vector_store(
+            vector_store_id=vector_store_id,
+            name=name,
+            description=description,
+            expires_at=None,  # Will be set by OpenAI if expires_after_days was specified
+            db_path=db_path
+        )
+        
+        # Register each file in the vector store
+        for file_path in file_paths:
+            try:
+                # Get local file ID
+                from file_store import register_file, get_provider_file_id
+                local_file_id = register_file(file_path, db_path)
+                provider_file_id = get_provider_file_id(local_file_id, "openai", db_path)
+                
+                if provider_file_id:
+                    register_vector_store_file(
+                        vector_store_id=vector_store_id,
+                        file_id=local_file_id,
+                        provider_file_id=provider_file_id,
+                        db_path=db_path
+                    )
+            except Exception as e:
+                logging.warning(f"Could not register file {file_path.name} in local database: {e}")
+        
+        print(f"   ✅ Vector store created: {vector_store_id}")
+        return vector_store_id
+        
+    except Exception as e:
+        logging.error(f"Error creating vector store: {str(e)}", exc_info=True)
+        raise Exception(f"Failed to create vector store: {str(e)}") from e
+
+
+def search_vector_store_direct(vector_store_id: str, query: str, 
+                              max_results: int = 10,
+                              filters: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+    """
+    Search a vector store directly (without response generation).
+    
+    Args:
+        vector_store_id: Vector store ID to search
+        query: Search query
+        max_results: Maximum results to return
+        filters: Optional metadata filters
+        
+    Returns:
+        List of search results
+    """
+    try:
+        print(f"\n🔍 DIRECT VECTOR SEARCH:")
+        print(f"   Vector store: {vector_store_id}")
+        print(f"   Query: '{query[:100]}...'" if len(query) > 100 else f"   Query: '{query}'")
+        
+        # Initialize vector search manager
+        vector_manager = VectorSearchManager()
+        
+        # Perform direct search
+        results = vector_manager.search_vector_store(
+            vector_store_id=vector_store_id,
+            query=query,
+            max_results=max_results,
+            filters=filters
+        )
+        
+        print(f"   Results found: {len(results)}")
+        
+        # Convert to dictionary format for consistency
+        search_results = []
+        for result in results:
+            search_results.append({
+                "file_id": result.file_id,
+                "filename": result.filename,
+                "score": result.score,
+                "content": result.content,
+                "attributes": result.attributes
+            })
+        
+        return search_results
+        
+    except Exception as e:
+        logging.error(f"Error in direct vector search: {str(e)}", exc_info=True)
+        raise Exception(f"Direct vector search failed: {str(e)}") from e

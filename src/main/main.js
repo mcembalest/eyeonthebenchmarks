@@ -666,6 +666,19 @@ const setupIpcHandlers = () => {
     }
   });
 
+  // IPC for resetting stuck benchmarks
+  ipcMain.handle('reset-stuck-benchmarks', async () => {
+    try {
+      console.log('Main: Received reset-stuck-benchmarks request');
+      const result = await httpPostJson('/reset-stuck-benchmarks', {});
+      console.log('Main: Reset stuck benchmarks result:', result);
+      return result;
+    } catch (error) {
+      console.error('Error resetting stuck benchmarks:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
   // Validate tokens via HTTP
   ipcMain.handle('validate-tokens', async (event, { prompts, pdfPaths, modelNames }) => {
     try {
@@ -738,6 +751,19 @@ const setupIpcHandlers = () => {
       return { success: true };
     } catch (error) {
       console.error('Error opening external URL:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // IPC for rerunning a single prompt
+  ipcMain.handle('rerun-single-prompt', async (event, promptId) => {
+    try {
+      console.log(`Main: Received rerun-single-prompt request for ID: ${promptId}`);
+      const result = await httpPostJson('/rerun-prompt', { prompt_id: promptId });
+      console.log('Main: Rerun single prompt result:', result);
+      return result;
+    } catch (error) {
+      console.error('Error rerunning single prompt:', error);
       return { success: false, error: error.message };
     }
   });

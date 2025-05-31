@@ -54,11 +54,21 @@ from file_store import (
     register_file,
     get_all_files,
     get_file_details,
-    delete_file
+    delete_file,
+    # Vector store functions
+    register_vector_store,
+    get_vector_store_by_id,
+    get_all_vector_stores,
+    update_vector_store_stats,
+    register_vector_store_file,
+    get_vector_store_files,
+    associate_benchmark_with_vector_store,
+    get_benchmark_vector_stores,
+    delete_vector_store
 )
 # Import the UI bridge protocol and data change types
 from ui_bridge import AppUIBridge, DataChangeType
-from token_validator import validate_token_limits, format_token_validation_message
+from token_validator import validate_token_limits_with_upload, format_token_validation_message
 
 # --- ScriptUiBridge for command-line execution ---
 class ScriptUiBridge(AppUIBridge):
@@ -118,7 +128,7 @@ class ScriptUiBridge(AppUIBridge):
 
 
 class BenchmarkWorker(threading.Thread): 
-    def __init__(self, job_id, benchmark_id, prompts, pdf_paths, model_name, on_progress=None, on_finished=None, web_search_enabled=False): 
+    def __init__(self, job_id, benchmark_id, prompts, pdf_paths, model_name, on_progress=None, on_finished=None, web_search_enabled=False, single_prompt_id=None): 
         super().__init__(name=f"BenchmarkWorker-{job_id}-{model_name}", daemon=True)  # Set daemon=True to prevent thread from blocking program exit
         self.job_id = job_id
         self.benchmark_id = benchmark_id
@@ -128,10 +138,13 @@ class BenchmarkWorker(threading.Thread):
         self.on_progress = on_progress
         self.on_finished = on_finished
         self.web_search_enabled = web_search_enabled
+        self.single_prompt_id = single_prompt_id  # For single prompt reruns
         self.active = True  # Single source of truth for worker state
         self._original_emit_progress_callback = None
         
         print(f"BenchmarkWorker initialized with job_id={job_id}, benchmark_id={benchmark_id}, model={model_name}, web_search_enabled={web_search_enabled}")
+        if single_prompt_id:
+            print(f"   Single prompt rerun mode for prompt ID: {single_prompt_id}")
         sys.stdout.flush()
         logging.info(f"BenchmarkWorker created: {self.name} with {len(prompts)} prompts for model {model_name}")
      
@@ -267,12 +280,20 @@ class BenchmarkWorker(threading.Thread):
         sys.stdout.flush()
         
         try:
+            # Set up environment for subprocess
+            env = os.environ.copy()
+            if self.single_prompt_id:
+                env['SINGLE_PROMPT_RERUN_ID'] = str(self.single_prompt_id)
+                print(f"   Setting SINGLE_PROMPT_RERUN_ID={self.single_prompt_id} for rerun")
+                sys.stdout.flush()
+                
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                bufsize=1  # Line buffered
+                bufsize=1,  # Line buffered
+                env=env
             )
             
             # Process standard output lines as they arrive
@@ -426,7 +447,7 @@ class BenchmarkWorker(threading.Thread):
             
             # Forward to the UI callback if available and worker is still active
             if hasattr(self, 'on_progress') and self.on_progress and self.active:
-                self.on_progress(self.job_id, self.model_name, data)
+                self.on_progress(data) # Call with one argument as expected by the lambda
                 
         if self._original_emit_progress_callback:
             self._original_emit_progress_callback(data)
@@ -435,20 +456,43 @@ class BenchmarkWorker(threading.Thread):
 class AppLogic:
     def __init__(self, ui_bridge: AppUIBridge):
         self.ui_bridge = ui_bridge
-        self.workers = {}  # Dictionary to store workers by job_id and model_name
-        self.jobs = {}     # Dictionary to store job information 
-        self._next_job_id = 0
-        self._current_benchmark_id = None
-        self._current_benchmark_file_paths = []
-        self._worker_cleanup_interval = 3600  # Check for inactive workers every hour
-        self._last_cleanup_time = time.time()
-        self.db_path = None  # Initialize db_path
+        self.jobs = {}  # job_id -> job_data
+        self.workers = {}  # Add workers dictionary to track active workers
+        self._last_cleanup = time.time()
+        self._next_job_id = 1
+        self._worker_cleanup_interval = 30  # Clean up every 30 seconds
         
-        self._initialize_database()
-        self._ensure_directories_exist()
-        self._setup_data_observers()
-        
-        self.ui_bridge.start_auto_refresh()
+        # Initialize database and reset any stuck benchmarks
+        db_path = Path(__file__).parent
+        init_file_store_db(db_path)
+        self.reset_stuck_benchmarks()
+        self.cleanup_stuck_rerun_prompts()
+    
+    def reset_stuck_benchmarks(self):
+        """Reset benchmarks that might be stuck from previous runs."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import reset_stuck_benchmarks
+            reset_count = reset_stuck_benchmarks(db_path)
+            if reset_count > 0:
+                logging.info(f"Reset {reset_count} stuck benchmarks on startup")
+                # Notify UI that benchmark list may have changed
+                self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_LIST, None)
+        except Exception as e:
+            logging.error(f"Error resetting stuck benchmarks on startup: {e}")
+
+    def cleanup_stuck_rerun_prompts(self):
+        """Clean up any prompts stuck in pending state from interrupted reruns."""
+        try:
+            db_path = Path(__file__).parent
+            from file_store import cleanup_stuck_rerun_prompts
+            stuck_count = cleanup_stuck_rerun_prompts(db_path)
+            if stuck_count > 0:
+                logging.info(f"Cleaned up {stuck_count} stuck rerun prompts on startup")
+                # Notify UI that benchmark list may have changed
+                self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_LIST, None)
+        except Exception as e:
+            logging.error(f"Error cleaning up stuck rerun prompts on startup: {e}")
 
     def _setup_data_observers(self):
         self.ui_bridge.register_data_callback(
@@ -697,12 +741,6 @@ class AppLogic:
         # Start a worker thread for each model
         for model_name in modelNames:
             logger.info(f"Starting worker for model: {model_name}")
-            
-            # Register model in the database right away so it shows up in the UI
-            # This ensures models appear in listings even before any results are saved
-            from file_store import update_benchmark_model
-            update_benchmark_model(benchmark_id, model_name, db_dir)
-            logger.info(f"Registered model {model_name} in database for benchmark {benchmark_id}")
             
             # Create callbacks with proper context
             def create_finished_callback(jid, mname):
@@ -1267,10 +1305,10 @@ class AppLogic:
         """Cleanup inactive worker threads to prevent memory leaks"""
         current_time = time.time()
         # Only run cleanup periodically
-        if current_time - self._last_cleanup_time < self._worker_cleanup_interval:
+        if current_time - self._last_cleanup < self._worker_cleanup_interval:
             return
             
-        self._last_cleanup_time = current_time
+        self._last_cleanup = current_time
         logging.info("Performing cleanup of inactive workers")
         
         # Keep track of worker keys to remove
@@ -1315,19 +1353,53 @@ class AppLogic:
             self._deleted_benchmark_ids.add(benchmark_id)
             logging.info(f"Added benchmark ID {benchmark_id} to deleted benchmarks tracking list")
             
+            # Force-stop any active workers for this benchmark
+            workers_stopped = []
+            jobs_to_remove = []
+            
+            # Find and stop all jobs/workers for this benchmark
+            for job_id, job_data in list(self.jobs.items()):
+                if job_data.get('benchmark_id') == benchmark_id:
+                    logger.info(f"Found active job {job_id} for benchmark {benchmark_id}, stopping worker...")
+                    
+                    # Mark job as deleted to prevent further operations
+                    job_data['status'] = 'deleted'
+                    
+                    # If there's an active worker, try to stop it
+                    worker = job_data.get('worker')
+                    if worker and hasattr(worker, 'active'):
+                        try:
+                            worker.active = False  # Signal worker to stop
+                            workers_stopped.append(job_id)
+                            logger.info(f"Signaled worker for job {job_id} to stop")
+                        except Exception as e:
+                            logger.warning(f"Error signaling worker to stop for job {job_id}: {e}")
+                    
+                    # Mark for removal from jobs dict
+                    jobs_to_remove.append(job_id)
+            
+            # Remove stopped jobs from the jobs dictionary
+            for job_id in jobs_to_remove:
+                if job_id in self.jobs:
+                    del self.jobs[job_id]
+                    logger.info(f"Removed job {job_id} from active jobs")
+            
+            # Update the benchmark status to indicate deletion in progress
+            try:
+                from file_store import update_benchmark_status
+                update_benchmark_status(benchmark_id, 'deleting', db_path=db_path)
+                logger.info(f"Set benchmark {benchmark_id} status to 'deleting'")
+            except Exception as e:
+                logger.warning(f"Could not update benchmark status before deletion: {e}")
+            
             # Perform the actual deletion
             success = delete_benchmark(benchmark_id, db_path=db_path)
             
             if success:
                 logger.info(f"Successfully deleted benchmark ID: {benchmark_id}")
                 
-                # Remove this benchmark from any active jobs to prevent it from showing in updates
-                jobs_to_update = []
-                for job_id, job_data in self.jobs.items():
-                    if job_data.get('benchmark_id') == benchmark_id:
-                        job_data['status'] = 'deleted'  # Mark the job as deleted
-                        jobs_to_update.append(job_id)
-                        logger.info(f"Marked job {job_id} as deleted because its benchmark was deleted")
+                if workers_stopped:
+                    logger.info(f"Stopped {len(workers_stopped)} workers for deleted benchmark: {workers_stopped}")
                 
                 # Notify UI of the deletion
                 self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_LIST, None)
@@ -1380,6 +1452,184 @@ class AppLogic:
             logger.error(error_msg)
             self.ui_bridge.show_message("error", "Update Failed", f"Could not update benchmark ID {benchmark_id}.")
             return {"success": False, "error": error_msg}
+
+    def rerun_single_prompt(self, prompt_id: int) -> dict:
+        """Rerun a single prompt from an existing benchmark.
+        
+        Args:
+            prompt_id: The ID of the prompt to rerun
+            
+        Returns:
+            dict: A response with at least a 'success' field indicating whether the operation succeeded
+        """
+        try:
+            logger.info(f"Attempting to rerun prompt ID: {prompt_id}")
+            db_path = Path(__file__).parent
+            
+            # Get prompt details and benchmark context
+            from file_store import get_prompt_for_rerun, get_benchmark_files
+            prompt_data = get_prompt_for_rerun(prompt_id, db_path=db_path)
+            
+            if not prompt_data:
+                error_msg = f"Prompt ID {prompt_id} not found"
+                logger.error(error_msg)
+                return {"success": False, "error": error_msg}
+            
+            # Set prompt status to pending and clear previous results
+            from file_store import reset_prompt_for_rerun
+            reset_prompt_for_rerun(prompt_id, db_path=db_path)
+            
+            # Launch the rerun in a background thread
+            job_id = self._next_job_id
+            self._next_job_id += 1
+            
+            # Get benchmark files for context (needed for rerun)
+            benchmark_files = get_benchmark_files(prompt_data['benchmark_id'], db_path=db_path)
+            pdf_paths = [f['file_path'] for f in benchmark_files if f['mime_type'] == 'application/pdf']
+            
+            # Create callbacks for single prompt rerun
+            def create_finished_callback():
+                return lambda result: self.handle_single_prompt_rerun_finished(result, prompt_id, job_id)
+                
+            def create_progress_callback():
+                return lambda progress_data: self.handle_single_prompt_rerun_progress(prompt_id, job_id, progress_data)
+            
+            # Create worker for single prompt rerun
+            # Format prompt as dictionary with required structure
+            formatted_prompts = [{
+                'prompt_text': prompt_data['prompt'],
+                'web_search': prompt_data.get('use_web_search', False)
+            }]
+            
+            worker = BenchmarkWorker(
+                job_id=job_id,
+                benchmark_id=prompt_data['benchmark_id'],
+                prompts=formatted_prompts,
+                pdf_paths=pdf_paths,
+                model_name=prompt_data['model_name'],
+                on_progress=create_progress_callback(),
+                on_finished=create_finished_callback(),
+                web_search_enabled=prompt_data.get('use_web_search', False),
+                single_prompt_id=prompt_id  # Pass the prompt ID for in-place update
+            )
+            
+            self.jobs[job_id] = {
+                'id': job_id,
+                'benchmark_id': prompt_data['benchmark_id'],
+                'benchmark_run_id': prompt_data['benchmark_run_id'],
+                'model_name': prompt_data['model_name'],
+                'provider': prompt_data['provider'],
+                'status': 'running',
+                'created_at': datetime.now().isoformat(),
+                'worker': worker,
+                'type': 'single_prompt_rerun',
+                'prompt_id': prompt_id
+            }
+            
+            # Start worker with error handling
+            try:
+                worker.start()
+                logger.info(f"Successfully started rerun for prompt ID {prompt_id} with job ID {job_id}")
+                self.ui_bridge.show_message("info", "Prompt Rerun Started", f"Rerunning prompt ID {prompt_id}")
+                
+                # Schedule a timeout check to catch stuck processes
+                import threading
+                def timeout_check():
+                    import time
+                    time.sleep(300)  # Wait 5 minutes
+                    if job_id in self.jobs and self.jobs[job_id].get('status') == 'running':
+                        logger.warning(f"Prompt rerun {prompt_id} timed out after 5 minutes")
+                        self.handle_single_prompt_rerun_finished(
+                            {'status': 'failed', 'error': 'Rerun timed out after 5 minutes', 'model_name': prompt_data['model_name']}, 
+                            prompt_id, job_id
+                        )
+                        # Mark prompt as failed in database
+                        from file_store import mark_prompt_failed
+                        mark_prompt_failed(prompt_data['benchmark_run_id'], prompt_data['prompt'], "Rerun timed out after 5 minutes", db_path=db_path)
+                
+                timeout_thread = threading.Thread(target=timeout_check, daemon=True)
+                timeout_thread.start()
+                
+            except Exception as worker_error:
+                logger.error(f"Failed to start worker for prompt rerun {prompt_id}: {worker_error}")
+                # Clean up and mark as failed
+                if job_id in self.jobs:
+                    del self.jobs[job_id]
+                from file_store import mark_prompt_failed
+                mark_prompt_failed(prompt_data['benchmark_run_id'], prompt_data['prompt'], f"Failed to start rerun worker: {str(worker_error)}", db_path=db_path)
+                return {"success": False, "error": f"Failed to start rerun worker: {str(worker_error)}"}
+            
+            
+            # Notify UI that benchmarks have been updated
+            self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_LIST, None)
+            
+            return {"success": True, "job_id": job_id, "message": f"Prompt ID {prompt_id} rerun started"}
+            
+        except Exception as e:
+            error_msg = f"Error rerunning prompt ID {prompt_id}: {str(e)}"
+            logger.exception(error_msg)
+            self.ui_bridge.show_message("error", "Rerun Failed", f"Error rerunning prompt ID {prompt_id}: {str(e)}")
+            return {"success": False, "error": error_msg}
+
+    def handle_single_prompt_rerun_progress(self, prompt_id: int, job_id: int, progress_data: dict):
+        """Handle progress updates for single prompt rerun."""
+        logger.debug(f"Single prompt rerun progress for prompt {prompt_id}: {progress_data}")
+        
+        # Add context to progress data
+        progress_data.update({
+            'prompt_id': prompt_id,
+            'job_id': job_id,
+            'type': 'single_prompt_rerun'
+        })
+        
+        # Notify UI of progress
+        self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_LIST, progress_data)
+
+    def handle_single_prompt_rerun_finished(self, result: dict, prompt_id: int, job_id: int):
+        """Handle completion of single prompt rerun."""
+        logger.info(f"Single prompt rerun finished for prompt {prompt_id}: {result}")
+        
+        # Get benchmark_id from the result to update progress
+        benchmark_id = result.get('benchmark_id')
+        if benchmark_id:
+            # Update benchmark progress and status based on completed prompts
+            from file_store import update_benchmark_progress
+            update_benchmark_progress(benchmark_id, Path(__file__).parent)
+            logger.info(f"Updated benchmark progress for benchmark {benchmark_id} after prompt {prompt_id} rerun")
+        
+        # Clean up job from active jobs
+        if job_id in self.jobs:
+            del self.jobs[job_id]
+        
+        # Remove worker from workers dict using appropriate key
+        worker_key = f"{job_id}_{result.get('model_name', 'unknown')}"
+        if worker_key in self.workers:
+            del self.workers[worker_key]
+        
+        if result.get('status') == 'completed':
+            self.ui_bridge.show_message("success", "Prompt Rerun Complete", f"Prompt ID {prompt_id} has been successfully rerun")
+        else:
+            error_msg = result.get('error', 'Unknown error occurred')
+            self.ui_bridge.show_message("error", "Prompt Rerun Failed", f"Failed to rerun prompt ID {prompt_id}: {error_msg}")
+        
+        # Check if benchmark is now complete and send appropriate completion event
+        if benchmark_id:
+            from file_store import get_benchmark_by_id
+            benchmark = get_benchmark_by_id(benchmark_id, Path(__file__).parent)
+            if benchmark and benchmark.get('status') in ['completed', 'completed_with_errors']:
+                # Send benchmark completion event like regular benchmarks
+                completion_data = {
+                    'benchmark_id': benchmark_id,
+                    'success': True,
+                    'all_models_complete': True,
+                    'final_completion': True,
+                    'rerun_completion': True
+                }
+                self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_COMPLETED, completion_data)
+                logger.info(f"Sent benchmark completion event for benchmark {benchmark_id} after rerun")
+        
+        # Notify UI that benchmarks have been updated
+        self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_LIST, None)
 
     def list_benchmarks(self) -> List[Dict[str, Any]]:
         """Get a list of all benchmarks from the database."""
@@ -1729,7 +1979,7 @@ class AppLogic:
                 return {"status": "error", "message": "No models provided"}
             
             # Run token validation
-            validation_results = validate_token_limits(prompts, pdfPaths or [], modelNames)
+            validation_results = validate_token_limits_with_upload(prompts, pdfPaths or [], modelNames)
             
             return {
                 "status": "success",
@@ -2023,6 +2273,218 @@ class AppLogic:
             error_msg = f"Error getting sync status for benchmark {benchmark_id}: {str(e)}"
             logging.error(error_msg)
             return {"success": False, "error": error_msg}
+
+    # ===== VECTOR SEARCH METHODS =====
+
+    def handle_create_vector_store(self, name: str, description: str = None, 
+                                  file_ids: List[int] = None, 
+                                  expires_after_days: int = None) -> dict:
+        """Create a new vector store."""
+        try:
+            from models_openai import create_vector_store_from_files
+            
+            # Get file paths from file IDs
+            file_paths = []
+            if file_ids:
+                for file_id in file_ids:
+                    file_details = get_file_details(file_id)
+                    if file_details:
+                        file_paths.append(Path(file_details['file_path']))
+                    else:
+                        return {"success": False, "error": f"File with ID {file_id} not found"}
+            
+            # Create vector store
+            vector_store_id = create_vector_store_from_files(
+                name=name,
+                file_paths=file_paths,
+                description=description,
+                expires_after_days=expires_after_days
+            )
+            
+            return {
+                "success": True, 
+                "vector_store_id": vector_store_id,
+                "message": f"Vector store '{name}' created successfully"
+            }
+            
+        except Exception as e:
+            error_msg = f"Error creating vector store: {str(e)}"
+            logging.error(error_msg)
+            return {"success": False, "error": error_msg}
+
+    def handle_get_vector_stores(self) -> dict:
+        """Get all vector stores."""
+        try:
+            vector_stores = get_all_vector_stores()
+            return {"success": True, "vector_stores": vector_stores}
+        except Exception as e:
+            error_msg = f"Error getting vector stores: {str(e)}"
+            logging.error(error_msg)
+            return {"success": False, "error": error_msg}
+
+    def handle_get_vector_store_details(self, vector_store_id: str) -> dict:
+        """Get details of a specific vector store."""
+        try:
+            vector_store = get_vector_store_by_id(vector_store_id)
+            if not vector_store:
+                return {"success": False, "error": "Vector store not found"}
+            
+            # Get files in the vector store
+            files = get_vector_store_files(vector_store_id)
+            vector_store["files"] = files
+            
+            return {"success": True, "vector_store": vector_store}
+        except Exception as e:
+            error_msg = f"Error getting vector store details: {str(e)}"
+            logging.error(error_msg)
+            return {"success": False, "error": error_msg}
+
+    def handle_add_files_to_vector_store(self, vector_store_id: str, 
+                                        file_ids: List[int]) -> dict:
+        """Add files to an existing vector store."""
+        try:
+            from vector_search import VectorSearchManager
+            
+            # Get file paths from file IDs
+            file_paths = []
+            for file_id in file_ids:
+                file_details = get_file_details(file_id)
+                if file_details:
+                    file_paths.append(Path(file_details['file_path']))
+                else:
+                    return {"success": False, "error": f"File with ID {file_id} not found"}
+            
+            # Add files to vector store
+            vector_manager = VectorSearchManager()
+            added_files = vector_manager.add_files_to_vector_store(
+                vector_store_id=vector_store_id,
+                file_paths=file_paths
+            )
+            
+            # Register files in local database
+            from file_store import get_provider_file_id
+            for file_path, file_id in zip(file_paths, file_ids):
+                provider_file_id = get_provider_file_id(file_id, "openai")
+                if provider_file_id:
+                    register_vector_store_file(
+                        vector_store_id=vector_store_id,
+                        file_id=file_id,
+                        provider_file_id=provider_file_id
+                    )
+            
+            return {
+                "success": True, 
+                "added_files": len(added_files),
+                "message": f"Added {len(added_files)} files to vector store"
+            }
+            
+        except Exception as e:
+            error_msg = f"Error adding files to vector store: {str(e)}"
+            logging.error(error_msg)
+            return {"success": False, "error": error_msg}
+
+    def handle_search_vector_store(self, vector_store_id: str, query: str, 
+                                  max_results: int = 10) -> dict:
+        """Search a vector store directly."""
+        try:
+            from models_openai import search_vector_store_direct
+            
+            results = search_vector_store_direct(
+                vector_store_id=vector_store_id,
+                query=query,
+                max_results=max_results
+            )
+            
+            return {"success": True, "results": results}
+            
+        except Exception as e:
+            error_msg = f"Error searching vector store: {str(e)}"
+            logging.error(error_msg)
+            return {"success": False, "error": error_msg}
+
+    def handle_ask_vector_store(self, vector_store_ids: List[str], question: str,
+                               model: str = "gpt-4o-mini", 
+                               max_results: int = 20) -> dict:
+        """Ask a question using vector search."""
+        try:
+            from models_openai import openai_ask_with_vector_search
+            
+            # Perform vector search
+            result = openai_ask_with_vector_search(
+                vector_store_ids=vector_store_ids,
+                prompt_text=question,
+                model_name=model,
+                max_results=max_results,
+                include_search_results=True
+            )
+            
+            answer, input_tokens, cached_tokens, output_tokens, reasoning_tokens, file_search_used, search_sources, citations = result
+            
+            return {
+                "success": True,
+                "answer": answer,
+                "tokens": {
+                    "input": input_tokens,
+                    "cached": cached_tokens,
+                    "output": output_tokens,
+                    "reasoning": reasoning_tokens
+                },
+                "search_sources": search_sources,
+                "citations": citations,
+                "file_search_used": file_search_used
+            }
+            
+        except Exception as e:
+            error_msg = f"Error asking vector store: {str(e)}"
+            logging.error(error_msg)
+            return {"success": False, "error": error_msg}
+
+    def handle_delete_vector_store(self, vector_store_id: str) -> dict:
+        """Delete a vector store."""
+        try:
+            from vector_search import VectorSearchManager
+            
+            # Delete from OpenAI
+            vector_manager = VectorSearchManager()
+            deleted = vector_manager.delete_vector_store(vector_store_id)
+            
+            if deleted:
+                # Delete from local database
+                delete_vector_store(vector_store_id)
+                return {"success": True, "message": "Vector store deleted successfully"}
+            else:
+                return {"success": False, "error": "Failed to delete vector store from OpenAI"}
+                
+        except Exception as e:
+            error_msg = f"Error deleting vector store: {str(e)}"
+            logging.error(error_msg)
+            return {"success": False, "error": error_msg}
+
+    def handle_associate_benchmark_vector_store(self, benchmark_id: int, 
+                                               vector_store_id: str) -> dict:
+        """Associate a benchmark with a vector store."""
+        try:
+            success = associate_benchmark_with_vector_store(benchmark_id, vector_store_id)
+            if success:
+                return {"success": True, "message": "Benchmark associated with vector store"}
+            else:
+                return {"success": False, "error": "Failed to associate benchmark with vector store"}
+                
+        except Exception as e:
+            error_msg = f"Error associating benchmark with vector store: {str(e)}"
+            logging.error(error_msg)
+            return {"success": False, "error": error_msg}
+
+    def handle_get_benchmark_vector_stores(self, benchmark_id: int) -> dict:
+        """Get vector stores associated with a benchmark."""
+        try:
+            vector_stores = get_benchmark_vector_stores(benchmark_id)
+            return {"success": True, "vector_stores": vector_stores}
+        except Exception as e:
+            error_msg = f"Error getting benchmark vector stores: {str(e)}"
+            logging.error(error_msg)
+            return {"success": False, "error": error_msg}
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

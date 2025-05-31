@@ -108,27 +108,61 @@ def run_direct_benchmark_from_db(job_id, benchmark_id, prompts, model_name, web_
                 # Update worker heartbeat to show activity
                 update_worker_heartbeat(run_id)
                 
-                # Save the individual prompt result atomically
-                prompt_id = save_benchmark_prompt_atomic(
-                    benchmark_run_id=run_id,
-                    prompt=prompt_result["prompt_text"],
-                    response=prompt_result["model_answer"],
-                    latency=prompt_result["latency_ms"],
-                    standard_input_tokens=prompt_result["standard_input_tokens"],
-                    cached_input_tokens=prompt_result["cached_input_tokens"],
-                    output_tokens=prompt_result["output_tokens"],
-                    thinking_tokens=prompt_result.get("thinking_tokens", 0),
-                    reasoning_tokens=prompt_result.get("reasoning_tokens", 0),
-                    input_cost=prompt_result["input_cost"],
-                    cached_cost=prompt_result["cached_cost"],
-                    output_cost=prompt_result["output_cost"],
-                    thinking_cost=prompt_result.get("thinking_cost", 0.0),
-                    reasoning_cost=prompt_result.get("reasoning_cost", 0.0),
-                    total_cost=prompt_result["total_cost"],
-                    web_search_used=prompt_result.get("web_search_used", False),
-                    web_search_sources=prompt_result.get("web_search_sources", ""),
-                    truncation_info=prompt_result.get("truncation_info", "")
-                )
+                # Check if this is a single prompt rerun (passed via environment or special parameter)
+                import os
+                single_prompt_id = os.environ.get('SINGLE_PROMPT_RERUN_ID')
+                
+                if single_prompt_id:
+                    # Update existing prompt instead of creating new one
+                    print(f"Updating existing prompt {single_prompt_id} with rerun results...")
+                    from file_store import update_prompt_result
+                    success = update_prompt_result(
+                        prompt_id=int(single_prompt_id),
+                        response=prompt_result["model_answer"],
+                        latency=prompt_result["latency_ms"],
+                        standard_input_tokens=prompt_result["standard_input_tokens"],
+                        cached_input_tokens=prompt_result["cached_input_tokens"],
+                        output_tokens=prompt_result["output_tokens"],
+                        thinking_tokens=prompt_result.get("thinking_tokens", 0),
+                        reasoning_tokens=prompt_result.get("reasoning_tokens", 0),
+                        input_cost=prompt_result["input_cost"],
+                        cached_cost=prompt_result["cached_cost"],
+                        output_cost=prompt_result["output_cost"],
+                        thinking_cost=prompt_result.get("thinking_cost", 0.0),
+                        reasoning_cost=prompt_result.get("reasoning_cost", 0.0),
+                        total_cost=prompt_result["total_cost"],
+                        web_search_used=prompt_result.get("web_search_used", False),
+                        web_search_sources=prompt_result.get("web_search_sources", ""),
+                        truncation_info=prompt_result.get("truncation_info", "")
+                    )
+                    if success:
+                        print(f"✅ Updated existing prompt {single_prompt_id}")
+                        prompt_id = int(single_prompt_id)
+                    else:
+                        print(f"❌ Failed to update existing prompt {single_prompt_id}")
+                        prompt_id = None
+                else:
+                    # Normal operation - save new prompt
+                    prompt_id = save_benchmark_prompt_atomic(
+                        benchmark_run_id=run_id,
+                        prompt=prompt_result["prompt_text"],
+                        response=prompt_result["model_answer"],
+                        latency=prompt_result["latency_ms"],
+                        standard_input_tokens=prompt_result["standard_input_tokens"],
+                        cached_input_tokens=prompt_result["cached_input_tokens"],
+                        output_tokens=prompt_result["output_tokens"],
+                        thinking_tokens=prompt_result.get("thinking_tokens", 0),
+                        reasoning_tokens=prompt_result.get("reasoning_tokens", 0),
+                        input_cost=prompt_result["input_cost"],
+                        cached_cost=prompt_result["cached_cost"],
+                        output_cost=prompt_result["output_cost"],
+                        thinking_cost=prompt_result.get("thinking_cost", 0.0),
+                        reasoning_cost=prompt_result.get("reasoning_cost", 0.0),
+                        total_cost=prompt_result["total_cost"],
+                        web_search_used=prompt_result.get("web_search_used", False),
+                        web_search_sources=prompt_result.get("web_search_sources", ""),
+                        truncation_info=prompt_result.get("truncation_info", "")
+                    )
                 
                 if prompt_id:
                     print(f"✅ Saved prompt {prompt_index + 1} with ID: {prompt_id}")

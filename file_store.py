@@ -6,12 +6,17 @@ import json
 import logging
 import csv
 from typing import Optional, List, Dict, Any
+from PyPDF2 import PdfReader, PdfWriter
 
 DB_NAME = "eotb_file_store.sqlite"
+DEFAULT_PAGES_PER_CHUNK = 5
 
 # Table names - clean multi-provider schema
 FILES_TABLE = "files"
 PROVIDER_FILE_UPLOADS_TABLE = "provider_file_uploads"
+VECTOR_STORES_TABLE = "vector_stores"
+VECTOR_STORE_FILES_TABLE = "vector_store_files"
+BENCHMARK_VECTOR_STORES_TABLE = "benchmark_vector_stores"
 PROMPT_SETS_TABLE = "prompt_sets"
 PROMPT_SET_ITEMS_TABLE = "prompt_set_items"
 BENCHMARKS_TABLE = "benchmarks"
@@ -19,6 +24,7 @@ BENCHMARK_FILES_TABLE = "benchmark_files"
 BENCHMARK_RUNS_TABLE = "benchmark_runs"
 BENCHMARK_PROMPTS_TABLE = "benchmark_prompts"
 BENCHMARK_REPORTS_TABLE = "benchmark_reports"
+PDF_CHUNKS_TABLE = "pdf_chunks"
 
 def init_db(db_path: Path = Path.cwd()):
     """Initializes the SQLite database with a clean multi-provider, multi-file schema, focused on response collection."""
@@ -50,6 +56,52 @@ def init_db(db_path: Path = Path.cwd()):
             uploaded_at TEXT NOT NULL,
             FOREIGN KEY (file_id) REFERENCES {FILES_TABLE}(id),
             UNIQUE(file_id, provider)
+        )
+    ''')
+
+    # Vector Stores Table - Track OpenAI vector stores
+    cursor.execute(f'''
+        CREATE TABLE IF NOT EXISTS {VECTOR_STORES_TABLE} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vector_store_id TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            provider TEXT NOT NULL DEFAULT 'openai',
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            file_count INTEGER DEFAULT 0,
+            usage_bytes INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'active',
+            metadata TEXT  -- JSON metadata
+        )
+    ''')
+
+    # Vector Store Files Table - Track which files are in which vector stores
+    cursor.execute(f'''
+        CREATE TABLE IF NOT EXISTS {VECTOR_STORE_FILES_TABLE} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            vector_store_id TEXT NOT NULL,
+            file_id INTEGER NOT NULL,
+            provider_file_id TEXT NOT NULL,
+            added_at TEXT NOT NULL,
+            attributes TEXT,  -- JSON attributes
+            status TEXT DEFAULT 'completed',
+            FOREIGN KEY (vector_store_id) REFERENCES {VECTOR_STORES_TABLE}(vector_store_id),
+            FOREIGN KEY (file_id) REFERENCES {FILES_TABLE}(id),
+            UNIQUE(vector_store_id, file_id)
+        )
+    ''')
+
+    # Benchmark Vector Stores Table - Associate benchmarks with vector stores
+    cursor.execute(f'''
+        CREATE TABLE IF NOT EXISTS {BENCHMARK_VECTOR_STORES_TABLE} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            benchmark_id INTEGER NOT NULL,
+            vector_store_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (benchmark_id) REFERENCES {BENCHMARKS_TABLE}(id),
+            FOREIGN KEY (vector_store_id) REFERENCES {VECTOR_STORES_TABLE}(vector_store_id),
+            UNIQUE(benchmark_id, vector_store_id)
         )
     ''')
 
@@ -333,6 +385,23 @@ def init_db(db_path: Path = Path.cwd()):
         )
     ''')
     
+    # PDF Chunks Table - Stores metadata about pre-generated PDF chunks
+    cursor.execute(f'''
+        CREATE TABLE IF NOT EXISTS {PDF_CHUNKS_TABLE} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            original_file_id INTEGER NOT NULL,
+            chunk_file_id INTEGER NOT NULL,
+            chunk_order INTEGER NOT NULL,
+            start_page INTEGER NOT NULL,
+            end_page INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (original_file_id) REFERENCES {FILES_TABLE}(id) ON DELETE CASCADE,
+            FOREIGN KEY (chunk_file_id) REFERENCES {FILES_TABLE}(id) ON DELETE CASCADE,
+            UNIQUE(original_file_id, chunk_order),
+            UNIQUE(original_file_id, chunk_file_id)
+        )
+    ''')
+
     conn.commit()
     conn.close()
     logging.info(f"Database initialized at {db_file} (Simplified Schema - No Scoring)")
@@ -522,100 +591,141 @@ def get_csv_preview(file_path: Path, preview_rows: int = 2) -> Dict[str, Any]:
     """Get a preview of CSV data for display in UI."""
     return parse_csv_to_json_records(file_path, max_rows=preview_rows)
 
+def _split_pdf_into_chunks(original_pdf_path: Path, pages_per_chunk: int = DEFAULT_PAGES_PER_CHUNK) -> List[Dict[str, Any]]:
+    """
+    Splits a PDF file into smaller chunks.
+
+    Args:
+        original_pdf_path: Path to the original PDF file.
+        pages_per_chunk: Number of pages for each chunk.
+
+    Returns:
+        A list of dictionaries, where each dictionary contains:
+            'chunk_path': Path to the created chunk file.
+            'start_page': The 1-indexed start page of the chunk.
+            'end_page': The 1-indexed end page of the chunk.
+    """
+    chunks_info = []
+    try:
+        pdf_reader = PdfReader(original_pdf_path)
+        total_pages = len(pdf_reader.pages)
+
+        # Create a subdirectory for chunks if it doesn't exist
+        chunks_dir = original_pdf_path.parent / ".chunks"
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+
+        for i in range(0, total_pages, pages_per_chunk):
+            pdf_writer = PdfWriter()
+            start_page = i + 1
+            end_page = min(i + pages_per_chunk, total_pages)
+
+            for page_num in range(i, end_page):
+                pdf_writer.add_page(pdf_reader.pages[page_num])
+
+            chunk_filename = f"{original_pdf_path.stem}_chunk_{start_page}-{end_page}{original_pdf_path.suffix}"
+            chunk_file_path = chunks_dir / chunk_filename
+
+            with open(chunk_file_path, "wb") as chunk_file:
+                pdf_writer.write(chunk_file)
+            
+            chunks_info.append({
+                "chunk_path": chunk_file_path,
+                "start_page": start_page,
+                "end_page": end_page
+            })
+            logging.info(f"Created PDF chunk: {chunk_file_path} (Pages {start_page}-{end_page})")
+
+    except Exception as e:
+        logging.error(f"Error splitting PDF {original_pdf_path}: {e}")
+        return []  # Return empty list on error
+
+    return chunks_info
+
 def _register_file_with_connection(file_path: Path, cursor, conn) -> int:
     """
     Register a file using an existing database connection and cursor.
-    This is used internally to avoid database locking issues.
-    """
-    # Calculate file hash
-    file_hash = _calculate_file_hash(file_path)
-    
-    # Check if file already exists
-    cursor.execute(f'''
-        SELECT id FROM {FILES_TABLE} WHERE file_hash = ?
-    ''', (file_hash,))
-    
-    result = cursor.fetchone()
-    
-    if result:
-        file_id = result[0]
-        logging.info(f"File {file_path.name} already registered with ID {file_id}")
-        return file_id
-    
-    # Register new file
-    file_stats = file_path.stat()
-    created_at = datetime.datetime.now().isoformat()
-    
-    cursor.execute(f'''
-        INSERT INTO {FILES_TABLE} 
-        (file_hash, original_filename, file_path, file_size_bytes, mime_type, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (file_hash, file_path.name, str(file_path.resolve()), 
-          file_stats.st_size, _get_mime_type(file_path), created_at))
-    
-    file_id = cursor.lastrowid
-    logging.info(f"Registered new file {file_path.name} with ID {file_id}")
-    return file_id
-
-def register_file(file_path: Path, db_path: Path = Path.cwd()) -> int:
-    """
-    Register a file in our central file registry.
-    Returns the file_id (creates new record if file hasn't been seen before).
+    This is used internally to avoid database locking issues and manage transactions correctly.
     """
     # Calculate file hash
     file_hash = _calculate_file_hash(file_path)
 
-    db_file = db_path / DB_NAME
-    conn = sqlite3.connect(db_file)
-    cursor = conn.cursor()
+    # Check if file already exists by hash
+    cursor.execute(f"SELECT id FROM {FILES_TABLE} WHERE file_hash = ?", (file_hash,))
+    row = cursor.fetchone()
+    if row:
+        logging.info(f"File {file_path} (hash: {file_hash}) already registered with ID: {row[0]}.")
+        # NOTE: If an original PDF is already registered, this logic currently assumes its chunks were handled.
+        # A more robust system might re-verify/re-process chunks here if missing, but that adds complexity.
+        return row[0]
+
+    # Insert new file record
+    created_at_dt = datetime.datetime.now()
+    created_at_iso = created_at_dt.isoformat()
+    mime_type = _get_mime_type(file_path)
+    file_size = file_path.stat().st_size
+    original_filename = file_path.name
+    resolved_file_path = str(file_path.resolve())
+    csv_data_json_content = None
+
+    if mime_type == 'text/csv':
+        try:
+            csv_info = parse_csv_to_json_records(file_path, max_rows=1000) # Store up to 1000 rows for CSVs
+            if csv_info and 'records' in csv_info:
+                 csv_data_json_content = json.dumps(csv_info['records'])
+            else:
+                logging.warning(f"No 'records' found in csv_info for {file_path}")
+        except Exception as e:
+            logging.error(f"Error parsing CSV {file_path} for data storage: {e}")
+
+    cursor.execute(f'''
+        INSERT INTO {FILES_TABLE} (file_hash, original_filename, file_path, file_size_bytes, mime_type, created_at, csv_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?)''',
+        (file_hash, original_filename, resolved_file_path, file_size, mime_type, created_at_iso, csv_data_json_content))
     
-    try:
-        # Check if file already exists
-        cursor.execute(f"SELECT id FROM {FILES_TABLE} WHERE file_hash = ?", (file_hash,))
-        result = cursor.fetchone()
+    original_file_id = cursor.lastrowid
+    logging.info(f"Registered new file {original_filename} (ID: {original_file_id}) located at {resolved_file_path}.")
+
+    # If the registered file is a PDF, split it into chunks and register them
+    if mime_type == 'application/pdf':
+        logging.info(f"PDF file detected: {file_path}. Proceeding to chunk and register chunks.")
+        chunks_info = _split_pdf_into_chunks(file_path) # Uses DEFAULT_PAGES_PER_CHUNK
         
-        if result:
-            file_id = result[0]
-            logging.info(f"File {file_path.name} already registered with ID {file_id}")
-            return file_id
-        
-        # Register new file
-        file_stats = file_path.stat()
-        created_at = datetime.datetime.now().isoformat()
-        mime_type = _get_mime_type(file_path)
-        
-        cursor.execute(f'''
-            INSERT INTO {FILES_TABLE} 
-            (file_hash, original_filename, file_path, file_size_bytes, mime_type, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (file_hash, file_path.name, str(file_path.resolve()), 
-              file_stats.st_size, mime_type, created_at))
-        
-        file_id = cursor.lastrowid
-        
-        # If it's a CSV file, parse and store the data
-        if mime_type == 'text/csv':
-            try:
-                csv_data = parse_csv_to_json_records(file_path)
-                # Store CSV data as JSON in the csv_data column
-                cursor.execute(f'''
-                    UPDATE {FILES_TABLE} 
-                    SET csv_data = ?
-                    WHERE id = ?
-                ''', (json.dumps(csv_data), file_id))
-                logging.info(f"Stored CSV data for {file_path.name}: {csv_data['total_rows']} rows, {len(csv_data['columns'])} columns")
-            except Exception as e:
-                logging.warning(f"Could not parse CSV data for {file_path.name}: {e}")
-        
-        conn.commit()
-        logging.info(f"Registered new file {file_path.name} with ID {file_id}")
-        return file_id
-        
-    except sqlite3.Error as e:
-        logging.error(f"SQLite error when registering file {file_path.name}: {e}")
-        raise
-    finally:
-        conn.close()
+        for order_idx, chunk_data in enumerate(chunks_info):
+            chunk_actual_path = chunk_data['chunk_path']
+            start_page = chunk_data['start_page']
+            end_page = chunk_data['end_page']
+            
+            # Recursively register the chunk file. It gets its own entry in FILES_TABLE.
+            # Pass the same cursor and conn to ensure it's part of the same transaction.
+            logging.debug(f"Attempting to register chunk: {chunk_actual_path}")
+            chunk_file_id = _register_file_with_connection(chunk_actual_path, cursor, conn) # Recursive call
+            
+            if chunk_file_id:
+                # Link this chunk to the original PDF in PDF_CHUNKS_TABLE
+                # Check if this specific chunk (by chunk_file_id) is already linked to this original_file_id
+                cursor.execute(
+                    f"SELECT id FROM {PDF_CHUNKS_TABLE} WHERE original_file_id = ? AND chunk_file_id = ?",
+                    (original_file_id, chunk_file_id)
+                )
+                existing_link = cursor.fetchone()
+
+                if not existing_link:
+                    chunk_link_created_at = datetime.datetime.now().isoformat()
+                    try:
+                        cursor.execute(f'''
+                            INSERT INTO {PDF_CHUNKS_TABLE} 
+                                (original_file_id, chunk_file_id, chunk_order, start_page, end_page, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?)''', 
+                            (original_file_id, chunk_file_id, order_idx + 1, start_page, end_page, chunk_link_created_at))
+                        logging.info(f"Linked PDF chunk: original_id={original_file_id}, chunk_id={chunk_file_id}, order={order_idx + 1}, pages {start_page}-{end_page}")
+                    except sqlite3.IntegrityError as ie:
+                        logging.warning(f"Integrity error linking chunk for original_id={original_file_id}, chunk_id={chunk_file_id}, order={order_idx + 1}: {ie}. Assuming already linked or order conflict.")
+                else:
+                    logging.debug(f"Chunk link (original_id={original_file_id}, chunk_id={chunk_file_id}) already exists.")
+            else:
+                logging.error(f"Failed to register chunk file {chunk_actual_path} for original PDF ID {original_file_id}.")
+
+    return original_file_id
 
 def get_provider_file_id(file_id: int, provider: str, db_path: Path = Path.cwd()) -> Optional[str]:
     """
@@ -844,7 +954,7 @@ def save_benchmark_prompt(benchmark_run_id: int, prompt: str, response: str,
              input_cost, cached_cost, output_cost, thinking_cost, reasoning_cost, total_cost, 
              web_search_used, web_search_sources, truncation_info,
              status, started_at, completed_at, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (benchmark_run_id, str(prompt), str(response),
               float(latency) if latency is not None else 0.0, 
               int(standard_input_tokens) if standard_input_tokens is not None else 0,
@@ -883,6 +993,172 @@ def save_benchmark_report(benchmark_id: int, compared_models: List[str], report:
     except sqlite3.Error as e:
         logging.error(f"SQLite error when saving benchmark report: {e}")
         return None
+    finally:
+        conn.close()
+
+def get_prompt_for_rerun(prompt_id: int, db_path: Path = Path.cwd()) -> Optional[dict]:
+    """Get prompt details needed for rerunning a single prompt."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute(f'''
+            SELECT bp.prompt, bp.benchmark_run_id, br.benchmark_id, br.model_name, br.provider, b.use_web_search
+            FROM {BENCHMARK_PROMPTS_TABLE} bp
+            JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
+            JOIN {BENCHMARKS_TABLE} b ON br.benchmark_id = b.id
+            WHERE bp.id = ?
+        ''', (prompt_id,))
+        
+        result = cursor.fetchone()
+        if result:
+            return {
+                'prompt': result[0],
+                'benchmark_run_id': result[1],
+                'benchmark_id': result[2],
+                'model_name': result[3],
+                'provider': result[4],
+                'use_web_search': bool(result[5])
+            }
+        return None
+        
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error when getting prompt for rerun: {e}")
+        return None
+    finally:
+        conn.close()
+
+def reset_prompt_for_rerun(prompt_id: int, db_path: Path = Path.cwd()) -> bool:
+    """Reset a prompt's status and clear previous results for rerunning."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute(f'''
+            UPDATE {BENCHMARK_PROMPTS_TABLE} 
+            SET status = 'pending', 
+                response = NULL,
+                latency = NULL,
+                standard_input_tokens = NULL,
+                cached_input_tokens = NULL,
+                output_tokens = NULL,
+                thinking_tokens = NULL,
+                reasoning_tokens = NULL,
+                input_cost = 0,
+                cached_cost = 0,
+                output_cost = 0,
+                thinking_cost = 0,
+                reasoning_cost = 0,
+                total_cost = 0,
+                web_search_used = 0,
+                web_search_sources = NULL,
+                truncation_info = NULL,
+                started_at = NULL,
+                completed_at = NULL,
+                error_message = NULL
+            WHERE id = ?
+        ''', (prompt_id,))
+        
+        conn.commit()
+        logging.info(f"Reset prompt {prompt_id} for rerun")
+        return cursor.rowcount > 0
+        
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error when resetting prompt for rerun: {e}")
+        return False
+    finally:
+        conn.close()
+
+def update_prompt_result(prompt_id: int, response: str, latency: float, 
+                        standard_input_tokens: int, cached_input_tokens: int, 
+                        output_tokens: int, thinking_tokens: int = 0, 
+                        reasoning_tokens: int = 0, input_cost: float = 0.0, 
+                        cached_cost: float = 0.0, output_cost: float = 0.0, 
+                        thinking_cost: float = 0.0, reasoning_cost: float = 0.0, 
+                        total_cost: float = 0.0, web_search_used: bool = False, 
+                        web_search_sources: str = "", truncation_info: str = "", 
+                        db_path: Path = Path.cwd()) -> bool:
+    """Update an existing prompt with new results from rerun."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    try:
+        current_time = datetime.datetime.now().isoformat()
+        status = 'failed' if str(response).startswith('ERROR') else 'completed'
+        error_message = str(response) if status == 'failed' else None
+        
+        cursor.execute(f'''
+            UPDATE {BENCHMARK_PROMPTS_TABLE} 
+            SET response = ?,
+                latency = ?,
+                standard_input_tokens = ?,
+                cached_input_tokens = ?,
+                output_tokens = ?,
+                thinking_tokens = ?,
+                reasoning_tokens = ?,
+                input_cost = ?,
+                cached_cost = ?,
+                output_cost = ?,
+                thinking_cost = ?,
+                reasoning_cost = ?,
+                total_cost = ?,
+                web_search_used = ?,
+                web_search_sources = ?,
+                truncation_info = ?,
+                status = ?,
+                completed_at = ?,
+                error_message = ?
+            WHERE id = ?
+        ''', (str(response), float(latency), int(standard_input_tokens), 
+              int(cached_input_tokens), int(output_tokens), int(thinking_tokens), 
+              int(reasoning_tokens), input_cost, cached_cost, output_cost, 
+              thinking_cost, reasoning_cost, total_cost, 1 if web_search_used else 0, 
+              web_search_sources, truncation_info, status, current_time, 
+              error_message, prompt_id))
+        
+        conn.commit()
+        logging.info(f"Updated prompt {prompt_id} with rerun results")
+        return cursor.rowcount > 0
+        
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error when updating prompt result: {e}")
+        return False
+    finally:
+        conn.close()
+
+def cleanup_stuck_rerun_prompts(db_path: Path = Path.cwd()) -> int:
+    """Find and mark any prompts stuck in pending state as failed."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    try:
+        current_time = datetime.datetime.now().isoformat()
+        
+        # Find prompts that are pending with no started_at timestamp (stuck in rerun)
+        cursor.execute(f'''
+            UPDATE {BENCHMARK_PROMPTS_TABLE} 
+            SET status = 'failed',
+                started_at = ?,
+                completed_at = ?,
+                error_message = 'Rerun process was interrupted - automatically recovered on startup'
+            WHERE status = 'pending' AND started_at IS NULL
+        ''', (current_time, current_time))
+        
+        stuck_count = cursor.rowcount
+        conn.commit()
+        
+        if stuck_count > 0:
+            logging.info(f"Cleaned up {stuck_count} stuck rerun prompts on startup")
+        
+        return stuck_count
+        
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error when cleaning up stuck prompts: {e}")
+        return 0
     finally:
         conn.close()
 
@@ -960,26 +1236,35 @@ def get_benchmark_details(benchmark_id: int, db_path: Path = Path.cwd()) -> Opti
         
         benchmark = dict(benchmark_row)
         
-        # Get files
         benchmark['files'] = get_benchmark_files(benchmark_id, db_path)
         
-        # Get runs including progress and status fields
+        # Get runs including progress and status fields - PREFER COMPLETE RUNS OVER INCOMPLETE ONES
         cursor.execute(f'''
             SELECT id as run_id, model_name, provider, report, latency, created_at as run_created_at,
                    total_standard_input_tokens, total_cached_input_tokens,
                    total_output_tokens, total_tokens,
                    total_input_cost, total_cached_cost, total_output_cost, total_cost,
                    status as run_status, completed_prompts as run_completed_prompts, 
-                   total_prompts as run_total_prompts, last_heartbeat
-            FROM {BENCHMARK_RUNS_TABLE}
+                   total_prompts as run_total_prompts, last_heartbeat,
+                   (SELECT COUNT(*) FROM {BENCHMARK_PROMPTS_TABLE} WHERE benchmark_run_id = br1.id) as prompt_count
+            FROM {BENCHMARK_RUNS_TABLE} br1
             WHERE benchmark_id = ?
+            AND br1.id = (
+                SELECT br2.id 
+                FROM {BENCHMARK_RUNS_TABLE} br2 
+                WHERE br2.benchmark_id = br1.benchmark_id 
+                AND br2.model_name = br1.model_name
+                ORDER BY (SELECT COUNT(*) FROM {BENCHMARK_PROMPTS_TABLE} WHERE benchmark_run_id = br2.id) DESC, br2.created_at DESC
+                LIMIT 1
+            )
             ORDER BY created_at DESC
         ''', (benchmark_id,))
 
         runs = []
         for run_row_data in cursor.fetchall():
             run = dict(run_row_data) # Convert row to dict
-
+            logging.info(f"Found run: {run['model_name']} (run_id={run['run_id']}, prompt_count={run.get('prompt_count', 'unknown')})")
+        
             # Get prompts for this run including status fields
             cursor.execute(f'''
                 SELECT id as prompt_id, prompt, response, latency as prompt_latency,
@@ -1051,7 +1336,7 @@ def delete_benchmark(benchmark_id: int, db_path: Path = Path.cwd()) -> bool:
 
 def update_benchmark_status(benchmark_id: int, status: str, db_path: Path = Path.cwd()) -> bool:
     """Update the status of a benchmark."""
-    if status not in ['in-progress', 'complete', 'archived', 'error']: # Added more statuses
+    if status not in ['in-progress', 'complete', 'archived', 'error', 'deleting']:
         logging.error(f"Invalid status: {status}")
         return False
     
@@ -1077,6 +1362,44 @@ def update_benchmark_status(benchmark_id: int, status: str, db_path: Path = Path
     except sqlite3.Error as e:
         logging.error(f"SQLite error when updating benchmark {benchmark_id} status: {e}")
         return False
+    finally:
+        conn.close()
+
+def reset_stuck_benchmarks(db_path: Path = Path.cwd()) -> int:
+    """
+    Reset benchmarks that are stuck in 'running' or 'in-progress' status.
+    This is useful for cleaning up after application crashes or forced shutdowns.
+    
+    Returns:
+        Number of benchmarks that were reset
+    """
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    try:
+        # Find benchmarks that might be stuck
+        cursor.execute(f'''
+            UPDATE {BENCHMARKS_TABLE} 
+            SET status = 'error' 
+            WHERE status IN ('in-progress', 'deleting')
+            AND (
+                updated_at IS NULL 
+                OR datetime(updated_at) < datetime('now', '-1 hour')
+            )
+        ''')
+        
+        reset_count = cursor.rowcount
+        conn.commit()
+        
+        if reset_count > 0:
+            logging.info(f"Reset {reset_count} stuck benchmarks to 'error' status")
+        
+        return reset_count
+        
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error when resetting stuck benchmarks: {e}")
+        return 0
     finally:
         conn.close()
 
@@ -1195,6 +1518,7 @@ def load_all_benchmarks_with_models(db_path: Path = Path.cwd()) -> List[dict]:
     try:
         cursor.execute(f"""
             SELECT b.id, b.created_at, b.label, b.description, b.status, b.prompt_set_id, b.intended_models,
+                   b.total_prompts, b.completed_prompts, b.failed_prompts,
                    ps.name as prompt_set_name, ps.description as prompt_set_description
             FROM {BENCHMARKS_TABLE} b
             LEFT JOIN {PROMPT_SETS_TABLE} ps ON b.prompt_set_id = ps.id
@@ -1767,6 +2091,54 @@ def delete_file(file_id: int, db_path: Path = Path.cwd()) -> bool:
     finally:
         conn.close()
 
+
+def get_pdf_chunks(original_file_id: int, db_path: Path = Path.cwd()) -> List[Path]:
+    """
+    Retrieves the file paths of all PDF chunks associated with an original PDF file ID,
+    ordered by their sequence in the original document.
+
+    Args:
+        original_file_id: The ID of the original (un-chunked) PDF file in the 'files' table.
+        db_path: Path to the directory containing the SQLite database.
+
+    Returns:
+        A list of Path objects, each pointing to a PDF chunk file.
+        Returns an empty list if no chunks are found or in case of an error.
+    """
+    db_file = db_path / DB_NAME
+    conn = None
+    chunk_paths = []
+    try:
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        
+        query = f"""
+            SELECT f.file_path
+            FROM {PDF_CHUNKS_TABLE} pc
+            JOIN {FILES_TABLE} f ON pc.chunk_file_id = f.id
+            WHERE pc.original_file_id = ?
+            ORDER BY pc.chunk_order ASC
+        """
+        
+        cursor.execute(query, (original_file_id,))
+        rows = cursor.fetchall()
+        
+        for row in rows:
+            chunk_paths.append(Path(row[0]))
+            
+        logging.info(f"Retrieved {len(chunk_paths)} chunks for original_file_id {original_file_id}")
+            
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error in get_pdf_chunks for original_file_id {original_file_id}: {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error in get_pdf_chunks for original_file_id {original_file_id}: {e}")
+    finally:
+        if conn:
+            conn.close()
+            
+    return chunk_paths
+
+
 # ============================================================================
 # Atomic benchmark progress tracking functions
 # ============================================================================
@@ -1797,27 +2169,47 @@ def update_benchmark_progress(benchmark_id: int, db_path: Path = Path.cwd()) -> 
         row = cursor.fetchone()
         model_count = row[0] or 0
         prompt_count = row[1] or 0
+        
+        # If prompt_count is 0 (no prompt set), count unique prompts from actual benchmark prompts
+        if prompt_count == 0:
+            cursor.execute(f'''
+                SELECT COUNT(DISTINCT bp.prompt) as unique_prompt_count
+                FROM {BENCHMARK_PROMPTS_TABLE} bp
+                JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
+                WHERE br.benchmark_id = ?
+            ''', (benchmark_id,))
+            
+            unique_prompts_row = cursor.fetchone()
+            prompt_count = unique_prompts_row[0] or 0
+        
         total_prompts = model_count * prompt_count if prompt_count > 0 else 0
         
-        # Count completed prompts
+        # Count prompts by their best status per (prompt, model) combination
+        # This handles reruns correctly by taking the best outcome for each prompt+model
         cursor.execute(f'''
-            SELECT COUNT(*) 
-            FROM {BENCHMARK_PROMPTS_TABLE} bp
-            JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
-            WHERE br.benchmark_id = ? AND bp.status = 'completed'
+            WITH prompt_model_status AS (
+                SELECT 
+                    bp.prompt,
+                    br.model_name,
+                    CASE 
+                        WHEN MAX(CASE WHEN bp.status = 'completed' THEN 1 ELSE 0 END) = 1 THEN 'completed'
+                        WHEN MAX(CASE WHEN bp.status = 'failed' THEN 1 ELSE 0 END) = 1 THEN 'failed'
+                        ELSE 'other'
+                    END as best_status
+                FROM {BENCHMARK_PROMPTS_TABLE} bp
+                JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
+                WHERE br.benchmark_id = ?
+                GROUP BY bp.prompt, br.model_name
+            )
+            SELECT 
+                SUM(CASE WHEN best_status = 'completed' THEN 1 ELSE 0 END) as completed_count,
+                SUM(CASE WHEN best_status = 'failed' THEN 1 ELSE 0 END) as failed_count
+            FROM prompt_model_status
         ''', (benchmark_id,))
         
-        completed_prompts = cursor.fetchone()[0] or 0
-        
-        # Count failed prompts
-        cursor.execute(f'''
-            SELECT COUNT(*) 
-            FROM {BENCHMARK_PROMPTS_TABLE} bp
-            JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
-            WHERE br.benchmark_id = ? AND bp.status = 'failed'
-        ''', (benchmark_id,))
-        
-        failed_prompts = cursor.fetchone()[0] or 0
+        result = cursor.fetchone()
+        completed_prompts = result[0] or 0
+        failed_prompts = result[1] or 0
         
         # Determine overall status
         if completed_prompts + failed_prompts >= total_prompts and total_prompts > 0:
@@ -1927,8 +2319,24 @@ def save_benchmark_prompt_atomic(benchmark_run_id: int, prompt: str, response: s
         prompt_status = 'failed' if str(response).startswith('ERROR') else 'completed'
         error_message = str(response) if prompt_status == 'failed' else None
         
-        # Insert the prompt with status tracking
-        cursor.execute(f'''
+        # Prepare data and SQL for inserting the prompt with status tracking
+        prompt_data_tuple = (
+            benchmark_run_id, str(prompt), str(response),
+            float(latency) if latency is not None else 0.0, 
+            int(standard_input_tokens) if standard_input_tokens is not None else 0,
+            int(cached_input_tokens) if cached_input_tokens is not None else 0,
+            int(output_tokens) if output_tokens is not None else 0,
+            int(thinking_tokens) if thinking_tokens is not None else 0,
+            int(reasoning_tokens) if reasoning_tokens is not None else 0,
+            input_cost, cached_cost, output_cost, thinking_cost, reasoning_cost, total_cost, 
+            1 if web_search_used else 0, web_search_sources, truncation_info,
+            prompt_status, 
+            datetime.datetime.now().isoformat(), # started_at
+            datetime.datetime.now().isoformat(), # completed_at
+            error_message # error_message
+        )
+
+        sql_insert_query = f'''
             INSERT INTO {BENCHMARK_PROMPTS_TABLE} 
             (benchmark_run_id, prompt, response, latency, 
              standard_input_tokens, cached_input_tokens, output_tokens,
@@ -1937,16 +2345,12 @@ def save_benchmark_prompt_atomic(benchmark_run_id: int, prompt: str, response: s
              web_search_used, web_search_sources, truncation_info,
              status, started_at, completed_at, error_message)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (benchmark_run_id, str(prompt), str(response),
-              float(latency) if latency is not None else 0.0, 
-              int(standard_input_tokens) if standard_input_tokens is not None else 0,
-              int(cached_input_tokens) if cached_input_tokens is not None else 0,
-              int(output_tokens) if output_tokens is not None else 0,
-              int(thinking_tokens) if thinking_tokens is not None else 0,
-              int(reasoning_tokens) if reasoning_tokens is not None else 0,
-              input_cost, cached_cost, output_cost, thinking_cost, reasoning_cost, total_cost, 
-              1 if web_search_used else 0, web_search_sources, truncation_info,
-              prompt_status, datetime.datetime.now().isoformat(), datetime.datetime.now().isoformat(), error_message))
+        '''
+        
+        logging.debug(f"Attempting to save benchmark prompt. SQL: {sql_insert_query}")
+        logging.debug(f"Number of values: {len(prompt_data_tuple)}. Values: {prompt_data_tuple}")
+
+        cursor.execute(sql_insert_query, prompt_data_tuple)
         
         prompt_id = cursor.lastrowid
         
@@ -1964,27 +2368,47 @@ def save_benchmark_prompt_atomic(benchmark_run_id: int, prompt: str, response: s
         row = cursor.fetchone()
         model_count = row[0] or 0
         prompt_count = row[1] or 0
+        
+        # If prompt_count is 0 (no prompt set), count unique prompts from actual benchmark prompts
+        if prompt_count == 0:
+            cursor.execute(f'''
+                SELECT COUNT(DISTINCT bp.prompt) as unique_prompt_count
+                FROM {BENCHMARK_PROMPTS_TABLE} bp
+                JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
+                WHERE br.benchmark_id = ?
+            ''', (benchmark_id,))
+            
+            unique_prompts_row = cursor.fetchone()
+            prompt_count = unique_prompts_row[0] or 0
+        
         total_prompts = model_count * prompt_count if prompt_count > 0 else 0
         
-        # Count completed prompts
+        # Count prompts by their best status per (prompt, model) combination
+        # This handles reruns correctly by taking the best outcome for each prompt+model
         cursor.execute(f'''
-            SELECT COUNT(*) 
-            FROM {BENCHMARK_PROMPTS_TABLE} bp
-            JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
-            WHERE br.benchmark_id = ? AND bp.status = 'completed'
+            WITH prompt_model_status AS (
+                SELECT 
+                    bp.prompt,
+                    br.model_name,
+                    CASE 
+                        WHEN MAX(CASE WHEN bp.status = 'completed' THEN 1 ELSE 0 END) = 1 THEN 'completed'
+                        WHEN MAX(CASE WHEN bp.status = 'failed' THEN 1 ELSE 0 END) = 1 THEN 'failed'
+                        ELSE 'other'
+                    END as best_status
+                FROM {BENCHMARK_PROMPTS_TABLE} bp
+                JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
+                WHERE br.benchmark_id = ?
+                GROUP BY bp.prompt, br.model_name
+            )
+            SELECT 
+                SUM(CASE WHEN best_status = 'completed' THEN 1 ELSE 0 END) as completed_count,
+                SUM(CASE WHEN best_status = 'failed' THEN 1 ELSE 0 END) as failed_count
+            FROM prompt_model_status
         ''', (benchmark_id,))
         
-        completed_prompts = cursor.fetchone()[0] or 0
-        
-        # Count failed prompts
-        cursor.execute(f'''
-            SELECT COUNT(*) 
-            FROM {BENCHMARK_PROMPTS_TABLE} bp
-            JOIN {BENCHMARK_RUNS_TABLE} br ON bp.benchmark_run_id = br.id
-            WHERE br.benchmark_id = ? AND bp.status = 'failed'
-        ''', (benchmark_id,))
-        
-        failed_prompts = cursor.fetchone()[0] or 0
+        result = cursor.fetchone()
+        completed_prompts = result[0] or 0
+        failed_prompts = result[1] or 0
         
         # Determine overall status
         if completed_prompts + failed_prompts >= total_prompts and total_prompts > 0:
@@ -2260,7 +2684,7 @@ def get_benchmark_sync_status(benchmark_id: int, db_path: Path = Path.cwd()) -> 
                                 "reason": "failed",
                                 "status": existing_prompt['status'],
                                 "error_message": existing_prompt['error_message'],
-                                "response": existing_prompt['response'][:100] + "..." if len(existing_prompt['response']) > 100 else existing_prompt['response'],
+                                "response": existing_prompt['response'][:100] + "..." if existing_prompt['response'] and len(existing_prompt['response']) > 100 else existing_prompt['response'],
                                 "run_id": model_run['run_id']
                             }
                         elif existing_prompt['status'] in ['pending', 'in_progress']:
@@ -2316,11 +2740,387 @@ def get_benchmark_sync_status(benchmark_id: int, db_path: Path = Path.cwd()) -> 
         conn.close()
 
 def needs_sync(benchmark_id: int, db_path: Path = Path.cwd()) -> bool:
+    """Check if a benchmark needs synchronization (has any pending or failed prompts)."""
+    try:
+        db_file = db_path / DB_NAME
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        
+        # Check if there are any runs that are not 'completed' status
+        cursor.execute('''
+            SELECT COUNT(*) FROM benchmark_prompts bp
+            JOIN benchmark_runs br ON bp.benchmark_run_id = br.id
+            WHERE br.benchmark_id = ? AND bp.status != 'completed'
+        ''', (benchmark_id,))
+        
+        pending_count = cursor.fetchone()[0]
+        conn.close()
+        
+        return pending_count > 0
+        
+    except Exception as e:
+        logging.error(f"Error checking benchmark sync status: {e}")
+        return False
+
+
+# ===== VECTOR STORE MANAGEMENT FUNCTIONS =====
+
+def register_vector_store(vector_store_id: str, name: str, description: str = None, 
+                         provider: str = "openai", expires_at: str = None,
+                         metadata: Dict[str, Any] = None, db_path: Path = Path.cwd()) -> int:
     """
-    Quick check if a benchmark needs syncing.
+    Register a vector store in the local database.
     
+    Args:
+        vector_store_id: OpenAI vector store ID
+        name: Human-readable name for the vector store
+        description: Optional description
+        provider: Provider (default: openai)
+        expires_at: Optional expiration timestamp
+        metadata: Optional metadata dictionary
+        db_path: Database path
+        
     Returns:
-        True if the benchmark has missing, failed, or pending prompts
+        Local vector store database ID
     """
-    sync_status = get_benchmark_sync_status(benchmark_id, db_path)
-    return sync_status.get("sync_needed", False)
+    try:
+        db_file = db_path / DB_NAME
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        
+        created_at = datetime.datetime.now().isoformat()
+        metadata_json = json.dumps(metadata) if metadata else None
+        
+        cursor.execute(f'''
+            INSERT INTO {VECTOR_STORES_TABLE} 
+            (vector_store_id, name, description, provider, created_at, expires_at, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (vector_store_id, name, description, provider, created_at, expires_at, metadata_json))
+        
+        local_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        
+        logging.info(f"Registered vector store '{name}' with ID: {vector_store_id}")
+        return local_id
+        
+    except Exception as e:
+        logging.error(f"Error registering vector store: {e}")
+        return None
+
+
+def get_vector_store_by_id(vector_store_id: str, db_path: Path = Path.cwd()) -> Optional[Dict[str, Any]]:
+    """Get vector store details by OpenAI vector store ID."""
+    try:
+        db_file = db_path / DB_NAME
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute(f'''
+            SELECT id, vector_store_id, name, description, provider, created_at, 
+                   expires_at, file_count, usage_bytes, status, metadata
+            FROM {VECTOR_STORES_TABLE}
+            WHERE vector_store_id = ?
+        ''', (vector_store_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            metadata = json.loads(row[10]) if row[10] else {}
+            return {
+                "id": row[0],
+                "vector_store_id": row[1],
+                "name": row[2],
+                "description": row[3],
+                "provider": row[4],
+                "created_at": row[5],
+                "expires_at": row[6],
+                "file_count": row[7],
+                "usage_bytes": row[8],
+                "status": row[9],
+                "metadata": metadata
+            }
+        return None
+        
+    except Exception as e:
+        logging.error(f"Error getting vector store: {e}")
+        return None
+
+
+def get_all_vector_stores(db_path: Path = Path.cwd()) -> List[Dict[str, Any]]:
+    """Get all vector stores."""
+    try:
+        db_file = db_path / DB_NAME
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute(f'''
+            SELECT id, vector_store_id, name, description, provider, created_at, 
+                   expires_at, file_count, usage_bytes, status, metadata
+            FROM {VECTOR_STORES_TABLE}
+            ORDER BY created_at DESC
+        ''')
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        result = []
+        for row in rows:
+            metadata = json.loads(row[10]) if row[10] else {}
+            result.append({
+                "id": row[0],
+                "vector_store_id": row[1],
+                "name": row[2],
+                "description": row[3],
+                "provider": row[4],
+                "created_at": row[5],
+                "expires_at": row[6],
+                "file_count": row[7],
+                "usage_bytes": row[8],
+                "status": row[9],
+                "metadata": metadata
+            })
+        
+        return result
+        
+    except Exception as e:
+        logging.error(f"Error getting vector stores: {e}")
+        return []
+
+
+def update_vector_store_stats(vector_store_id: str, file_count: int = None, 
+                             usage_bytes: int = None, status: str = None,
+                             db_path: Path = Path.cwd()) -> bool:
+    """Update vector store statistics."""
+    try:
+        db_file = db_path / DB_NAME
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        
+        updates = []
+        params = []
+        
+        if file_count is not None:
+            updates.append("file_count = ?")
+            params.append(file_count)
+            
+        if usage_bytes is not None:
+            updates.append("usage_bytes = ?")
+            params.append(usage_bytes)
+            
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        
+        if updates:
+            params.append(vector_store_id)
+            cursor.execute(f'''
+                UPDATE {VECTOR_STORES_TABLE}
+                SET {", ".join(updates)}
+                WHERE vector_store_id = ?
+            ''', params)
+            
+            conn.commit()
+        
+        conn.close()
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error updating vector store stats: {e}")
+        return False
+
+
+def register_vector_store_file(vector_store_id: str, file_id: int, provider_file_id: str,
+                              attributes: Dict[str, Any] = None, status: str = "completed",
+                              db_path: Path = Path.cwd()) -> bool:
+    """Register a file as part of a vector store."""
+    try:
+        db_file = db_path / DB_NAME
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        
+        added_at = datetime.datetime.now().isoformat()
+        attributes_json = json.dumps(attributes) if attributes else None
+        
+        cursor.execute(f'''
+            INSERT OR REPLACE INTO {VECTOR_STORE_FILES_TABLE}
+            (vector_store_id, file_id, provider_file_id, added_at, attributes, status)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (vector_store_id, file_id, provider_file_id, added_at, attributes_json, status))
+        
+        conn.commit()
+        conn.close()
+        
+        logging.info(f"Registered file {file_id} in vector store {vector_store_id}")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error registering vector store file: {e}")
+        return False
+
+
+def get_vector_store_files(vector_store_id: str, db_path: Path = Path.cwd()) -> List[Dict[str, Any]]:
+    """Get all files in a vector store."""
+    try:
+        db_file = db_path / DB_NAME
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute(f'''
+            SELECT vsf.id, vsf.vector_store_id, vsf.file_id, vsf.provider_file_id,
+                   vsf.added_at, vsf.attributes, vsf.status,
+                   f.original_filename, f.file_path, f.file_size_bytes, f.mime_type
+            FROM {VECTOR_STORE_FILES_TABLE} vsf
+            JOIN {FILES_TABLE} f ON vsf.file_id = f.id
+            WHERE vsf.vector_store_id = ?
+            ORDER BY vsf.added_at DESC
+        ''', (vector_store_id,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        result = []
+        for row in rows:
+            attributes = json.loads(row[5]) if row[5] else {}
+            result.append({
+                "id": row[0],
+                "vector_store_id": row[1],
+                "file_id": row[2],
+                "provider_file_id": row[3],
+                "added_at": row[4],
+                "attributes": attributes,
+                "status": row[6],
+                "filename": row[7],
+                "file_path": row[8],
+                "file_size_bytes": row[9],
+                "mime_type": row[10]
+            })
+        
+        return result
+        
+    except Exception as e:
+        logging.error(f"Error getting vector store files: {e}")
+        return []
+
+
+def associate_benchmark_with_vector_store(benchmark_id: int, vector_store_id: str,
+                                         db_path: Path = Path.cwd()) -> bool:
+    """Associate a benchmark with a vector store."""
+    try:
+        db_file = db_path / DB_NAME
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        
+        created_at = datetime.datetime.now().isoformat()
+        
+        cursor.execute(f'''
+            INSERT OR IGNORE INTO {BENCHMARK_VECTOR_STORES_TABLE}
+            (benchmark_id, vector_store_id, created_at)
+            VALUES (?, ?, ?)
+        ''', (benchmark_id, vector_store_id, created_at))
+        
+        conn.commit()
+        conn.close()
+        
+        logging.info(f"Associated benchmark {benchmark_id} with vector store {vector_store_id}")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error associating benchmark with vector store: {e}")
+        return False
+
+
+def get_benchmark_vector_stores(benchmark_id: int, db_path: Path = Path.cwd()) -> List[Dict[str, Any]]:
+    """Get all vector stores associated with a benchmark."""
+    try:
+        db_file = db_path / DB_NAME
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        
+        cursor.execute(f'''
+            SELECT vs.id, vs.vector_store_id, vs.name, vs.description, vs.provider,
+                   vs.created_at, vs.file_count, vs.usage_bytes, vs.status,
+                   bvs.created_at as associated_at
+            FROM {BENCHMARK_VECTOR_STORES_TABLE} bvs
+            JOIN {VECTOR_STORES_TABLE} vs ON bvs.vector_store_id = vs.vector_store_id
+            WHERE bvs.benchmark_id = ?
+            ORDER BY bvs.created_at DESC
+        ''', (benchmark_id,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        result = []
+        for row in rows:
+            result.append({
+                "id": row[0],
+                "vector_store_id": row[1],
+                "name": row[2],
+                "description": row[3],
+                "provider": row[4],
+                "created_at": row[5],
+                "file_count": row[6],
+                "usage_bytes": row[7],
+                "status": row[8],
+                "associated_at": row[9]
+            })
+        
+        return result
+        
+    except Exception as e:
+        logging.error(f"Error getting benchmark vector stores: {e}")
+        return []
+
+
+def delete_vector_store(vector_store_id: str, db_path: Path = Path.cwd()) -> bool:
+    """Delete a vector store and its associations."""
+    try:
+        db_file = db_path / DB_NAME
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        
+        # Delete associations first
+        cursor.execute(f'DELETE FROM {BENCHMARK_VECTOR_STORES_TABLE} WHERE vector_store_id = ?', 
+                      (vector_store_id,))
+        cursor.execute(f'DELETE FROM {VECTOR_STORE_FILES_TABLE} WHERE vector_store_id = ?', 
+                      (vector_store_id,))
+        cursor.execute(f'DELETE FROM {VECTOR_STORES_TABLE} WHERE vector_store_id = ?', 
+                      (vector_store_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        logging.info(f"Deleted vector store {vector_store_id}")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error deleting vector store: {e}")
+        return False
+
+def register_file(file_path: Path, db_path: Path = Path.cwd()) -> int:
+    """
+    Public wrapper for registering a file in the database.
+    
+    Args:
+        file_path: Path to the file to register
+        db_path: Path to the database directory
+        
+    Returns:
+        The file ID from the database
+    """
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    try:
+        conn.execute("BEGIN TRANSACTION")
+        file_id = _register_file_with_connection(file_path, cursor, conn)
+        conn.commit()
+        return file_id
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"Error registering file {file_path}: {e}")
+        raise
+    finally:
+        conn.close()

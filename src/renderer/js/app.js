@@ -74,6 +74,9 @@ class App {
       // Refresh button
       { selector: '#refreshBtn', event: 'click', handler: () => window.Pages.loadBenchmarks(false) },
       
+      // Cleanup button for stuck benchmarks
+      { selector: '#cleanupBtn', event: 'click', handler: () => this.handleCleanupStuckBenchmarks() },
+      
       // Composer page elements
       { selector: '#importCsvBtn', event: 'click', handler: () => this.handleCsvImport() },
       { selector: '#addPromptBtn', event: 'click', handler: () => window.Pages.addPrompt() },
@@ -707,6 +710,52 @@ class App {
       promptsCount: window.Pages ? window.Pages.prompts.length : 0,
       apiAvailable: window.API ? window.API.isAvailable() : false
     };
+  }
+
+  /**
+   * Handle cleanup of stuck benchmarks
+   */
+  async handleCleanupStuckBenchmarks() {
+    try {
+      // Show confirmation dialog
+      const confirmed = await window.Utils.showConfirmDialog(
+        'Reset Stuck Benchmarks',
+        'This will reset any benchmarks that appear to be stuck in running state. Continue?',
+        'warning'
+      );
+      
+      if (!confirmed) return;
+      
+      // Show loading state
+      const cleanupBtn = document.getElementById('cleanupBtn');
+      const originalContent = cleanupBtn.innerHTML;
+      cleanupBtn.disabled = true;
+      cleanupBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Cleaning...';
+      
+      // Call the reset stuck benchmarks API
+      const result = await window.API.resetStuckBenchmarks();
+      
+      if (result.success) {
+        const message = result.message || `Reset ${result.reset_count || 0} stuck benchmarks`;
+        window.Components.showToast(message, 'success');
+        
+        // Refresh the benchmarks list
+        window.Pages.loadBenchmarks(false);
+      } else {
+        throw new Error(result.error || 'Failed to reset stuck benchmarks');
+      }
+      
+    } catch (error) {
+      console.error('Error cleaning up stuck benchmarks:', error);
+      window.Components.showToast(`Failed to cleanup: ${error.message}`, 'error');
+    } finally {
+      // Restore button state
+      const cleanupBtn = document.getElementById('cleanupBtn');
+      if (cleanupBtn) {
+        cleanupBtn.disabled = false;
+        cleanupBtn.innerHTML = '<i class="fas fa-broom me-1"></i>Cleanup';
+      }
+    }
   }
 }
 

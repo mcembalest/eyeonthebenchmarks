@@ -183,6 +183,25 @@ class API {
   }
 
   /**
+   * Rerun a single prompt from an existing benchmark
+   * @param {number} promptId - Prompt ID
+   * @returns {Promise<Object>} API response
+   */
+  async rerunSinglePrompt(promptId) {
+    try {
+      const result = await this.electronAPI.rerunSinglePrompt(promptId);
+      
+      // Clear benchmarks cache since we updated prompt results
+      this.clearCache('benchmarks');
+      
+      return result;
+    } catch (error) {
+      console.error('Error rerunning prompt:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * Get sync status for a benchmark
    * @param {number} benchmarkId - Benchmark ID
    * @returns {Promise<Object>} API response with sync status
@@ -642,6 +661,24 @@ class API {
     } catch (error) {
       console.error(`API request failed for ${endpoint}:`, error);
       throw error;
+    }
+  }
+
+  /**
+   * Reset benchmarks that are stuck in running state
+   * @returns {Promise<Object>} Reset result
+   */
+  async resetStuckBenchmarks() {
+    try {
+      const result = await this.electronAPI.resetStuckBenchmarks();
+      
+      // Clear benchmarks cache since we may have reset some
+      this.clearCache('benchmarks');
+      
+      return result;
+    } catch (error) {
+      console.error('Error resetting stuck benchmarks:', error);
+      throw new Error(`Failed to reset stuck benchmarks: ${error.message}`);
     }
   }
 

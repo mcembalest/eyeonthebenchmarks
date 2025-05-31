@@ -19,18 +19,32 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
   runBenchmark: (prompts, pdfPaths, modelNames, benchmarkName, benchmarkDescription, webSearchEnabled) => {
-    console.log('Preload: runBenchmark called with name:', benchmarkName, 'desc:', benchmarkDescription, 'webSearch:', webSearchEnabled);
+    console.log('Preload: runBenchmark called');
     return ipcRenderer.invoke('run-benchmark', prompts, pdfPaths, modelNames, benchmarkName, benchmarkDescription, webSearchEnabled);
   },
-  getBenchmarkDetails: (id) => ipcRenderer.invoke('get-benchmark-details', id),
-  exportBenchmarkToCsv: (id) => ipcRenderer.invoke('export-benchmark-to-csv', id),
+  getBenchmarkDetails: (benchmarkId) => {
+    console.log('Preload: getBenchmarkDetails called for ID:', benchmarkId);
+    return ipcRenderer.invoke('get-benchmark-details', benchmarkId);
+  },
+  exportBenchmark: (benchmarkId) => {
+    console.log('Preload: exportBenchmark called for ID:', benchmarkId);
+    return ipcRenderer.invoke('export-benchmark-to-csv', benchmarkId);
+  },
   deleteBenchmark: (benchmarkId) => {
     console.log('Preload: deleteBenchmark called for ID:', benchmarkId);
     return ipcRenderer.invoke('delete-benchmark', benchmarkId);
   },
   updateBenchmarkDetails: (benchmarkId, newLabel, newDescription) => {
-    console.log('Preload: updateBenchmarkDetails called for ID:', benchmarkId, 'New Label:', newLabel, 'New Desc:', newDescription);
+    console.log('Preload: updateBenchmarkDetails called for ID:', benchmarkId);
     return ipcRenderer.invoke('update-benchmark-details', { benchmarkId, newLabel, newDescription });
+  },
+  resetStuckBenchmarks: () => {
+    console.log('Preload: resetStuckBenchmarks called');
+    return ipcRenderer.invoke('reset-stuck-benchmarks');
+  },
+  rerunSinglePrompt: (promptId) => {
+    console.log('Preload: rerunSinglePrompt called for ID:', promptId);
+    return ipcRenderer.invoke('rerun-single-prompt', promptId);
   },
   
   // Get available models from Python

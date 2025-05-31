@@ -107,390 +107,6 @@ COSTS = {
 
 WEB_SEARCH_COST = 10.00  # $10 per 1K searches
 
-"""web search
-
-response = client.messages.create(
-    model="claude-3-7-sonnet-latest",
-    max_tokens=1024,
-    messages=[
-        {
-            "role": "user",
-            "content": "How do I update a web app to TypeScript 5.5?"
-        }
-    ],
-    tools=[{
-        "type": "web_search_20250305",
-        "name": "web_search",
-        "max_uses": 5
-    }]
-)
-print(response)
-
-Here's an example response structure:
-
-
-Copy
-{
-  "role": "assistant",
-  "content": [
-    // 1. Claude's decision to search
-    {
-      "type": "text",
-      "text": "I'll search for when Claude Shannon was born."
-    },
-    // 2. The search query used
-    {
-      "type": "server_tool_use",
-      "id": "srvtoolu_01WYG3ziw53XMcoyKL4XcZmE",
-      "name": "web_search",
-      "input": {
-        "query": "claude shannon birth date"
-      }
-    },
-    // 3. Search results
-    {
-      "type": "web_search_tool_result",
-      "tool_use_id": "srvtoolu_01WYG3ziw53XMcoyKL4XcZmE",
-      "content": [
-        {
-          "type": "web_search_result",
-          "url": "https://en.wikipedia.org/wiki/Claude_Shannon",
-          "title": "Claude Shannon - Wikipedia",
-          "encrypted_content": "EqgfCioIARgBIiQ3YTAwMjY1Mi1mZjM5LTQ1NGUtODgxNC1kNjNjNTk1ZWI3Y...",
-          "page_age": "April 30, 2025"
-        }
-      ]
-    },
-    {
-      "text": "Based on the search results, ",
-      "type": "text"
-    },
-    // 4. Claude's response with citations
-    {
-      "text": "Claude Shannon was born on April 30, 1916, in Petoskey, Michigan",
-      "type": "text",
-      "citations": [
-        {
-          "type": "web_search_result_location",
-          "url": "https://en.wikipedia.org/wiki/Claude_Shannon",
-          "title": "Claude Shannon - Wikipedia",
-          "encrypted_index": "Eo8BCioIAhgBIiQyYjQ0OWJmZi1lNm..",
-          "cited_text": "Claude Elwood Shannon (April 30, 1916 – February 24, 2001) was an American mathematician, electrical engineer, computer scientist, cryptographer and i..."
-        }
-      ]
-    }
-  ],
-  "id": "msg_a930390d3a",
-  "usage": {
-    "input_tokens": 6039,
-    "output_tokens": 931,
-    "server_tool_use": {
-      "web_search_requests": 1
-    }
-  },
-  "stop_reason": "end_turn"
-}
-​
-Search results
-Search results include:
-
-url: The URL of the source page
-title: The title of the source page
-page_age: When the site was last updated
-encrypted_content: Encrypted content that must be passed back in multi-turn conversations for citations
-​
-Citations
-Citations are always enabled for web search, and each web_search_result_location includes:
-
-url: The URL of the cited source
-title: The title of the cited source
-encrypted_index: A reference that must be passed back for multi-turn conversations.
-cited_text: Up to 150 characters of the cited content
-The web search citation fields cited_text, title, and url do not count towards input or output token usage.
-
-When displaying web results or information contained in web results to end users, inline citations must be made clearly visible and clickable in your user interface.
-
-​
-Errors
-If an error occurs during web search, you'll receive a response that takes the following form:
-
-
-Copy
-{
-  "type": "web_search_tool_result",
-  "tool_use_id": "servertoolu_a93jad",
-  "content": {
-    "type": "web_search_tool_result_error",
-    "error_code": "max_uses_exceeded"
-  }
-}"""
-
-"""todo token counting
-
-response = client.messages.count_tokens(
-    model="claude-opus-4-20250514",
-    system="You are a scientist",
-    messages=[{
-        "role": "user",
-        "content": "Hello, Claude"
-    }],
-)
-
-print(response.json())
-
-
-How to count message tokens
-The token counting endpoint accepts the same structured list of inputs for creating a message, including support for system prompts, tools, images, and PDFs. The response contains the total number of input tokens.
-
-The token count should be considered an estimate. In some cases, the actual number of input tokens used when creating a message may differ by a small amount.
-
-​
-Supported models
-The token counting endpoint supports the following models:
-
-Claude Opus 4
-Claude Sonnet 4
-Claude Sonnet 3.7
-Claude Sonnet 3.5
-Claude Haiku 3.5
-Claude Haiku 3
-Claude Opus 3
-​
-Count tokens in basic messages
-
-Python
-
-TypeScript
-
-Shell
-
-Java
-
-Copy
-import anthropic
-
-client = anthropic.Anthropic()
-
-response = client.messages.count_tokens(
-    model="claude-opus-4-20250514",
-    system="You are a scientist",
-    messages=[{
-        "role": "user",
-        "content": "Hello, Claude"
-    }],
-)
-
-print(response.json())
-JSON
-
-Copy
-{ "input_tokens": 14 }
-​
-Count tokens in messages with tools
-Server tool token counts only apply to the first sampling call.
-
-
-Python
-
-TypeScript
-
-Shell
-
-Java
-
-Copy
-import anthropic
-
-client = anthropic.Anthropic()
-
-response = client.messages.count_tokens(
-    model="claude-opus-4-20250514",
-    tools=[
-        {
-            "name": "get_weather",
-            "description": "Get the current weather in a given location",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "location": {
-                        "type": "string",
-                        "description": "The city and state, e.g. San Francisco, CA",
-                    }
-                },
-                "required": ["location"],
-            },
-        }
-    ],
-    messages=[{"role": "user", "content": "What's the weather like in San Francisco?"}]
-)
-
-print(response.json())
-JSON
-
-Copy
-{ "input_tokens": 403 }
-​
-Count tokens in messages with images
-
-Shell
-
-Python
-
-TypeScript
-
-Java
-
-Copy
-import anthropic
-import base64
-import httpx
-
-image_url = "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg"
-image_media_type = "image/jpeg"
-image_data = base64.standard_b64encode(httpx.get(image_url).content).decode("utf-8")
-
-client = anthropic.Anthropic()
-
-response = client.messages.count_tokens(
-    model="claude-opus-4-20250514",
-    messages=[
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": image_media_type,
-                        "data": image_data,
-                    },
-                },
-                {
-                    "type": "text",
-                    "text": "Describe this image"
-                }
-            ],
-        }
-    ],
-)
-print(response.json())
-JSON
-
-Copy
-{ "input_tokens": 1551 }
-​
-Count tokens in messages with extended thinking
-See here for more details about how the context window is calculated with extended thinking
-
-Thinking blocks from previous assistant turns are ignored and do not count toward your input tokens
-Current assistant turn thinking does count toward your input tokens
-
-Shell
-
-Python
-
-TypeScript
-
-Java
-
-Copy
-import anthropic
-
-client = anthropic.Anthropic()
-
-response = client.messages.count_tokens(
-    model="claude-opus-4-20250514",
-    thinking={
-        "type": "enabled",
-        "budget_tokens": 16000
-    },
-    messages=[
-        {
-            "role": "user",
-            "content": "Are there an infinite number of prime numbers such that n mod 4 == 3?"
-        },
-        {
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "thinking",
-                    "thinking": "This is a nice number theory question. Let's think about it step by step...",
-                    "signature": "EuYBCkQYAiJAgCs1le6/Pol5Z4/JMomVOouGrWdhYNsH3ukzUECbB6iWrSQtsQuRHJID6lWV..."
-                },
-                {
-                  "type": "text",
-                  "text": "Yes, there are infinitely many prime numbers p such that p mod 4 = 3..."
-                }
-            ]
-        },
-        {
-            "role": "user",
-            "content": "Can you write a formal proof?"
-        }
-    ]
-)
-
-print(response.json())
-JSON
-
-Copy
-{ "input_tokens": 88 }
-​
-Count tokens in messages with PDFs
-Token counting supports PDFs with the same limitations as the Messages API.
-
-
-Shell
-
-Python
-
-TypeScript
-
-Java
-
-Copy
-import base64
-import anthropic
-
-client = anthropic.Anthropic()
-
-with open("document.pdf", "rb") as pdf_file:
-    pdf_base64 = base64.standard_b64encode(pdf_file.read()).decode("utf-8")
-
-response = client.messages.count_tokens(
-    model="claude-opus-4-20250514",
-    messages=[{
-        "role": "user",
-        "content": [
-            {
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": "application/pdf",
-                    "data": pdf_base64
-                }
-            },
-            {
-                "type": "text",
-                "text": "Please summarize this document."
-            }
-        ]
-    }]
-)
-
-print(response.json())
-JSON
-
-Copy
-{ "input_tokens": 2188 }"""
-
-"""Claude context windows
-
-All claude models have input context window of 200K tokens
-
-we need to use the anthropic count_tokens() function to get token counts before launching a benchmark and getting model response objects
-"""
-
 def ensure_file_uploaded(file_path: Path, db_path: Path = Path.cwd()) -> str:
     """
     Ensure a file is uploaded to Anthropic and return the provider file ID.
@@ -591,7 +207,7 @@ def get_base_model_name(model_name: str) -> str:
 
 def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "claude-3-5-haiku-20241022", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, int, bool, str]:
     """
-    Send a query to Anthropic with multiple file attachments.
+    Send a query to Anthropic with multiple file attachments using intelligent token budget management.
     
     Args:
         file_paths: List of paths to files to include
@@ -609,6 +225,57 @@ def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_nam
             - thinking_tokens (int): Thinking tokens used (for tracking, included in billing)
             - web_search_used (bool): Whether web search was actually used
             - web_search_sources (str): Raw web search data as string
+    """
+    # Ensure client is available
+    try:
+        anthropic_client = ensure_anthropic_client()
+    except ValueError as e:
+        logging.error(str(e))
+        raise
+    
+    # Use intelligent token budget management for file processing
+    try:
+        from anthropic_token_manager import AnthropicTokenManager
+        
+        # Initialize token manager
+        token_manager = AnthropicTokenManager(model_name, anthropic_client, db_path=db_path)
+        
+        # Create execution plan
+        plan = token_manager.plan_request(file_paths, prompt_text, web_search)
+        
+        # Log plan details
+        logging.info(f"Token management plan: {plan.strategy}")
+        logging.info(f"Files to include: {len(plan.files_to_include)}")
+        logging.info(f"Estimated tokens: {plan.estimated_total_tokens}")
+        
+        if plan.warnings:
+            for warning in plan.warnings:
+                logging.warning(f"Token manager: {warning}")
+                print(f"   ⚠️  {warning}")
+        
+        # Execute plan to get content
+        content = token_manager.execute_plan(plan, db_path)
+        
+        # Add prompt text
+        content.append({
+            "type": "text",
+            "text": prompt_text
+        })
+        
+        # Proceed with API call using managed content
+        return anthropic_ask_internal(content, model_name, web_search)
+        
+    except ImportError:
+        # Fallback to simple processing if token manager not available
+        logging.warning("Token manager not available, falling back to simple file processing")
+        return anthropic_ask_with_files_simple(file_paths, prompt_text, model_name, db_path, web_search)
+    except Exception as e:
+        logging.error(f"Token manager failed: {e}, falling back to simple processing")
+        return anthropic_ask_with_files_simple(file_paths, prompt_text, model_name, db_path, web_search)
+
+def anthropic_ask_with_files_simple(file_paths: List[Path], prompt_text: str, model_name: str = "claude-3-5-haiku-20241022", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, int, bool, str]:
+    """
+    Simple fallback version of file processing without intelligent token management.
     """
     # Build content parts list
     content = []
@@ -727,7 +394,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             tools = [{
                 "type": "web_search_20250305",
                 "name": "web_search",
-                "max_uses": 2
+                "max_uses": 1
             }]
         
         # Estimate token count for input (use base model name for API calls)
@@ -747,21 +414,17 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             token_count_response = client.messages.count_tokens(**token_count_params)
             input_token_count = token_count_response.input_tokens
             logging.info(f"Estimated input tokens: {input_token_count}")
-        except Exception as e:
-            logging.warning(f"Could not count tokens: {e}")
-            # Rough token count estimation based on text length and file count
-            input_token_count = 0
-            for item in content:
-                if item.get("type") == "text":
-                    # Rough estimate: ~1 token per 4 characters
-                    input_token_count += len(item.get("text", "")) // 4
-                elif item.get("type") == "file":
-                    # For files, we'll need to estimate since we can't count tokens
-                    # for uploaded files without making the actual API call
-                    # Use file size as rough estimate: ~1 token per 4 bytes
-                    input_token_count += 1000  # Assume 1000 tokens per file as a base estimate
             
-            logging.info(f"Roughly estimated input tokens: {input_token_count}")
+            # Check if we're approaching context limits
+            if input_token_count > 190000:  # 200k - 10k buffer
+                logging.warning(f"High token count detected: {input_token_count} tokens (approaching 200k limit)")
+                print(f"   ⚠️  High token usage: {input_token_count} tokens (limit: 200k)")
+                
+        except Exception as e:
+            logging.error(f"Token counting failed: {e}")
+            # Re-raise the error - we don't want to continue with unknown token counts
+            # as this could lead to failed API calls
+            raise Exception(f"Cannot estimate token count for Anthropic request: {e}") from e
         
         # Track request start time for performance monitoring
         start_time = time.time()
@@ -771,7 +434,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             # Prepare API call parameters (use base model name for API)
             api_params = {
                 "model": base_model_name,  # Use base model name for API call
-                "max_tokens": 8192 if thinking_enabled else 2048,  # Higher max_tokens for thinking models
+                "max_tokens": 10000,
                 "temperature": 1.0 if thinking_enabled else 0.2,  # Anthropic requires temperature=1 for thinking
                 "messages": messages
             }
@@ -780,12 +443,9 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             if thinking_enabled:
                 api_params["thinking"] = {
                     "type": "enabled",
-                    "budget_tokens": 4096  # Must be less than max_tokens (8192)
+                    "budget_tokens": 4000
                 }
-                logging.info(f"Thinking enabled with 4096 thinking budget, 8192 max_tokens, and temperature=1.0")
-            else:
-                logging.info(f"Regular model with 2048 max_tokens and temperature=0.2")
-            
+
             # Only add tools if web search is enabled
             if web_search and tools:
                 api_params["tools"] = tools

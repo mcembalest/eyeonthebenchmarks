@@ -150,6 +150,9 @@ class Pages {
       case 'detailsContent':
         headerActions.innerHTML = `
           ${settingsButton}
+          <button class="btn btn-outline-info me-2" onclick="window.Pages.forceRefresh()">
+            <i class="fas fa-sync-alt"></i> Refresh
+          </button>
           <button class="btn btn-outline-light" onclick="window.Pages.navigateTo('homeContent')">
             <i class="fas fa-home"></i> Back to Home
           </button>
@@ -569,11 +572,14 @@ class Pages {
     }
 
     console.log('Rendering', this.benchmarksData.length, 'benchmarks');
+    // Reconcile benchmark statuses before rendering
+    const reconciledBenchmarks = this.benchmarksData.map(benchmark => this.reconcileBenchmarkStatus(benchmark));
+    
     // Render grid view
     const gridRow = document.createElement('div');
     gridRow.className = 'row';
     
-    this.benchmarksData.forEach(benchmark => {
+    reconciledBenchmarks.forEach(benchmark => {
       const card = window.Components.createBenchmarkCard(benchmark, {
         onView: (id) => this.viewBenchmarkDetails(id),
         onEdit: (benchmark) => this.editBenchmark(benchmark),
@@ -585,7 +591,7 @@ class Pages {
     gridContainer.appendChild(gridRow);
 
     // Render table view
-    this.benchmarksData.forEach(benchmark => {
+    reconciledBenchmarks.forEach(benchmark => {
       const row = window.Components.createBenchmarkRow(benchmark, {
         onView: (id) => this.viewBenchmarkDetails(id),
         onEdit: (benchmark) => this.editBenchmark(benchmark),
@@ -595,6 +601,39 @@ class Pages {
     });
     
     console.log('Benchmarks rendered successfully');
+  }
+
+  /**
+   * Reconcile benchmark status based on completion data
+   * @param {Object} benchmark - Benchmark data
+   * @returns {Object} Benchmark with reconciled status
+   */
+  reconcileBenchmarkStatus(benchmark) {
+    // Create a copy to avoid mutating original data
+    const reconciledBenchmark = { ...benchmark };
+    
+    // Only reconcile if we have the necessary data and they are valid numbers
+    const completedPrompts = benchmark.completed_prompts || 0;
+    const totalPrompts = benchmark.total_prompts || 0;
+    const currentStatus = benchmark.status;
+    
+    if (totalPrompts > 0 && completedPrompts !== undefined) {
+      const isActuallyComplete = completedPrompts >= totalPrompts;
+      
+      // If the data shows completion but status says in_progress, update it
+      if (isActuallyComplete && (currentStatus === 'in_progress' || currentStatus === 'in-progress' || currentStatus === 'running')) {
+        console.log(`Reconciling benchmark ${benchmark.id}: ${completedPrompts}/${totalPrompts} complete, updating status from ${currentStatus} to completed`);
+        reconciledBenchmark.status = 'completed';
+        
+        // Clear cache since we found a status mismatch
+        window.API.clearCache('benchmarks');
+      }
+    } else {
+      // If we don't have completion data, we can't reconcile - just log for debugging
+      console.log(`Cannot reconcile benchmark ${benchmark.id}: missing completion data (completed: ${completedPrompts}, total: ${totalPrompts})`);
+    }
+    
+    return reconciledBenchmark;
   }
 
   /**
@@ -617,13 +656,10 @@ class Pages {
       
       // Always fetch and show the standard details view (works for both running and completed)
       const details = await window.API.getBenchmarkDetails(benchmarkId);
-      this.renderBenchmarkDetails(details);
+      const renderedStatus = this.renderBenchmarkDetails(details);
       
-      // If the benchmark is still running, set up auto-refresh
-      const benchmarks = await window.API.getBenchmarks(true);
-      const benchmark = benchmarks.find(b => b.id === benchmarkId);
-      
-      if (benchmark && (benchmark.status === 'running' || benchmark.status === 'in-progress')) {
+      // If the benchmark is still running (based on reconciled status), set up auto-refresh
+      if (renderedStatus && renderedStatus.isRunning) {
         // Set up periodic refresh for running benchmarks
         this.setupAutoRefreshForRunningBenchmark(benchmarkId);
       }
@@ -782,8 +818,24 @@ class Pages {
       totalPromptsInBenchmark = totalUniqueModels * totalUniquePrompts;
     }
     
-    // Determine if this is a running benchmark based on the status field
-    const isRunning = details.status === 'running' || details.status === 'in-progress' || details.status === 'in_progress';
+    // Determine actual completion status based on data, not just stored status
+    const totalExpectedPrompts = totalUniqueModels * totalUniquePrompts;
+    const actuallyComplete = totalExpectedPrompts > 0 && 
+                            fullyCompletedPrompts === totalUniquePrompts && 
+                            fullyCompletedModels === totalUniqueModels;
+    
+    // If the data shows completion but status says in_progress, update our local status
+    let actualStatus = details.status;
+    if (actuallyComplete && (actualStatus === 'in_progress' || actualStatus === 'in-progress' || actualStatus === 'running')) {
+      console.log(`Benchmark ${details.id} appears complete but status is ${actualStatus}. Updating to completed.`);
+      actualStatus = 'completed';
+      
+      // Update the cached benchmark list to reflect the new status
+      window.API.clearCache('benchmarks');
+    }
+    
+    // Determine if this is a running benchmark based on the reconciled status
+    const isRunning = actualStatus === 'running' || actualStatus === 'in-progress' || actualStatus === 'in_progress';
     
     // Deduplicate models and build per-model table data
     const uniqueModels = new Map();
@@ -1053,40 +1105,63 @@ class Pages {
         <div class="col-md-3">
           <div class="card text-center">
             <div class="card-body">
-              <h4 class="text-secondary mb-1">${details.status || 'complete'}</h4>
+              <h4 class="text-secondary mb-1">${actualStatus || 'complete'}</h4>
               <small class="text-muted">Status</small>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Model Performance Table -->
+      <!-- Model Performance Summary -->
       <div class="mb-4">
         <h4 class="mb-3">
           <i class="fas fa-chart-bar me-2"></i>Model Performance Summary
         </h4>
-        <div class="table-responsive">
-          <table class="table table-hover" id="modelPerformanceTable">
-            <thead class="table-light">
-              <tr>
-                <th style="cursor: pointer;" data-sort="model">
-                  Model <i class="fas fa-sort text-muted"></i>
-                </th>
-                <th style="cursor: pointer;" data-sort="latency">
-                  Latency <i class="fas fa-sort text-muted"></i>
-                </th>
-                <th style="cursor: pointer;" data-sort="cost">
-                  Cost <i class="fas fa-sort text-muted"></i>
-                </th>
-                <th style="cursor: pointer;" data-sort="tokens">
-                  Tokens <i class="fas fa-sort text-muted"></i>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              ${modelTableRows}
-            </tbody>
-          </table>
+        <div class="row">
+          <!-- Chart Panel -->
+          <div class="col-md-6">
+            <div class="card h-100">
+              <div class="card-header">
+                <h6 class="mb-0">Latency vs Cost</h6>
+              </div>
+              <div class="card-body">
+                <canvas id="modelPerformanceChart" width="400" height="300"></canvas>
+              </div>
+            </div>
+          </div>
+          <!-- Table Panel -->
+          <div class="col-md-6">
+            <div class="card h-100">
+              <div class="card-header">
+                <h6 class="mb-0">Performance Metrics</h6>
+              </div>
+              <div class="card-body p-0">
+                <div class="table-responsive">
+                  <table class="table table-hover mb-0" id="modelPerformanceTable">
+                    <thead class="table-light">
+                      <tr>
+                        <th style="cursor: pointer;" data-sort="model">
+                          Model <i class="fas fa-sort text-muted"></i>
+                        </th>
+                        <th style="cursor: pointer;" data-sort="latency">
+                          Latency <i class="fas fa-sort text-muted"></i>
+                        </th>
+                        <th style="cursor: pointer;" data-sort="cost">
+                          Cost <i class="fas fa-sort text-muted"></i>
+                        </th>
+                        <th style="cursor: pointer;" data-sort="tokens">
+                          Tokens <i class="fas fa-sort text-muted"></i>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${modelTableRows}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1174,6 +1249,9 @@ class Pages {
       });
     }
 
+    // Create model performance chart
+    this.createModelPerformanceChart(uniqueModels);
+
     // Add table sorting functionality (only if not running to avoid conflicts)
     if (!isRunning) {
       this.setupTableSorting();
@@ -1183,6 +1261,14 @@ class Pages {
     setTimeout(() => {
       this.setupResultsTableInteractivity();
     }, 100);
+    
+    // Return status information for the caller
+    return {
+      isRunning,
+      actualStatus,
+      originalStatus: details.status,
+      actuallyComplete
+    };
   }
 
   /**
@@ -1263,10 +1349,11 @@ class Pages {
       if (cell) {
         const promptText = cell.getAttribute('data-prompt-text');
         const responseText = cell.getAttribute('data-response-text');
+        const promptId = cell.getAttribute('data-prompt-id');
         const modalTitle = cell.getAttribute('data-modal-title');
         
         if (promptText && responseText) {
-          this.showResponseModal(promptText, responseText, modalTitle);
+          this.showResponseModal(promptText, responseText, modalTitle, promptId);
         }
       }
     });
@@ -1345,6 +1432,162 @@ class Pages {
     if (resetBtn) {
       resetBtn.textContent = `${Math.round(this.resultsTableZoom * 100)}%`;
     }
+  }
+
+  /**
+   * Create model performance chart showing latency vs cost
+   * @param {Map} uniqueModels - Map of unique model data
+   */
+  createModelPerformanceChart(uniqueModels) {
+    const chartCanvas = document.getElementById('modelPerformanceChart');
+    if (!chartCanvas || !uniqueModels || uniqueModels.size === 0) return;
+
+    // Destroy existing chart if it exists
+    if (this.modelChart) {
+      this.modelChart.destroy();
+    }
+
+    // Provider color mapping
+    const providerColors = {
+      'openai': '#28a745',      // Green
+      'google': '#007bff',      // Blue  
+      'anthropic': '#ffc107',   // Yellow
+      'unknown': '#6c757d'      // Gray for unknown providers
+    };
+
+    // Group models by provider for datasets
+    const providerDatasets = {};
+    
+    Array.from(uniqueModels.values()).forEach((model) => {
+      // Only include completed models with valid data
+      if (model.aggregated_completed_prompts > 0) {
+        let latencyMs = model.aggregated_latency;
+        // Handle latency conversion (same logic as table)
+        if (latencyMs > 0 && latencyMs < 1000) {
+          latencyMs = latencyMs * 1000;
+        }
+        
+        // Convert to seconds for chart display
+        const latencySeconds = latencyMs / 1000;
+        const cost = model.aggregated_cost;
+        
+        if (latencySeconds > 0 && cost > 0) {
+          const provider = (model.provider || 'unknown').toLowerCase();
+          
+          if (!providerDatasets[provider]) {
+            providerDatasets[provider] = {
+              label: provider.charAt(0).toUpperCase() + provider.slice(1),
+              data: [],
+              backgroundColor: providerColors[provider] || providerColors['unknown'],
+              borderColor: providerColors[provider] || providerColors['unknown'],
+              borderWidth: 2,
+              pointRadius: 8,
+              pointHoverRadius: 10
+            };
+          }
+          
+          providerDatasets[provider].data.push({
+            x: latencySeconds,
+            y: cost,
+            modelName: model.model_name || 'Unknown Model',
+            provider: provider
+          });
+        }
+      }
+    });
+
+    if (Object.keys(providerDatasets).length === 0) {
+      // Show message if no data available
+      const ctx = chartCanvas.getContext('2d');
+      ctx.clearRect(0, 0, chartCanvas.width, chartCanvas.height);
+      ctx.fillStyle = '#6c757d';
+      ctx.font = '14px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('No completed models to display', chartCanvas.width / 2, chartCanvas.height / 2);
+      return;
+    }
+
+    // Create chart
+    const ctx = chartCanvas.getContext('2d');
+    
+    // Debug Chart.js availability
+    console.log('Chart.js availability check:', {
+      chartDefined: typeof Chart !== 'undefined',
+      windowChart: window.Chart,
+      globalChart: globalThis.Chart,
+      documentReadyState: document.readyState
+    });
+    
+    // Expose the error instead of hiding it
+    if (typeof Chart === 'undefined') {
+      console.error('CRITICAL: Chart.js library is not loaded when trying to create chart');
+      console.error('Available globals:', Object.keys(window).filter(key => key.toLowerCase().includes('chart')));
+      throw new Error('Chart.js library is not available. This indicates a CDN loading failure or timing issue.');
+    }
+    
+    this.modelChart = new Chart(ctx, {
+      type: 'scatter',
+      data: {
+        datasets: Object.values(providerDatasets)
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            display: true,
+            position: 'top',
+            labels: {
+              usePointStyle: true,
+              padding: 15,
+              font: {
+                size: 12
+              }
+            }
+          },
+          tooltip: {
+            callbacks: {
+              title: () => '',
+              label: (context) => {
+                const point = context.parsed;
+                const dataPoint = context.dataset.data[context.dataIndex];
+                return [
+                  `Model: ${dataPoint.modelName}`,
+                  `Provider: ${dataPoint.provider.charAt(0).toUpperCase() + dataPoint.provider.slice(1)}`,
+                  `Latency: ${point.x.toFixed(1)}s`,
+                  `Cost: $${point.y.toFixed(4)}`
+                ];
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            title: {
+              display: true,
+              text: 'Latency (seconds)',
+              font: {
+                size: 12,
+                weight: 'bold'
+              }
+            },
+            type: 'linear',
+            position: 'bottom'
+          },
+          y: {
+            title: {
+              display: true,
+              text: 'Cost ($)',
+              font: {
+                size: 12,
+                weight: 'bold'
+              }
+            },
+            type: 'linear'
+          }
+        }
+      }
+    });
   }
 
   /**
@@ -1511,6 +1754,9 @@ class Pages {
           const isCompleted = prompt.response && prompt.response.trim().length > 0;
           
           if (isCompleted) {
+            // Check if this is an error response
+            const isError = prompt.response.startsWith('ERROR');
+            
             // Individual prompt latency is stored in milliseconds in database (newer runs) or seconds (older runs)
             // Handle both cases by detecting magnitude
             let promptLatencyMs = prompt.prompt_latency || 0;
@@ -1532,19 +1778,31 @@ class Pages {
                 <i class="fas fa-globe me-1"></i>Web Search Results
               </button>` : '';
             
-            // Show completed prompt
+            // Different styling for errors vs successes
+            const cardBgClass = isError ? 'bg-danger bg-opacity-10' : 'bg-light';
+            const statusIcon = isError ? 
+              '<i class="fas fa-exclamation-triangle text-danger me-2"></i>' : 
+              '<i class="fas fa-check-circle text-success me-2"></i>';
+            const headerClass = isError ? 'text-danger' : 'text-primary';
+            
+            // Show completed prompt (both successful and failed)
             return `
-              <div class="border rounded p-3 mb-3 bg-light">
+              <div class="border rounded p-3 mb-3 ${cardBgClass}">
                 <div class="d-flex justify-content-between align-items-start mb-2">
-                  <h6 class="mb-0 text-primary">
-                    <i class="fas fa-check-circle text-success me-2"></i>
-                    Prompt ${index + 1}
+                  <h6 class="mb-0 ${headerClass}">
+                    ${statusIcon}
+                    Prompt ${index + 1} ${isError ? '(Error)' : ''}
                   </h6>
                   <div class="d-flex gap-2 align-items-center">
                     ${webSearchBadge}
                     <span class="badge bg-secondary">${promptLatencySeconds.toFixed(3)}s</span>
                     <span class="badge bg-info">${(prompt.standard_input_tokens || 0) + (prompt.cached_input_tokens || 0)}→${prompt.output_tokens || 0} tokens</span>
                     ${prompt.total_cost ? `<span class="badge bg-success">${Utils.formatCurrency(prompt.total_cost)}</span>` : ''}
+                    <button type="button" class="btn btn-sm ${isError ? 'btn-outline-danger' : 'btn-outline-primary'}" 
+                            onclick="window.Pages.rerunSinglePrompt(${prompt.prompt_id || prompt.id})"
+                            title="Rerun this prompt">
+                      <i class="fas fa-redo-alt"></i>
+                    </button>
                   </div>
                 </div>
                 
@@ -1568,8 +1826,13 @@ class Pages {
                     <i class="fas fa-clock text-warning me-2"></i>
                     Prompt ${index + 1}
                   </h6>
-                  <div class="d-flex gap-2">
+                  <div class="d-flex gap-2 align-items-center">
                     <span class="badge bg-warning">Pending</span>
+                    <button type="button" class="btn btn-sm btn-outline-danger" 
+                            onclick="window.Pages.rerunSinglePrompt(${prompt.prompt_id || prompt.id})"
+                            title="Force rerun this stuck prompt">
+                      <i class="fas fa-redo-alt"></i> Force Rerun
+                    </button>
                   </div>
                 </div>
                 
@@ -1752,6 +2015,7 @@ class Pages {
                 title="Click to view error details"
                 data-prompt-text="${Utils.escapeHtmlAttribute(promptText)}"
                 data-response-text="${Utils.escapeHtmlAttribute(matchingPrompt.response)}"
+                data-prompt-id="${matchingPrompt.prompt_id || ''}"
                 data-modal-title="Error Response">
               <div style="min-height: 60px; max-height: 120px; overflow-y: auto;">
                 <small class="text-danger fw-bold">ERROR</small>
@@ -1781,6 +2045,7 @@ class Pages {
               title="Click to view full response"
               data-prompt-text="${Utils.escapeHtmlAttribute(promptText)}"
               data-response-text="${Utils.escapeHtmlAttribute(matchingPrompt.response)}"
+              data-prompt-id="${matchingPrompt.prompt_id || ''}"
               data-modal-title="${Utils.escapeHtmlAttribute(Utils.formatModelName(run.model_name))} Response">
             <div style="min-height: 60px; max-height: 120px; overflow-y: auto;">
               <div class="d-flex justify-content-between align-items-start mb-1">
@@ -3694,8 +3959,19 @@ class Pages {
    * @param {string} promptText - The prompt text
    * @param {string} responseText - The response text
    * @param {string} title - Modal title
+   * @param {string} promptId - The prompt ID for rerun functionality
    */
-  showResponseModal(promptText, responseText, title = 'Response Details') {
+  showResponseModal(promptText, responseText, title = 'Response Details', promptId = null) {
+    // Check if this is a completed prompt with a valid ID for rerun functionality
+    // Allow rerunning both successful and failed prompts
+    const canRerun = promptId && promptId !== '' && promptId !== 'null' && promptId !== 'undefined';
+    
+    const rerunButtonHtml = canRerun ? `
+      <button type="button" class="btn btn-warning" onclick="window.Pages.rerunSinglePrompt(${promptId})">
+        <i class="fas fa-redo me-1"></i>Rerun Prompt
+      </button>
+    ` : '';
+
     const modalHtml = `
       <div class="modal fade" id="responseModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
@@ -3733,6 +4009,7 @@ class Pages {
               <button type="button" class="btn btn-outline-primary" onclick="window.Pages.copyFullConversation('${Utils.sanitizeHtml(promptText).replace(/'/g, "\\'")}', '${Utils.sanitizeHtml(responseText).replace(/'/g, "\\'")}')">
                 <i class="fas fa-clipboard me-1"></i>Copy Both
               </button>
+              ${rerunButtonHtml}
               <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
             </div>
           </div>
@@ -4328,6 +4605,72 @@ class Pages {
     } catch (error) {
       console.error('Error syncing benchmark:', error);
       window.Components.showToast(`Failed to sync benchmark: ${error.message}`, 'error');
+    }
+  }
+
+  /**
+   * Rerun a single prompt
+   * @param {number} promptId - Prompt ID
+   */
+  async rerunSinglePrompt(promptId) {
+    try {
+      // Show confirmation dialog
+      const confirmed = await window.Utils.showConfirmDialog(
+        'Rerun Prompt',
+        'Are you sure you want to rerun this prompt? The previous result will be replaced.',
+        'warning'
+      );
+
+      if (!confirmed) return;
+
+      // Start the rerun
+      const result = await window.API.rerunSinglePrompt(promptId);
+      
+      if (result.success) {
+        window.Components.showToast('Prompt rerun started', 'success');
+        
+        // Force clear any cached data to ensure fresh UI
+        window.API.clearCache('benchmarks');
+        
+        // If we're viewing benchmark details, refresh immediately and again after delay
+        if (this.currentBenchmarkId) {
+          this.viewBenchmarkDetails(this.currentBenchmarkId);
+          setTimeout(() => {
+            this.viewBenchmarkDetails(this.currentBenchmarkId);
+          }, 2000);
+        }
+        
+      } else {
+        throw new Error(result.error || 'Failed to rerun prompt');
+      }
+    } catch (error) {
+      console.error('Error rerunning prompt:', error);
+      window.Components.showToast(`Failed to rerun prompt: ${error.message}`, 'error');
+    }
+  }
+
+  /**
+   * Force refresh the current view to get latest data
+   */
+  async forceRefresh() {
+    try {
+      // Clear all caches
+      window.API.clearCache('benchmarks');
+      
+      if (this.currentBenchmarkId) {
+        // If viewing benchmark details, refresh them
+        window.Components.showToast('Refreshing benchmark data...', 'info');
+        await this.viewBenchmarkDetails(this.currentBenchmarkId);
+      } else {
+        // If on home page, refresh benchmarks list
+        window.Components.showToast('Refreshing benchmarks list...', 'info');
+        await this.loadBenchmarks(false);
+      }
+      
+      window.Components.showToast('Data refreshed successfully', 'success');
+    } catch (error) {
+      console.error('Error refreshing data:', error);
+      window.Components.showToast(`Failed to refresh: ${error.message}`, 'error');
     }
   }
 }

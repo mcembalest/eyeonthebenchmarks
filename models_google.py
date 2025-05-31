@@ -74,28 +74,6 @@ COSTS = {
     }
 }
 
-IMAGE_COST = 0.03
-
-"""Gemini context windows (all gemini models)
-
-Input token limit
-
-1,048,576
-
-token counting
-
-from google import genai
-
-client = genai.Client()
-prompt = "The quick brown fox jumps over the lazy dog."
-
-# Count tokens using the new client method.
-total_tokens = client.models.count_tokens(
-    model="gemini-2.0-flash", contents=prompt
-)
-print("total_tokens: ", total_tokens)
-# ( e.g., total_tokens: 10 )
-"""
 
 def ensure_file_uploaded(file_path: Path, db_path: Path = Path.cwd()) -> str:
     """
@@ -165,14 +143,14 @@ def google_upload(pdf_path: Path) -> str:
         logging.error(f"Error uploading {pdf_path} to Google: {e}")
         raise Exception(f"Failed to upload PDF to Google: {str(e)}")
 
-def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str = "gemini-1.5-flash", db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, int, bool, str]:
+def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str, db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, int, bool, str]:
     """
     Send a query to a Google Gemini model with multiple file attachments.
     
     Args:
         file_paths: List of paths to files to include
         prompt_text: The question to ask the model
-        model_name: The model to use (e.g., "gemini-1.5-flash")
+        model_name: The model to use
         db_path: Path to the database directory
         web_search: Whether to enable web search for this prompt
         
@@ -301,7 +279,7 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
                 temperature=0.2,
                 top_p=0.8,
                 top_k=40,
-                max_output_tokens=2048,
+                max_output_tokens=10000,
                 tools=tools if web_search else None,
                 response_mime_type="text/plain"
             )
@@ -522,6 +500,10 @@ def google_ask_internal(contents: List, model_name: str, web_search: bool = Fals
                     if response.candidates:
                         for i, candidate in enumerate(response.candidates):
                             logging.error(f"Candidate {i}: {type(candidate)}")
+                            if hasattr(candidate, 'finish_reason'):
+                                logging.error(f"  Finish Reason: {candidate.finish_reason}")
+                            if hasattr(candidate, 'safety_ratings'):
+                                logging.error(f"  Safety Ratings: {candidate.safety_ratings}")
                             if hasattr(candidate, 'content') and candidate.content:
                                 logging.error(f"  Content: {type(candidate.content)}")
                                 if hasattr(candidate.content, 'parts'):
