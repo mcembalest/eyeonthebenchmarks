@@ -71,6 +71,35 @@ SEARCH_CONTEXT_COSTS = {
     "high": 0.05,   # $50/1k searches
 }
 
+def _should_use_vector_search(file_path: Path) -> bool:
+    """
+    Determine if a PDF file should use vector search instead of direct upload.
+    Based on file size and estimated complexity.
+    """
+    try:
+        # Check file size - files over 10MB typically cause token issues
+        file_size_mb = file_path.stat().st_size / (1024 * 1024)
+        if file_size_mb > 10:
+            return True
+        
+        # For very large page counts, also use vector search
+        try:
+            import PyPDF2
+            with open(file_path, 'rb') as f:
+                reader = PyPDF2.PdfReader(f)
+                page_count = len(reader.pages)
+                # If more than 50 pages, likely to hit token limits
+                if page_count > 50:
+                    return True
+        except Exception:
+            # If we can't read the PDF, be conservative and use vector search for large files
+            pass
+        
+        return False
+    except Exception:
+        # If any error occurs, default to direct upload
+        return False
+
 def ensure_file_uploaded(file_path: Path, db_path: Path = Path.cwd()) -> str:
     """
     Ensure a file is uploaded to OpenAI and return the provider file ID.
@@ -191,6 +220,7 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
     # Separate CSV files from other files and build content
     file_ids = []
     csv_content = []
+    large_pdfs = []
     
     # Always include files if they're provided - let the model decide how to use both file data and web search
     if file_paths:
@@ -205,10 +235,23 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
                 except Exception as e:
                     logging.error(f"Error parsing CSV {file_path}: {e}")
                     csv_content.append(f"\n--- Error reading CSV {file_path.name}: {str(e)} ---\n")
+            elif file_path.suffix.lower() == '.pdf' and _should_use_vector_search(file_path):
+                # Large PDFs should use vector search instead of direct upload
+                large_pdfs.append(file_path)
+                print(f"🔍 Large PDF detected: {file_path.name}, will use vector search")
+                logging.info(f"Large PDF detected: {file_path.name}, will use vector search")
             else:
-                # Handle PDF and other files normally
-                file_id = ensure_file_uploaded(file_path, db_path)
-                file_ids.append(file_id)
+                # Handle normal-sized files with direct upload
+                try:
+                    file_id = ensure_file_uploaded(file_path, db_path)
+                    file_ids.append(file_id)
+                except Exception as e:
+                    # If direct upload fails due to size, try vector search for PDFs
+                    if file_path.suffix.lower() == '.pdf' and "context_length_exceeded" in str(e).lower():
+                        logging.info(f"PDF {file_path.name} too large for direct upload, falling back to vector search")
+                        large_pdfs.append(file_path)
+                    else:
+                        raise
     
     # Build content with all non-CSV files
     content = []
@@ -256,7 +299,66 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
         
         tools.append(web_search_tool)
     
+    # If we have large PDFs, use vector search instead of direct upload
+    if large_pdfs:
+        print(f"🚀 Using vector search for {len(large_pdfs)} large PDF(s): {[p.name for p in large_pdfs]}")
+        logging.info(f"Using vector search for {len(large_pdfs)} large PDF(s): {[p.name for p in large_pdfs]}")
+        return _handle_large_pdfs_with_vector_search(large_pdfs, content, enhanced_prompt, model_name, db_path, web_search)
+    
     return openai_ask_internal(content, model_name, tools)
+
+def _handle_large_pdfs_with_vector_search(large_pdfs: List[Path], existing_content: List[Dict], 
+                                         prompt_text: str, model_name: str, 
+                                         db_path: Path, web_search: bool) -> Tuple[str, int, int, int, int, bool, str]:
+    """
+    Handle large PDFs using vector search instead of direct upload.
+    """
+    import time
+    
+    try:
+        # Create a temporary vector store for these large PDFs
+        vector_manager = VectorSearchManager()
+        vector_store_id = vector_manager.create_vector_store(
+            name=f"temp_large_pdfs_{int(time.time())}", 
+            file_paths=large_pdfs,
+            expires_after_days=1  # Auto-cleanup after 1 day
+        )
+        
+        print(f"📚 Created vector store {vector_store_id} for large PDFs")
+        logging.info(f"Created vector store {vector_store_id} for large PDFs")
+        
+        # Use the vector search to answer the question
+        response = vector_manager.file_search_with_responses_api(
+            vector_store_ids=[vector_store_id],
+            query=prompt_text,
+            model=model_name,
+            max_results=20,
+            include_search_results=False
+        )
+        
+        # Return in the same format as openai_ask_internal
+        answer = response.response_text
+        # Estimate token usage (we don't have exact counts from responses API)
+        estimated_input_tokens = len(prompt_text) // 4 + 5000  # Rough estimate including PDF content
+        estimated_output_tokens = len(answer) // 4
+        
+        logging.info(f"Vector search completed. Answer length: {len(answer)} chars")
+        
+        return (
+            answer,
+            estimated_input_tokens,  # standard_input_tokens
+            0,                       # cached_input_tokens (not available)
+            estimated_output_tokens, # output_tokens
+            0,                       # reasoning_tokens (not tracked in vector search)
+            web_search,              # web_search_used (passed through)
+            ""                       # web_search_sources (not available in vector search)
+        )
+        
+    except Exception as e:
+        logging.error(f"Vector search failed for large PDFs: {e}")
+        # Return error response in expected format
+        error_msg = f"Error processing large PDFs with vector search: {str(e)}"
+        return (error_msg, 0, 0, 0, 0, False, "")
 
 def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] = None) -> Tuple[str, int, int, int, int, bool, str]:
     """
