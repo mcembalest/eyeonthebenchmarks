@@ -382,8 +382,8 @@ async def delete_file(file_id: int):
 async def validate_tokens(payload: dict):
     return logic.handle_validate_tokens(
         payload.get("prompts", []),
-        payload.get("file_paths", []),
-        payload.get("model_names", [])
+        payload.get("pdfPaths", []) or payload.get("file_paths", []),  # Support both parameter names
+        payload.get("modelNames", []) or payload.get("model_names", [])  # Support both parameter names
     )
 
 # ===== VECTOR SEARCH ENDPOINTS =====

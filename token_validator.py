@@ -74,9 +74,11 @@ def validate_token_limits_with_upload(prompts: List[Dict], pdf_paths: List[str],
                     context_limit = get_context_limit_anthropic(model_name)
                     
                 elif provider == "google":
-                    # For Google: upload files first, then count tokens
-                    contents = [prompt_text]
-                    contents.extend(pdf_path_objects)
+                    # For Google: prepare content with proper format
+                    from models_google import prepare_google_content_for_files
+                    
+                    # Prepare content using the same method as in actual Google model calls
+                    contents = prepare_google_content_for_files(prompt_text, pdf_path_objects)
                     
                     actual_tokens = count_tokens_google(contents, model_name)
                     context_limit = get_context_limit_google(model_name)
@@ -156,9 +158,9 @@ def format_token_validation_message(validation_results: Dict[str, Any]) -> str:
     
     for model_name, result in validation_results["model_results"].items():
         if result["will_exceed"]:
-            exceeding_models.append(f"• {model_name}: {result['estimated_tokens']:,} tokens (limit: {result['context_limit']:,})")
+            exceeding_models.append(f"• {model_name}: {result['actual_tokens']:,} tokens (limit: {result['context_limit']:,})")
         else:
-            safe_models.append(f"• {model_name}: {result['estimated_tokens']:,} tokens (limit: {result['context_limit']:,})")
+            safe_models.append(f"• {model_name}: {result['actual_tokens']:,} tokens (limit: {result['context_limit']:,})")
     
     if exceeding_models:
         message_parts.append("\n🚫 Models that will likely fail:")

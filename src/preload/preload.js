@@ -81,6 +81,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onMainProcessReady: (callback) => ipcRenderer.on('main-process-ready', (_event, ...args) => callback(...args)),
   validateTokens: (prompts, pdfPaths, modelNames) => {
     console.log('Preload: validateTokens called');
+    console.log('Preload: prompts:', prompts?.length || 0);
+    console.log('Preload: pdfPaths:', pdfPaths?.length || 0);
+    console.log('Preload: modelNames:', modelNames?.length || 0, modelNames);
     return ipcRenderer.invoke('validate-tokens', { prompts, pdfPaths, modelNames });
   },
 

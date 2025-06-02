@@ -298,17 +298,20 @@ class Pages {
       const isChecked = e.target.checked;
       const modelCheckboxes = document.querySelectorAll('#modelList input[type="checkbox"]');
       
-      modelCheckboxes.forEach(checkbox => {
-        checkbox.checked = isChecked;
+      // Use requestAnimationFrame to ensure DOM updates are applied synchronously
+      requestAnimationFrame(() => {
+        modelCheckboxes.forEach(checkbox => {
+          checkbox.checked = isChecked;
+          
+          // Trigger change event to update PDF display if needed
+          checkbox.dispatchEvent(new Event('change'));
+        });
         
-        // Trigger change event to update PDF display if needed
-        checkbox.dispatchEvent(new Event('change'));
+        // Show a quick toast to confirm the action
+        const count = modelCheckboxes.length;
+        const action = isChecked ? 'selected' : 'deselected';
+        window.Components.showToast(`${count} models ${action}`, 'info', 2000);
       });
-      
-      // Show a quick toast to confirm the action
-      const count = modelCheckboxes.length;
-      const action = isChecked ? 'selected' : 'deselected';
-      window.Components.showToast(`${count} models ${action}`, 'info', 2000);
     });
     
     // Also update the toggle state when individual checkboxes change
@@ -2517,7 +2520,8 @@ class Pages {
         return;
       }
 
-      // Get selected models
+      // Get selected models - force DOM update with a small delay to ensure Select All has propagated
+      await new Promise(resolve => setTimeout(resolve, 50));
       const selectedModels = Array.from(
         document.querySelectorAll('#modelList input[type="checkbox"]:checked')
       ).map(cb => cb.value);
@@ -2542,6 +2546,8 @@ class Pages {
 
       // Validate token limits before running
       window.Components.showToast('Checking token limits...', 'info');
+      
+      console.log('DEBUG: About to validate tokens with selectedModels:', selectedModels);
       
       try {
         const validation = await window.API.validateTokens({
@@ -4413,6 +4419,48 @@ class Pages {
       `;
     }
 
+    // PDF chunking section
+    let pdfChunkingHtml = '';
+    if (file.mime_type === 'application/pdf' && file.pdf_chunks && file.pdf_chunks.length > 0) {
+      const chunks = file.pdf_chunks;
+      const totalChunks = chunks.length;
+      const chunksHtml = chunks.map(chunk => {
+        const chunkSize = this.formatFileSize(chunk.file_size_bytes);
+        const statusIcon = chunk.exists_on_disk ? 'fa-check-circle text-success' : 'fa-exclamation-triangle text-warning';
+        const pageRange = chunk.start_page === chunk.end_page ? `Page ${chunk.start_page}` : `Pages ${chunk.start_page}-${chunk.end_page}`;
+        
+        return `
+          <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+            <div>
+              <span class="badge bg-primary me-2">Chunk ${chunk.chunk_order}</span>
+              <span class="me-3">${pageRange}</span>
+              <small class="text-muted">${chunkSize}</small>
+            </div>
+            <i class="fas ${statusIcon}"></i>
+          </div>
+        `;
+      }).join('');
+      
+      pdfChunkingHtml = `
+        <h6>PDF Chunking Information</h6>
+        <div class="mb-3">
+          <div class="alert alert-info">
+            <i class="fas fa-info-circle me-2"></i>
+            <strong>How this PDF is used for LLM prompting:</strong><br>
+            This PDF is automatically split into ${totalChunks} chunks of approximately 5 pages each. 
+            When running benchmarks, the system uses keyword matching to select the most relevant chunks 
+            that fit within the LLM's context window.
+          </div>
+          <div class="mb-2">
+            <strong>Total Chunks:</strong> ${totalChunks}
+          </div>
+          <div class="border rounded p-2" style="max-height: 200px; overflow-y: auto;">
+            ${chunksHtml}
+          </div>
+        </div>
+      `;
+    }
+
     const modalHtml = `
       <div class="modal fade" id="fileDetailsModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
@@ -4450,6 +4498,8 @@ class Pages {
               </div>
               
               ${csvPreviewHtml}
+              
+              ${pdfChunkingHtml}
               
               <h6>Provider Uploads</h6>
               <ul class="list-group mb-3">

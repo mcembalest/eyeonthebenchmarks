@@ -143,6 +143,84 @@ def google_upload(pdf_path: Path) -> str:
         logging.error(f"Error uploading {pdf_path} to Google: {e}")
         raise Exception(f"Failed to upload PDF to Google: {str(e)}")
 
+def prepare_google_content_for_files(prompt_text: str, file_paths: List[Path]):
+    """
+    Prepare Google Content structure for token counting and model calls.
+    Matches the logic in google_ask_with_files.
+    
+    Args:
+        prompt_text: The prompt text
+        file_paths: List of file paths
+        
+    Returns:
+        List of Content objects for Google API
+    """
+    import base64
+    from google.generativeai import types
+    
+    # Build content parts list
+    content_parts = []
+    csv_content = []
+    
+    if file_paths:
+        for file_path in file_paths:
+            if file_path.suffix.lower() == '.csv':
+                # Parse CSV to markdown format
+                try:
+                    from file_store import parse_csv_to_markdown_format
+                    csv_data = parse_csv_to_markdown_format(file_path)
+                    csv_content.append(f"\n--- CSV Data from {file_path.name} ({csv_data['total_rows']} rows) ---\n{csv_data['markdown_data']}\n")
+                except Exception as e:
+                    logging.error(f"Error parsing CSV {file_path}: {e}")
+                    csv_content.append(f"\n--- Error reading CSV {file_path.name}: {str(e)} ---\n")
+            else:
+                # Handle PDF and other files normally as binary
+                try:
+                    # Read file and encode as base64
+                    with open(file_path, 'rb') as f:
+                        file_data = f.read()
+                    
+                    # Encode to base64
+                    base64_data = base64.b64encode(file_data).decode('utf-8')
+                    
+                    # Create Part from bytes with proper MIME type
+                    if file_path.suffix.lower() == '.pdf':
+                        mime_type = "application/pdf"
+                    elif file_path.suffix.lower() in ['.xlsx', '.xls']:
+                        mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    else:
+                        mime_type = "application/octet-stream"
+                    
+                    # Add as Part.from_bytes
+                    part = types.Part.from_bytes(
+                        mime_type=mime_type,
+                        data=base64.b64decode(base64_data)
+                    )
+                    content_parts.append(part)
+                    
+                except Exception as e:
+                    logging.error(f"Error reading file {file_path}: {e}")
+                    raise Exception(f"Failed to read file {file_path}: {e}")
+
+    # Combine CSV content with prompt text
+    enhanced_prompt = prompt_text
+    if csv_content:
+        csv_data_text = ''.join(csv_content)
+        enhanced_prompt = f"{prompt_text}\n\n{csv_data_text}"
+    
+    # Add prompt text as Part
+    content_parts.append(types.Part.from_text(text=enhanced_prompt))
+    
+    # Create Content object with all parts
+    contents = [
+        types.Content(
+            role="user",
+            parts=content_parts
+        )
+    ]
+    
+    return contents
+
 def google_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: str, db_path: Path = Path.cwd(), web_search: bool = False) -> Tuple[str, int, int, int, int, bool, str]:
     """
     Send a query to a Google Gemini model with multiple file attachments.

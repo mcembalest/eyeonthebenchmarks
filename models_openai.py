@@ -821,10 +821,17 @@ User query: {prompt_text}"""
         print(f"   Response length: {len(answer)} characters")
         print(f"   Citations found: {len(citations)}")
         
-        # Estimate tokens (rough approximation)
-        # OpenAI typically uses ~4 characters per token
-        estimated_output_tokens = len(answer) // 4
-        estimated_input_tokens = len(prompt_text) // 4
+        # Use proper tokenization for OpenAI models
+        try:
+            import tiktoken
+            encoding = tiktoken.encoding_for_model(model_name)
+            estimated_output_tokens = len(encoding.encode(answer))
+            estimated_input_tokens = len(encoding.encode(prompt_text))
+        except Exception as e:
+            logging.warning(f"Could not get exact token count using tiktoken: {e}")
+            # Only fall back to estimation if tiktoken fails
+            estimated_output_tokens = len(answer) // 4
+            estimated_input_tokens = len(prompt_text) // 4
         
         print(f"\n💬 VECTOR SEARCH ANSWER FROM {model_name.upper()}:")
         print(f"   '{answer[:150]}...'" if len(answer) > 150 else f"   '{answer}'")

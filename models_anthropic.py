@@ -434,7 +434,7 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
             # Prepare API call parameters (use base model name for API)
             api_params = {
                 "model": base_model_name,  # Use base model name for API call
-                "max_tokens": 10000,
+                "max_tokens": 8000,
                 "temperature": 1.0 if thinking_enabled else 0.2,  # Anthropic requires temperature=1 for thinking
                 "messages": messages
             }
@@ -517,25 +517,28 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
                 print(f"   🌐 Web search used: {web_search_queries} queries")
                 print(f"   📊 Anthropic includes web search tokens in standard counts")
             
-            # Extract token usage
-            usage = getattr(response, 'usage', {})
-            input_tokens = getattr(usage, 'input_tokens', input_token_count) or 0
-            output_tokens = getattr(usage, 'output_tokens', len(answer) // 4) or 0  # Rough estimate if not available
+            # Extract token usage - demand exact counts from API
+            usage = getattr(response, 'usage', None)
+            if not usage:
+                raise Exception("Anthropic API response missing usage data. Cannot proceed without exact token counts.")
             
-            # Estimate thinking tokens from thinking content
+            input_tokens = getattr(usage, 'input_tokens', None)
+            output_tokens = getattr(usage, 'output_tokens', None)
+            
+            if input_tokens is None or output_tokens is None:
+                raise Exception("Anthropic API response missing input_tokens or output_tokens. Cannot proceed with token estimates.")
+            
+            # Get thinking tokens from API response if available
             thinking_tokens_estimated = 0
-            if thinking_content_found and summarized_thinking_chars > 0:
-                # For Claude 4: The visible thinking is summarized, but we're billed for full thinking
-                # For Claude 3.7: The visible thinking is the full thinking
-                if "claude-4" in model_name or "sonnet-4" in model_name or "opus-4" in model_name:
-                    # Claude 4: Summarized thinking, estimate full thinking tokens
-                    # Assume summarization ratio of 1:3 to 1:5 (summary:full)
-                    thinking_tokens_estimated = (summarized_thinking_chars // 4) * 4  # Conservative estimate
+            if thinking_enabled:
+                # Check if API provides thinking token count directly
+                thinking_tokens_from_api = getattr(usage, 'cache_creation_input_tokens', None)  # Some models report this
+                if thinking_tokens_from_api:
+                    thinking_tokens_estimated = thinking_tokens_from_api
+                    logging.info(f"Thinking tokens from API: {thinking_tokens_estimated}")
                 else:
-                    # Claude 3.7: Full thinking shown, convert chars to tokens
-                    thinking_tokens_estimated = summarized_thinking_chars // 4  # ~4 chars per token
-                
-                logging.info(f"Estimated thinking tokens: {thinking_tokens_estimated} (from {summarized_thinking_chars} chars)")
+                    logging.warning(f"Thinking model used but API didn't provide thinking token count. Cannot estimate accurately.")
+                    # Note: For billing purposes, thinking tokens are included in output_tokens for some models
             
             # Calculate elapsed time
             elapsed_time = time.time() - start_time
@@ -673,10 +676,32 @@ def calculate_cost(
         }
     }
 
+def get_pdf_page_count(file_path: Path) -> int:
+    """Get the number of pages in a PDF"""
+    try:
+        import PyPDF2
+        with open(file_path, 'rb') as f:
+            pdf_reader = PyPDF2.PdfReader(f)
+            return len(pdf_reader.pages)
+    except Exception as e:
+        logging.warning(f"Could not determine page count for {file_path}: {e}")
+        return 0
+
+def check_pdf_page_limit(file_paths: List[Path]) -> int:
+    """Check total pages across all PDF files"""
+    total_pages = 0
+    for file_path in file_paths:
+        if file_path.suffix.lower() == '.pdf':
+            page_count = get_pdf_page_count(file_path)
+            total_pages += page_count
+            logging.info(f"PDF {file_path.name}: {page_count} pages")
+    return total_pages
+
 def count_tokens_anthropic(content: List[Dict], model_name: str) -> int:
     """
     Count tokens for Anthropic models using their count_tokens API.
     Note: Anthropic's token counting API does NOT support file sources, only base64.
+    Handles the 100-page PDF limit by reporting chunked token estimate.
     
     Args:
         content: List of content blocks (text and documents)
@@ -693,7 +718,29 @@ def count_tokens_anthropic(content: List[Dict], model_name: str) -> int:
         thinking_enabled = is_thinking_model(model_name)
         base_model_name = get_base_model_name(model_name)
         
-        # Convert content to Anthropic format for token counting
+        # Extract text and files from content for page limit checking
+        text_content = []
+        file_paths = []
+        
+        for item in content:
+            if item.get("type") == "text":
+                text_content.append(item.get("text", ""))
+            elif item.get("type") == "file":
+                file_path = item.get("file_path")
+                if file_path:
+                    file_paths.append(Path(file_path))
+        
+        # Check if files would exceed 100-page limit
+        if file_paths:
+            total_pages = check_pdf_page_limit(file_paths)
+            logging.info(f"Total PDF pages: {total_pages}")
+            
+            # If we exceed 100 pages, we cannot count tokens accurately without chunking
+            if total_pages > 100:
+                logging.error(f"PDF pages ({total_pages}) exceed Anthropic's 100-page limit. Token counting not possible without chunking.")
+                raise Exception(f"Cannot count tokens for {total_pages} pages. Anthropic limit is 100 pages per request. Please use chunking logic instead of token counting.")
+        
+        # Convert content to Anthropic format for token counting (original logic)
         anthropic_content = []
         
         for item in content:

@@ -574,15 +574,17 @@ def records_entry_to_markdown(record: Dict[str, Any]) -> str:
 
 def estimate_markdown_tokens(markdown_data: str) -> int:
     """
-    Estimate token count for markdown data.
-    Rough approximation: 1 token ≈ 4 characters for text data.
+    DEPRECATED: Rough estimate only - DO NOT USE FOR CRITICAL DECISIONS.
+    This uses character-to-token ratio which is unreliable.
+    TODO: Replace with proper tokenization library or API calls.
     """
     return len(markdown_data) // 4
 
 def estimate_json_records_tokens(records: List[Dict[str, Any]]) -> int:
     """
-    Estimate token count for JSON records.
-    Rough approximation: 1 token ≈ 4 characters for JSON data.
+    DEPRECATED: Rough estimate only - DO NOT USE FOR CRITICAL DECISIONS.
+    This uses character-to-token ratio which is unreliable.
+    TODO: Replace with proper tokenization library or API calls.
     """
     json_str = json.dumps(records, separators=(',', ':'))
     return len(json_str) // 4
@@ -686,7 +688,8 @@ def _register_file_with_connection(file_path: Path, cursor, conn) -> int:
     logging.info(f"Registered new file {original_filename} (ID: {original_file_id}) located at {resolved_file_path}.")
 
     # If the registered file is a PDF, split it into chunks and register them
-    if mime_type == 'application/pdf':
+    # But don't chunk files that are already chunks (to prevent infinite recursion)
+    if mime_type == 'application/pdf' and '.chunks' not in resolved_file_path:
         logging.info(f"PDF file detected: {file_path}. Proceeding to chunk and register chunks.")
         chunks_info = _split_pdf_into_chunks(file_path) # Uses DEFAULT_PAGES_PER_CHUNK
         
@@ -1940,10 +1943,12 @@ def get_all_files(db_path: Path = Path.cwd()) -> List[dict]:
     
     try:
         cursor.execute(f'''
-            SELECT id, file_hash, original_filename, file_path, 
-                   file_size_bytes, mime_type, created_at, csv_data
-            FROM {FILES_TABLE}
-            ORDER BY created_at DESC
+            SELECT f.id, f.file_hash, f.original_filename, f.file_path, 
+                   f.file_size_bytes, f.mime_type, f.created_at, f.csv_data
+            FROM {FILES_TABLE} f
+            LEFT JOIN {PDF_CHUNKS_TABLE} pc ON f.id = pc.chunk_file_id
+            WHERE pc.chunk_file_id IS NULL
+            ORDER BY f.created_at DESC
         ''')
         
         files = []
@@ -2042,6 +2047,34 @@ def get_file_details(file_id: int, db_path: Path = Path.cwd()) -> Optional[dict]
             })
         
         file_dict['used_in_benchmarks'] = benchmarks
+        
+        # Get PDF chunk information if this is a PDF file
+        if file_dict['mime_type'] == 'application/pdf':
+            cursor.execute(f'''
+                SELECT pc.chunk_file_id, pc.chunk_order, pc.start_page, pc.end_page,
+                       f.original_filename, f.file_path, f.file_size_bytes
+                FROM {PDF_CHUNKS_TABLE} pc
+                JOIN {FILES_TABLE} f ON pc.chunk_file_id = f.id
+                WHERE pc.original_file_id = ?
+                ORDER BY pc.chunk_order
+            ''', (file_id,))
+            
+            chunks = []
+            for chunk_row in cursor.fetchall():
+                chunks.append({
+                    'chunk_file_id': chunk_row[0],
+                    'chunk_order': chunk_row[1],
+                    'start_page': chunk_row[2],
+                    'end_page': chunk_row[3],
+                    'filename': chunk_row[4],
+                    'file_path': chunk_row[5],
+                    'file_size_bytes': chunk_row[6],
+                    'exists_on_disk': Path(chunk_row[5]).exists()
+                })
+            
+            file_dict['pdf_chunks'] = chunks
+        else:
+            file_dict['pdf_chunks'] = []
         
         return file_dict
         
