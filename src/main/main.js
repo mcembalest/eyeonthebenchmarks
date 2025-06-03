@@ -89,7 +89,8 @@ const getBackendCommand = () => {
     // In production, use the bundled executable
     let backendPath;
     if (process.platform === 'darwin') {
-      backendPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'dist', 'api');
+      const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
+      backendPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'dist', `api-${arch}`);
     } else {
       // Add placeholders for other platforms if needed, or throw error
       // For now, assuming macOS. Windows would be different.

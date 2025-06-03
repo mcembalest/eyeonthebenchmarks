@@ -5,10 +5,13 @@
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder"
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac",
+    "postinstall": "electron-builder install-app-deps",
+    "rebuild": "electron-rebuild"
   },
   "keywords": [],
-  "author": "",
+  "author": "Max Cembalest <mbcembalest@gmail.com>",
   "license": "ISC",
   "dependencies": {
     "electron-squirrel-startup": "^1.0.1",
@@ -16,23 +19,53 @@
     "ws": "^8.18.2"
   },
   "devDependencies": {
+    "@electron/notarize": "^3.0.1",
     "electron": "^36.2.1",
     "electron-builder": "^26.0.12",
-    "electron-packager": "^17.1.2"
+    "electron-packager": "^17.1.2",
+    "electron-rebuild": "^3.2.9"
   },
   "build": {
     "productName": "Eye on the Benchmarks",
+    "appId": "com.mcembalest.eyeonthebenchmarks",
     "mac": {
-      "target": "dmg",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "src/renderer/assets/icon.png",
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "identity": "Developer ID Application: Maxwell Cembalest (S2H4SZ526T)",
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "src/renderer/assets/icon.png"
     },
     "files": [
-      "dist/api",
+      "dist/api-x64*",
+      "dist/api-arm64", 
       "src/**/*",
-      "package.json"
+      "package.json",
+      "!src/renderer/assets/**/*.{md,txt,log}"
     ],
     "asarUnpack": [
-      "dist/api"
+      "dist/api-x64*",
+      "dist/api-arm64"
     ]
   }
 }
