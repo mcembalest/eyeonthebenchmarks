@@ -8,9 +8,10 @@ import csv
 import threading
 import logging
 import json # For script-based execution output
-import sys
 import sqlite3
 import pandas as pd
+import subprocess
+import tempfile
 
 # Increase CSV field size limit to handle large web search data
 csv.field_size_limit(500000)  # 500KB limit for large web search data
@@ -18,12 +19,24 @@ csv.field_size_limit(500000)  # 500KB limit for large web search data
 # --- Basic Logger Setup ---
 logger = logging.getLogger(__name__)
 
+# Use appropriate base path for both development and PyInstaller
+if getattr(sys, 'frozen', False):
+    # Running in PyInstaller bundle - use temp directory for database
+    db_path = Path(tempfile.gettempdir())
+else:
+    # Running in development - use current script directory
+    db_path = Path(__file__).parent 
+
 # Configure logging for more concise output
+# Use a safe location for log file that works in both dev and packaged mode
+log_dir = tempfile.gettempdir() if getattr(sys, 'frozen', False) else '.'
+log_path = os.path.join(log_dir, "benchmark.log")
+
 logging.basicConfig(level=logging.INFO, 
                     format='%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s',
                     handlers=[
-                        # Limit file logging to important messages only
-                        logging.FileHandler("benchmark.log"),
+                        # Use temp directory for log file in packaged mode
+                        logging.FileHandler(log_path),
                         # For console, ensure high visibility
                         logging.StreamHandler()
                     ])
@@ -31,9 +44,6 @@ logging.basicConfig(level=logging.INFO,
 # Set log levels for specific modules to increase visibility
 # logging.getLogger('runner').setLevel(logging.DEBUG)
 logging.getLogger('models_openai').setLevel(logging.DEBUG)
-
-# Import the CSV exporter
-# from exporter import export_benchmark_to_csv
 
 from file_store import (
     init_db as init_file_store_db,
@@ -55,7 +65,6 @@ from file_store import (
     get_all_files,
     get_file_details,
     delete_file,
-    # Vector store functions
     register_vector_store,
     get_vector_store_by_id,
     get_all_vector_stores,
@@ -64,393 +73,18 @@ from file_store import (
     get_vector_store_files,
     associate_benchmark_with_vector_store,
     get_benchmark_vector_stores,
-    delete_vector_store
+    delete_vector_store,
+    reset_stuck_benchmarks
 )
 # Import the UI bridge protocol and data change types
 from ui_bridge import AppUIBridge, DataChangeType
-from token_validator import validate_token_limits_with_upload, format_token_validation_message
+from ui_bridge_impl import ScriptUiBridge
+from token_manager import TokenManager
+from benchmark_runner import BenchmarkWorker
+from file_manager import FileManager
+from prompt_manager import PromptManager
 
-# --- ScriptUiBridge for command-line execution ---
-class ScriptUiBridge(AppUIBridge):
-    """A UI bridge that prints UI events as JSON to stdout for script-based execution."""
-    def _send_event(self, event_name: str, data: Optional[Dict[str, Any]] = None):
-        # Print a blank line before JSON to ensure clean separation
-        print("")
-        # Format the JSON event and ensure it's on its own line
-        print(json.dumps({"ui_bridge_event": event_name, "data": data or {}}))
-        # Print another blank line after to further separate output
-        print("")
-        # Force immediate flush to prevent buffering issues
-        sys.stdout.flush()
-
-    def show_message(self, level: str, title: str, message: str):
-        self._send_event('show_message', {"level": level, "title": title, "message": message})
-
-    def populate_composer_table(self, rows: list):
-        # For script execution, this might not be directly useful unless the calling script handles it.
-        # self._send_event('populate_composer_table', {"rows": rows})
-        pass # Or log that it was called
-
-    def show_composer_page(self):
-        # self._send_event('show_composer_page', {})
-        pass
-
-    def get_csv_file_path_via_dialog(self) -> Optional[str]:
-        # Cannot open dialogs in script mode. This should not be called by methods invoked via script.
-        # If it is, it indicates a logic error or a method not suitable for script invocation.
-        logging.warning("ScriptUiBridge: get_csv_file_path_via_dialog called, returning None.")
-        return None
-
-    def notify_benchmark_progress(self, job_id: int, progress_data: Dict[str, Any]):
-        self._send_event('benchmark-progress', {"job_id": job_id, **progress_data})
-
-    def notify_benchmark_complete(self, job_id: int, result_summary: Dict[str, Any]):
-        self._send_event('benchmark-complete', {"job_id": job_id, **result_summary})
-
-    def notify_active_benchmarks_updated(self, active_benchmarks: List[Dict[str, Any]]):
-        self._send_event('active_benchmarks_updated', {"active_benchmarks": active_benchmarks})
-
-    def populate_home_benchmarks_table(self, benchmarks_data: Optional[List[Dict[str, Any]]]):
-        # This typically triggers a full refresh in the UI, which might be signaled differently.
-        # For now, signal that a refresh is needed.
-        self._send_event('refresh_benchmark_list_needed', {})
-
-    def register_data_callback(self, data_type: DataChangeType, callback: callable):
-        # Callbacks are typically for direct UI interaction, less relevant for script mode.
-        pass
-
-    def start_auto_refresh(self):
-        # Auto-refresh is a UI concern, not applicable to script mode.
-        pass
-
-    def stop_auto_refresh(self):
-        pass
-
-
-class BenchmarkWorker(threading.Thread): 
-    def __init__(self, job_id, benchmark_id, prompts, pdf_paths, model_name, on_progress=None, on_finished=None, web_search_enabled=False, single_prompt_id=None): 
-        super().__init__(name=f"BenchmarkWorker-{job_id}-{model_name}", daemon=True)  # Set daemon=True to prevent thread from blocking program exit
-        self.job_id = job_id
-        self.benchmark_id = benchmark_id
-        self.prompts = prompts
-        self.pdf_paths = pdf_paths
-        self.model_name = model_name
-        self.on_progress = on_progress
-        self.on_finished = on_finished
-        self.web_search_enabled = web_search_enabled
-        self.single_prompt_id = single_prompt_id  # For single prompt reruns
-        self.active = True  # Single source of truth for worker state
-        self._original_emit_progress_callback = None
-        
-        print(f"BenchmarkWorker initialized with job_id={job_id}, benchmark_id={benchmark_id}, model={model_name}, web_search_enabled={web_search_enabled}")
-        if single_prompt_id:
-            print(f"   Single prompt rerun mode for prompt ID: {single_prompt_id}")
-        sys.stdout.flush()
-        logging.info(f"BenchmarkWorker created: {self.name} with {len(prompts)} prompts for model {model_name}")
-     
-
-    def run(self):
-        # Set a flag to track if we've called the completion callback
-        completion_callback_called = False
-        prompts_file_path = None
-        
-        # Add direct console output for high visibility
-        print(f"\n===== BENCHMARK WORKER THREAD STARTING - {self.name} =====")
-        print(f"   Model: {self.model_name}")
-        print(f"   Job ID: {self.job_id}, Benchmark ID: {self.benchmark_id}")
-        print(f"   PDFs: {self.pdf_paths}")
-        print(f"   Prompts: {len(self.prompts)}")
-        sys.stdout.flush()
-        
-        # Exit early if thread was cancelled
-        if not self.active:
-            logging.warning("Worker thread was cancelled before starting")
-            print(f"   ❌ Worker thread was cancelled before starting")
-            return
-            
-        # Basic validation
-        print(f"   Starting basic validation checks...")
-        sys.stdout.flush()
-        
-        # Validate PDF paths if any were provided
-        if self.pdf_paths:
-            for pdf_path in self.pdf_paths:
-                if not os.path.exists(pdf_path):
-                    error_msg = f"PDF file not found: {pdf_path}"
-                    print(f"   ❌ ERROR: {error_msg}")
-                    sys.stdout.flush()
-                    
-                    if self.on_finished:
-                        self.on_finished({
-                            "error": error_msg,
-                            "status": "failed",
-                            "job_id": self.job_id,
-                            "benchmark_id": self.benchmark_id,
-                            "model_name": self.model_name
-                        })
-                    return
-        
-        if not self.model_name:
-            error_msg = "Model name is required"
-            print(f"   ❌ ERROR: {error_msg}")
-            sys.stdout.flush()
-            
-            if self.on_finished:
-                self.on_finished({
-                    "error": error_msg,
-                    "status": "failed",
-                    "job_id": self.job_id,
-                    "benchmark_id": self.benchmark_id,
-                    "model_name": self.model_name
-                })
-            return
-        
-        print(f"   ✅ Basic validation passed")
-        sys.stdout.flush()
-        
-        # Send initial progress update
-        print(f"   Sending initial progress update...")
-        sys.stdout.flush()
-        if self.on_progress and self.active:
-            self.on_progress({
-                "status": "initializing",
-                "message": f"Starting benchmark with model {self.model_name}",
-                "progress": 0.0
-            })
-            print(f"   ✅ Initial progress update sent")
-            sys.stdout.flush()
-        else:
-            print(f"   ⚠️ Warning: Progress callback not available")
-            sys.stdout.flush()
-        
-        # Import needed modules
-        import subprocess
-        import json
-        import tempfile
-        
-        # Create a temporary file for the prompts
-        try:
-            temp_file = tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False)
-            json.dump(self.prompts, temp_file)
-            temp_file.close()
-            prompts_file_path = temp_file.name
-            print(f"   Wrote prompts to temporary file: {prompts_file_path}")
-            sys.stdout.flush()
-        except Exception as e:
-            error_msg = f"Error creating temporary file: {str(e)}"
-            print(f"   ❌ ERROR: {error_msg}")
-            sys.stdout.flush()
-            
-            if self.on_finished:
-                self.on_finished({
-                    "error": error_msg,
-                    "status": "failed",
-                    "job_id": self.job_id,
-                    "benchmark_id": self.benchmark_id,
-                    "model_name": self.model_name
-                })
-            return
-            
-        # Path to the direct_benchmark.py script
-        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'direct_benchmark.py')
-        
-        print(f"   Launching benchmark subprocess using {script_path}")
-        print(f"   Running with Python interpreter: {sys.executable}")
-        sys.stdout.flush()
-        
-        # Make sure script is executable
-        if not os.access(script_path, os.X_OK):
-            print(f"   Making script executable: {script_path}")
-            os.chmod(script_path, 0o755)
-            sys.stdout.flush()
-        
-        # Prepare command arguments
-        cmd = [
-            sys.executable,  # Use the same Python executable
-            script_path,     # Path to direct_benchmark.py
-            str(self.job_id),
-            str(self.benchmark_id),
-            prompts_file_path,  # Path to prompts JSON file
-            self.model_name,
-            str(self.web_search_enabled).lower()  # Pass web_search_enabled as string 'true'/'false'
-        ]
-    
-        # Run the subprocess
-        print(f"   Starting subprocess to run benchmark...")
-        sys.stdout.flush()
-        
-        try:
-            # Set up environment for subprocess
-            env = os.environ.copy()
-            if self.single_prompt_id:
-                env['SINGLE_PROMPT_RERUN_ID'] = str(self.single_prompt_id)
-                print(f"   Setting SINGLE_PROMPT_RERUN_ID={self.single_prompt_id} for rerun")
-                sys.stdout.flush()
-                
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,  # Line buffered
-                env=env
-            )
-            
-            # Process standard output lines as they arrive
-            for line in iter(process.stdout.readline, ''):
-                if not line:
-                    break
-                    
-                line = line.strip()
-                print(f"   SUBPROCESS: {line}")
-                sys.stdout.flush()
-                
-                # Check if line is JSON progress
-                try:
-                    data = json.loads(line)
-                    if "ui_bridge_event" in data:
-                        event_name = data["ui_bridge_event"]
-                        event_data = data["data"]
-                        
-                        # Forward benchmark progress events
-                        if event_name == "benchmark-progress" and self.on_progress:
-                            self.on_progress(event_data)
-                            print(f"   Forwarded progress event to UI")
-                            sys.stdout.flush()
-                            
-                        # Forward benchmark completion events
-                        if event_name == "benchmark-complete" and self.on_finished:
-                            self.on_finished(event_data)
-                            completion_callback_called = True
-                            print(f"   Forwarded completion event to UI")
-                            sys.stdout.flush()
-                except json.JSONDecodeError:
-                    # Not JSON, just regular output
-                    pass
-                except Exception as e:
-                    print(f"   Error processing subprocess output: {str(e)}")
-                    sys.stdout.flush()
-            
-            # Wait for the process to complete
-            process.stdout.close()
-            return_code = process.wait()
-            
-            # Read any remaining stderr
-            stderr_output = process.stderr.read()
-            process.stderr.close()
-            
-            if stderr_output:
-                print(f"   SUBPROCESS STDERR: {stderr_output}")
-                sys.stdout.flush()
-            
-            if return_code != 0:
-                error_message = f"Benchmark subprocess exited with code {return_code}"
-                print(f"   ❌ {error_message}")
-                sys.stdout.flush()
-                
-                if self.on_finished and not completion_callback_called:
-                    self.on_finished({
-                        "error": error_message,
-                        "status": "failed",
-                        "job_id": self.job_id,
-                        "benchmark_id": self.benchmark_id,
-                        "model_name": self.model_name
-                    })
-                    completion_callback_called = True
-            else:
-                print(f"   ✅ Subprocess completed successfully with code {return_code}")
-                sys.stdout.flush()
-        except Exception as e:
-            error_msg = f"Error running benchmark subprocess: {str(e)}"
-            print(f"   ❌ ERROR: {error_msg}")
-            sys.stdout.flush()
-            
-            if self.on_finished and not completion_callback_called:
-                self.on_finished({
-                    "error": error_msg,
-                    "status": "failed",
-                    "job_id": self.job_id,
-                    "benchmark_id": self.benchmark_id,
-                    "model_name": self.model_name
-                })
-                completion_callback_called = True
-        
-        # Clean up the temporary file
-        if prompts_file_path and os.path.exists(prompts_file_path):
-            try:
-                print(f"   Cleaning up temporary file: {prompts_file_path}")
-                os.unlink(prompts_file_path)
-                sys.stdout.flush()
-            except Exception as e:
-                print(f"   Warning: Could not delete temporary file: {str(e)}")
-                sys.stdout.flush()
-        
-        # Add job completion log
-        logging.info(f"Thread {self.name}: Worker thread completed. Job ID: {self.job_id}, benchmark ID: {self.benchmark_id}")
-        print(f"\n===== BENCHMARK WORKER THREAD COMPLETED - {self.name} =====\n")
-        sys.stdout.flush()
-        
-        # All completion callbacks should have been handled in the subprocess processing code
-        # We only need to handle the case where no callback was called yet
-        if self.on_finished and self.active and not completion_callback_called:
-            print(f"   Sending fallback completion callback...")
-            sys.stdout.flush()
-            self.on_finished({
-                "status": "failed",
-                "message": "Benchmark process completed but no results were returned",
-                "job_id": self.job_id,
-                "benchmark_id": self.benchmark_id,
-                "model_name": self.model_name
-            })
-            print(f"   ✅ Fallback completion callback sent")
-            sys.stdout.flush()
-        
-        # # Clean up resources
-        # if hasattr(self, '_original_emit_progress_callback') and self._original_emit_progress_callback is not None:
-        #     # Use the directly imported set_emit_progress_callback to restore the original callback
-        #     from runner import set_emit_progress_callback
-        #     set_emit_progress_callback(self._original_emit_progress_callback)
-        
-        # Mark thread as inactive
-        self.active = False
-        logging.info(f"Thread {self.name}: Finished execution")
-
-    def _emit_progress_override(self, data: dict):
-        """
-        Override the default progress emitter to route through our worker's callback.
-        This allows progress updates to be sent back to the main thread.
-        """
-        if not self.active:
-            logging.warning("Worker no longer active, ignoring progress update")
-            return
-            
-        # Log the progress update
-        status = data.get('status', 'unknown')
-        progress = data.get('progress', 0)
-        message = data.get('message', '')
-        
-        logging.info(f"Thread {self.name}: Progress - {status}: {message} ({progress*100:.1f}%)")
-        
-        # Forward the progress update through our worker's callback
-        if self.on_progress:
-            # Add thread and model info to the progress data
-            data.update({
-                'worker_name': self.name,
-                'model_name': getattr(self, 'model_name', 'unknown'),
-                'benchmark_id': getattr(self, 'benchmark_id', None),
-                'timestamp': datetime.now().isoformat()
-            })
-            self.on_progress(data)
-            
-            # Log the progress data at DEBUG level
-            logging.debug(f"Progress update from worker {getattr(self, 'name', 'unknown')}: {data}")
-            
-            # Forward to the UI callback if available and worker is still active
-            if hasattr(self, 'on_progress') and self.on_progress and self.active:
-                self.on_progress(data) # Call with one argument as expected by the lambda
-                
-        if self._original_emit_progress_callback:
-            self._original_emit_progress_callback(data)
+# --- AppLogic main application class ---
 
 
 class AppLogic:
@@ -461,19 +95,59 @@ class AppLogic:
         self._last_cleanup = time.time()
         self._next_job_id = 1
         self._worker_cleanup_interval = 30  # Clean up every 30 seconds
+        self.token_manager = TokenManager()  # Initialize token manager
+        self.file_manager = FileManager(self.db_path)  # Initialize file manager
+        self.prompt_manager = PromptManager(self.db_path)  # Initialize prompt manager
         
         # Initialize database and reset any stuck benchmarks
-        db_path = Path(__file__).parent
-        init_file_store_db(db_path)
+        init_file_store_db(self.db_path)
         self.reset_stuck_benchmarks()
         self.cleanup_stuck_rerun_prompts()
+    
+    @property
+    def db_path(self) -> Path:
+        """Get the consistent database directory path."""
+        return Path(__file__).parent
+    
+    def _create_worker_callbacks(self, job_id: int, model_name: str):
+        """Create standardized callbacks for benchmark workers."""
+        def finished_callback(result):
+            return self.handle_run_finished(result, job_id=job_id, model_name_for_run=model_name)
+        
+        def progress_callback(progress_data):
+            return self.handle_benchmark_progress(job_id, model_name, progress_data)
+        
+        return finished_callback, progress_callback
+    
+    def _create_and_start_worker(self, job_id: int, benchmark_id: int, 
+                               prompts: list, pdf_paths: list, model_name: str,
+                               web_search_enabled: bool = False, single_prompt_id: int = None):
+        """Create and start a benchmark worker with standardized setup."""
+        finished_cb, progress_cb = self._create_worker_callbacks(job_id, model_name)
+        
+        worker = BenchmarkWorker(
+            job_id=job_id,
+            benchmark_id=benchmark_id,
+            prompts=prompts,
+            pdf_paths=pdf_paths,
+            model_name=model_name,
+            on_progress=progress_cb,
+            on_finished=finished_cb,
+            web_search_enabled=web_search_enabled,
+            single_prompt_id=single_prompt_id
+        )
+        
+        worker_key = f"{job_id}_{model_name}"
+        self.workers[worker_key] = worker
+        worker.start()
+        
+        return worker, worker_key
     
     def reset_stuck_benchmarks(self):
         """Reset benchmarks that might be stuck from previous runs."""
         try:
-            db_path = Path(__file__).parent
-            from file_store import reset_stuck_benchmarks
-            reset_count = reset_stuck_benchmarks(db_path)
+            
+            reset_count = reset_stuck_benchmarks(self.db_path)
             if reset_count > 0:
                 logging.info(f"Reset {reset_count} stuck benchmarks on startup")
                 # Notify UI that benchmark list may have changed
@@ -484,9 +158,8 @@ class AppLogic:
     def cleanup_stuck_rerun_prompts(self):
         """Clean up any prompts stuck in pending state from interrupted reruns."""
         try:
-            db_path = Path(__file__).parent
             from file_store import cleanup_stuck_rerun_prompts
-            stuck_count = cleanup_stuck_rerun_prompts(db_path)
+            stuck_count = cleanup_stuck_rerun_prompts(self.db_path)
             if stuck_count > 0:
                 logging.info(f"Cleaned up {stuck_count} stuck rerun prompts on startup")
                 # Notify UI that benchmark list may have changed
@@ -513,22 +186,21 @@ class AppLogic:
 
     def _initialize_database(self):
         # Initialize the file store database with explicit path to ensure consistency
-        db_dir = Path(__file__).parent
-        logging.info(f"Using database directory: {db_dir}")
+        logging.info(f"Using database directory: {self.db_path}")
         
         # Initialize database - pass the directory, not the file path
         # Surface any errors directly to assist with debugging
-        init_file_store_db(db_path=db_dir)
+        init_file_store_db(db_path=self.db_path)
         
         # Verify that the database was created successfully
-        db_file = db_dir / 'eotb_file_store.sqlite'
+        db_file = self.db_path / 'eotb_file_store.sqlite'
         if not db_file.exists():
             logging.error(f"Database file was not created at expected location: {db_file}")
             raise FileNotFoundError(f"Database initialization failed: {db_file} not found")
             
         logging.info(f"Database successfully initialized at: {db_file}")
         # Store DB file path for later use (e.g., CSV export)
-        self.db_path = str(db_file)
+        self.db_file_path = str(db_file)
 
     def _ensure_directories_exist(self):
         files_dir = Path.cwd() / "files"
@@ -674,17 +346,16 @@ class AppLogic:
         # First create the benchmark in the database
         logger.info(f"Creating benchmark record with label: {label}, description: {description}")
         
-        # Use consistent database path - same as in _initialize_database
-        db_dir = Path(__file__).parent
-        db_path = db_dir / 'eotb_file_store.sqlite'
+        # Use consistent database path
+        db_path = self.db_path / 'eotb_file_store.sqlite'
         logger.info(f"Using database at: {db_path} for saving benchmark")
         
         # Ensure database directory exists
-        db_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path.mkdir(parents=True, exist_ok=True)
         
         # Initialize database if it doesn't exist
         from file_store import init_db
-        init_db(db_dir)
+        init_db(self.db_path)
         
         # Save the benchmark to get an ID - let errors propagate naturally
         from file_store import save_benchmark
@@ -694,7 +365,7 @@ class AppLogic:
             file_paths=[str(pdf_path) for pdf_path in pdfs_to_run],
             intended_models=modelNames,  # Store the intended models
             use_web_search=webSearchEnabled,  # Pass web search flag
-            db_path=db_dir
+            db_path=self.db_path
         )
         
         if not benchmark_id:
@@ -735,38 +406,22 @@ class AppLogic:
         # This ensures models appear in listings even before any results are saved
         from file_store import update_benchmark_model
         for model_name in modelNames:
-            update_benchmark_model(benchmark_id, model_name, db_dir)
+            update_benchmark_model(benchmark_id, model_name, self.db_path)
             logger.info(f"Registered model {model_name} in database for benchmark {benchmark_id}")
         
-        # Start a worker thread for each model
+        # Start a worker thread for each model using the helper method
         for model_name in modelNames:
             logger.info(f"Starting worker for model: {model_name}")
             
-            # Create callbacks with proper context
-            def create_finished_callback(jid, mname):
-                return lambda result: self.handle_run_finished(result, job_id=jid, model_name_for_run=mname)
-                
-            def create_progress_callback(jid, mname):
-                return lambda progress_data: self.handle_benchmark_progress(jid, mname, progress_data)
-            
-            # Create worker with callbacks
-            worker = BenchmarkWorker(
+            # Use the helper method to create and start worker
+            worker, worker_key = self._create_and_start_worker(
                 job_id=job_id,
                 benchmark_id=benchmark_id,
                 prompts=prompts,
                 pdf_paths=pdfs_to_run,
-                model_name=model_name, 
-                on_progress=create_progress_callback(job_id, model_name),
-                on_finished=create_finished_callback(job_id, model_name),
+                model_name=model_name,
                 web_search_enabled=webSearchEnabled
             )
-            
-            # Store worker using job_id and model_name as composite key
-            worker_key = f"{job_id}_{model_name}"
-            self.workers[worker_key] = worker
-            
-            # Start the worker thread
-            worker.start()
         
         # Ensure clean output separation with a blank line
         print("")
@@ -818,7 +473,8 @@ class AppLogic:
         logging.info(f"Exporting benchmark {benchmark_id} to {filename}")
         
         # Get the benchmark results from the database
-        with sqlite3.connect(self.db_path) as conn:
+        db_file = self.db_path / 'eotb_file_store.sqlite'
+        with sqlite3.connect(db_file) as conn:
             cursor = conn.cursor()
             
             # First check if the benchmark exists and get file information
@@ -1290,8 +946,8 @@ class AppLogic:
             return
 
         # Get consistent database directory path
-        db_dir = Path(__file__).parent
-        details = load_benchmark_details(benchmark_id, db_path=db_dir)
+        # Using self.db_path property instead
+        details = load_benchmark_details(benchmark_id, db_path=self.db_path)
         if details:
             self.ui_bridge.display_full_benchmark_details_in_console(details)
             self.ui_bridge.show_console_page()
@@ -1343,7 +999,7 @@ class AppLogic:
         """
         try:
             logger.info(f"Attempting to delete benchmark with ID: {benchmark_id}")
-            db_path = Path(__file__).parent 
+            # Using self.db_path property instead 
             
             # Keep track of deleted benchmark IDs to avoid reloading them during list operations
             if not hasattr(self, '_deleted_benchmark_ids'):
@@ -1387,13 +1043,13 @@ class AppLogic:
             # Update the benchmark status to indicate deletion in progress
             try:
                 from file_store import update_benchmark_status
-                update_benchmark_status(benchmark_id, 'deleting', db_path=db_path)
+                update_benchmark_status(benchmark_id, 'deleting', db_path=self.db_path)
                 logger.info(f"Set benchmark {benchmark_id} status to 'deleting'")
             except Exception as e:
                 logger.warning(f"Could not update benchmark status before deletion: {e}")
             
             # Perform the actual deletion
-            success = delete_benchmark(benchmark_id, db_path=db_path)
+            success = delete_benchmark(benchmark_id, db_path=self.db_path)
             
             if success:
                 logger.info(f"Successfully deleted benchmark ID: {benchmark_id}")
@@ -1440,8 +1096,8 @@ class AppLogic:
             self.ui_bridge.show_message("warning", "No Changes", "No new name or description provided.")
             return {"success": False, "error": "No new name or description provided."}
 
-        db_path = Path(__file__).parent 
-        success = update_benchmark_details(benchmark_id, label=new_label, description=new_description, db_path=db_path)
+        # Using self.db_path property instead 
+        success = update_benchmark_details(benchmark_id, label=new_label, description=new_description, db_path=self.db_path)
         if success:
             logger.info(f"Successfully updated details for benchmark ID: {benchmark_id}")
             self.ui_bridge.notify_data_change(DataChangeType.BENCHMARK_LIST, None)
@@ -1464,11 +1120,11 @@ class AppLogic:
         """
         try:
             logger.info(f"Attempting to rerun prompt ID: {prompt_id}")
-            db_path = Path(__file__).parent
+            # Using self.db_path property instead
             
             # Get prompt details and benchmark context
             from file_store import get_prompt_for_rerun, get_benchmark_files
-            prompt_data = get_prompt_for_rerun(prompt_id, db_path=db_path)
+            prompt_data = get_prompt_for_rerun(prompt_id, db_path=self.db_path)
             
             if not prompt_data:
                 error_msg = f"Prompt ID {prompt_id} not found"
@@ -1477,14 +1133,14 @@ class AppLogic:
             
             # Set prompt status to pending and clear previous results
             from file_store import reset_prompt_for_rerun
-            reset_prompt_for_rerun(prompt_id, db_path=db_path)
+            reset_prompt_for_rerun(prompt_id, db_path=self.db_path)
             
             # Launch the rerun in a background thread
             job_id = self._next_job_id
             self._next_job_id += 1
             
             # Get benchmark files for context (needed for rerun)
-            benchmark_files = get_benchmark_files(prompt_data['benchmark_id'], db_path=db_path)
+            benchmark_files = get_benchmark_files(prompt_data['benchmark_id'], db_path=self.db_path)
             pdf_paths = [f['file_path'] for f in benchmark_files if f['mime_type'] == 'application/pdf']
             
             # Create callbacks for single prompt rerun
@@ -1545,7 +1201,7 @@ class AppLogic:
                         )
                         # Mark prompt as failed in database
                         from file_store import mark_prompt_failed
-                        mark_prompt_failed(prompt_data['benchmark_run_id'], prompt_data['prompt'], "Rerun timed out after 5 minutes", db_path=db_path)
+                        mark_prompt_failed(prompt_data['benchmark_run_id'], prompt_data['prompt'], "Rerun timed out after 5 minutes", db_path=self.db_path)
                 
                 timeout_thread = threading.Thread(target=timeout_check, daemon=True)
                 timeout_thread.start()
@@ -1556,7 +1212,7 @@ class AppLogic:
                 if job_id in self.jobs:
                     del self.jobs[job_id]
                 from file_store import mark_prompt_failed
-                mark_prompt_failed(prompt_data['benchmark_run_id'], prompt_data['prompt'], f"Failed to start rerun worker: {str(worker_error)}", db_path=db_path)
+                mark_prompt_failed(prompt_data['benchmark_run_id'], prompt_data['prompt'], f"Failed to start rerun worker: {str(worker_error)}", db_path=self.db_path)
                 return {"success": False, "error": f"Failed to start rerun worker: {str(worker_error)}"}
             
             
@@ -1594,7 +1250,7 @@ class AppLogic:
         if benchmark_id:
             # Update benchmark progress and status based on completed prompts
             from file_store import update_benchmark_progress
-            update_benchmark_progress(benchmark_id, Path(__file__).parent)
+            update_benchmark_progress(benchmark_id, self.db_path)
             logger.info(f"Updated benchmark progress for benchmark {benchmark_id} after prompt {prompt_id} rerun")
         
         # Clean up job from active jobs
@@ -1615,7 +1271,7 @@ class AppLogic:
         # Check if benchmark is now complete and send appropriate completion event
         if benchmark_id:
             from file_store import get_benchmark_by_id
-            benchmark = get_benchmark_by_id(benchmark_id, Path(__file__).parent)
+            benchmark = get_benchmark_by_id(benchmark_id, self.db_path)
             if benchmark and benchmark.get('status') in ['completed', 'completed_with_errors']:
                 # Send benchmark completion event like regular benchmarks
                 completion_data = {
@@ -1633,8 +1289,8 @@ class AppLogic:
 
     def list_benchmarks(self) -> List[Dict[str, Any]]:
         """Get a list of all benchmarks from the database."""
-        db_path = Path(__file__).parent
-        benchmarks_from_db = load_all_benchmarks_with_models(db_path=db_path)
+        # Using self.db_path property instead
+        benchmarks_from_db = load_all_benchmarks_with_models(db_path=self.db_path)
         
         # Initialize the deleted benchmarks tracking set if it doesn't exist
         if not hasattr(self, '_deleted_benchmark_ids'):
@@ -1729,7 +1385,7 @@ class AppLogic:
     def delete_benchmark(self, benchmark_id: int) -> dict:
         """Delete a benchmark and all associated data."""
         try:
-            db_path = Path(__file__).parent
+            # Using self.db_path property instead
             from file_store import delete_benchmark
             
             success = delete_benchmark(benchmark_id, db_path)
@@ -1752,345 +1408,90 @@ class AppLogic:
     # ===== PROMPT SET MANAGEMENT =====
     
     def create_prompt_set(self, name: str, description: str, prompts: List[str]) -> dict:
-        """Create a new prompt set."""
-        try:
-            db_path = Path(__file__).parent
-            from file_store import create_prompt_set
-            
-            prompt_set_id = create_prompt_set(name, description, prompts, db_path)
-            
-            if prompt_set_id:
-                return {
-                    "success": True, 
-                    "prompt_set_id": prompt_set_id,
-                    "message": f"Prompt set '{name}' created successfully"
-                }
-            else:
-                return {"success": False, "error": "Failed to create prompt set"}
-                
-        except Exception as e:
-            logging.error(f"Error creating prompt set: {e}")
-            return {"success": False, "error": str(e)}
+        """Delegate to prompt manager for prompt set creation."""
+        return self.prompt_manager.create_prompt_set(name, description, prompts)
     
     def get_prompt_sets(self) -> List[dict]:
-        """Get all prompt sets."""
-        try:
-            db_path = Path(__file__).parent
-            from file_store import get_all_prompt_sets
-            
-            return get_all_prompt_sets(db_path)
-            
-        except Exception as e:
-            logging.error(f"Error getting prompt sets: {e}")
-            return []
+        """Delegate to prompt manager for getting prompt sets."""
+        return self.prompt_manager.get_prompt_sets()
     
     def get_prompt_set_details(self, prompt_set_id: int) -> Optional[dict]:
-        """Get detailed information about a specific prompt set."""
-        try:
-            db_path = Path(__file__).parent
-            from file_store import get_prompt_set
-            
-            return get_prompt_set(prompt_set_id, db_path)
-            
-        except Exception as e:
-            logging.error(f"Error getting prompt set {prompt_set_id}: {e}")
-            return None
+        """Delegate to prompt manager for prompt set details."""
+        return self.prompt_manager.get_prompt_set_details(prompt_set_id)
     
     def update_prompt_set(self, prompt_set_id: int, name: str = None, 
                          description: str = None, prompts: List[str] = None) -> dict:
-        """Update a prompt set."""
-        try:
-            db_path = Path(__file__).parent
-            from file_store import update_prompt_set
-            
-            success = update_prompt_set(prompt_set_id, name, description, prompts, db_path)
-            
-            if success:
-                return {"success": True, "message": f"Prompt set {prompt_set_id} updated successfully"}
-            else:
-                return {"success": False, "error": "Failed to update prompt set"}
-                
-        except Exception as e:
-            logging.error(f"Error updating prompt set {prompt_set_id}: {e}")
-            return {"success": False, "error": str(e)}
+        """Delegate to prompt manager for prompt set update."""
+        return self.prompt_manager.update_prompt_set(prompt_set_id, name, description, prompts)
     
     def delete_prompt_set(self, prompt_set_id: int) -> dict:
-        """Delete a prompt set."""
-        try:
-            db_path = Path(__file__).parent
-            from file_store import delete_prompt_set
-            
-            success = delete_prompt_set(prompt_set_id, db_path)
-            
-            if success:
-                return {"success": True, "message": f"Prompt set {prompt_set_id} deleted successfully"}
-            else:
-                return {"success": False, "error": "Failed to delete prompt set (may be in use by benchmarks)"}
-                
-        except Exception as e:
-            logging.error(f"Error deleting prompt set {prompt_set_id}: {e}")
-            return {"success": False, "error": str(e)}
+        """Delegate to prompt manager for prompt set deletion."""
+        return self.prompt_manager.delete_prompt_set(prompt_set_id)
     
     def get_next_prompt_set_number(self) -> int:
-        """Get the next available prompt set number for auto-naming."""
-        try:
-            db_path = Path(__file__).parent
-            from file_store import get_next_prompt_set_number
-            
-            return get_next_prompt_set_number(db_path)
-            
-        except Exception as e:
-            logging.error(f"Error getting next prompt set number: {e}")
-            return 1
+        """Delegate to prompt manager for next prompt set number."""
+        return self.prompt_manager.get_next_prompt_set_number()
 
     # ===== FILE MANAGEMENT =====
     
     def handle_upload_file(self, file_path: str) -> dict:
-        """Upload and register a file in the system."""
-        try:
-            db_path = Path(__file__).parent
-            from file_store import register_file
-            
-            file_path_obj = Path(file_path)
-            
-            # Validate file exists
-            if not file_path_obj.exists():
-                return {"success": False, "error": "File does not exist"}
-            
-            # Validate file type (PDF, CSV, XLSX)
-            allowed_extensions = {'.pdf', '.csv', '.xlsx'}
-            if file_path_obj.suffix.lower() not in allowed_extensions:
-                return {"success": False, "error": f"File type not supported. Allowed: {', '.join(allowed_extensions)}"}
-            
-            # Register file
-            file_id = register_file(file_path_obj, db_path)
-            
-            if file_id:
-                return {
-                    "success": True,
-                    "file_id": file_id,
-                    "message": f"File '{file_path_obj.name}' uploaded successfully"
-                }
-            else:
-                return {"success": False, "error": "Failed to register file"}
-                
-        except Exception as e:
-            logging.error(f"Error uploading file {file_path}: {e}")
-            return {"success": False, "error": str(e)}
+        """Delegate to file manager for file upload."""
+        return self.file_manager.handle_upload_file(file_path)
     
     def handle_get_files(self) -> List[dict]:
-        """Get all registered files."""
-        try:
-            db_path = Path(__file__).parent
-            from file_store import get_all_files
-            
-            return get_all_files(db_path)
-            
-        except Exception as e:
-            logging.error(f"Error getting files: {e}")
-            return []
+        """Delegate to file manager for getting files."""
+        return self.file_manager.handle_get_files()
     
     def handle_get_file_details(self, file_id: int) -> dict:
-        """Get details of a specific file."""
-        try:
-            db_path = Path(__file__).parent
-            from file_store import get_file_details
-            
-            file_details = get_file_details(file_id, db_path)
-            
-            if file_details:
-                return {"success": True, "file": file_details}
-            else:
-                return {"success": False, "error": "File not found"}
-                
-        except Exception as e:
-            logging.error(f"Error getting file details {file_id}: {e}")
-            return {"success": False, "error": str(e)}
+        """Delegate to file manager for file details."""
+        return self.file_manager.handle_get_file_details(file_id)
     
     def handle_delete_file(self, file_id: int) -> dict:
-        """Delete a file from the system."""
-        try:
-            db_path = Path(__file__).parent
-            from file_store import delete_file
-            
-            success = delete_file(file_id, db_path)
-            
-            if success:
-                return {"success": True, "message": f"File {file_id} deleted successfully"}
-            else:
-                return {"success": False, "error": "Failed to delete file (may be in use by benchmarks)"}
-                
-        except Exception as e:
-            logging.error(f"Error deleting file {file_id}: {e}")
-            return {"success": False, "error": str(e)}
+        """Delegate to file manager for file deletion."""
+        return self.file_manager.handle_delete_file(file_id)
 
     # ===== PROMPT SET HANDLERS =====
     
     def handle_create_prompt_set(self, name: str, description: str, prompts: List[str]) -> dict:
-        """Create a new prompt set."""
-        return self.create_prompt_set(name, description, prompts)
+        """Delegate to prompt manager for prompt set creation."""
+        return self.prompt_manager.handle_create_prompt_set(name, description, prompts)
     
     def handle_get_prompt_sets(self) -> List[dict]:
-        """Get all prompt sets."""
-        return self.get_prompt_sets()
+        """Delegate to prompt manager for getting prompt sets."""
+        return self.prompt_manager.handle_get_prompt_sets()
     
     def handle_get_prompt_set_details(self, prompt_set_id: int) -> dict:
-        """Get detailed information about a specific prompt set."""
-        result = self.get_prompt_set_details(prompt_set_id)
-        if result:
-            return {"success": True, "prompt_set": result}
-        else:
-            return {"success": False, "error": "Prompt set not found"}
+        """Delegate to prompt manager for prompt set details."""
+        return self.prompt_manager.handle_get_prompt_set_details(prompt_set_id)
     
     def handle_update_prompt_set(self, prompt_set_id: int, name: str = None, 
                                 description: str = None, prompts: List[str] = None) -> dict:
-        """Update a prompt set."""
-        return self.update_prompt_set(prompt_set_id, name, description, prompts)
+        """Delegate to prompt manager for prompt set update."""
+        return self.prompt_manager.handle_update_prompt_set(prompt_set_id, name, description, prompts)
     
     def handle_delete_prompt_set(self, prompt_set_id: int) -> dict:
-        """Delete a prompt set."""
-        return self.delete_prompt_set(prompt_set_id)
+        """Delegate to prompt manager for prompt set deletion."""
+        return self.prompt_manager.handle_delete_prompt_set(prompt_set_id)
     
     def handle_get_next_prompt_set_number(self) -> dict:
-        """Get the next available prompt set number."""
-        return {"next_number": self.get_next_prompt_set_number()}
+        """Delegate to prompt manager for next prompt set number."""
+        return self.prompt_manager.handle_get_next_prompt_set_number()
 
     def handle_validate_tokens(self, prompts: list, file_paths: list, model_names: list) -> dict:
         """Validate token limits for given prompts, files, and models."""
-        return self.validate_tokens(prompts, file_paths, model_names)
+        return self.token_manager.validate_tokens(prompts, file_paths, model_names)
 
     def validate_tokens(self, prompts: list, pdfPaths: list, modelNames: list) -> dict:
-        """
-        Validate that prompts + PDFs don't exceed context limits for the selected models.
-        
-        Args:
-            prompts: List of prompt dictionaries with 'prompt_text' keys
-            pdfPaths: List of PDF file paths
-            modelNames: List of model names to check
-            
-        Returns:
-            Dictionary with validation results
-        """
-        try:
-            # Validate inputs
-            if not prompts:
-                return {"status": "error", "message": "No prompts provided"}
-            if not modelNames:
-                return {"status": "error", "message": "No models provided"}
-            
-            # Run token validation
-            validation_results = validate_token_limits_with_upload(prompts, pdfPaths or [], modelNames)
-            
-            return {
-                "status": "success",
-                "validation_results": validation_results,
-                "formatted_message": format_token_validation_message(validation_results)
-            }
-            
-        except Exception as e:
-            logging.error(f"Error validating tokens: {str(e)}")
-            return {"status": "error", "message": f"Token validation failed: {str(e)}"}
+        """Delegate to token manager for validation."""
+        return self.token_manager.validate_tokens(prompts, pdfPaths, modelNames)
 
     def get_model_token_budget(self, model_name: str) -> int:
-        """Get the token budget for a specific model (context limit minus buffer)."""
-        model_budgets = {
-            # OpenAI models
-            'gpt-4o': 120000,  # 128k - 8k buffer
-            'gpt-4o-mini': 120000,  # 128k - 8k buffer
-            'gpt-4.1': 120000,  # 128k - 8k buffer
-            'gpt-4.1-mini': 120000,  # 128k - 8k buffer
-            'o3': 120000,  # 128k - 8k buffer
-            'o4-mini': 120000,  # 128k - 8k buffer
-            
-            # Anthropic models
-            'claude-opus-4-20250514': 190000,  # 200k - 10k buffer
-            'claude-opus-4-20250514-thinking': 190000,
-            'claude-sonnet-4-20250514': 190000,
-            'claude-sonnet-4-20250514-thinking': 190000,
-            'claude-3-7-sonnet-20250219': 190000,
-            'claude-3-7-sonnet-20250219-thinking': 190000,
-            'claude-3-5-haiku-20241022': 190000,
-            
-            # Google models
-            'gemini-2.5-flash-preview-05-20': 990000,  # 1M - 10k buffer
-            'gemini-2.5-pro-preview-05-06': 990000,
-        }
-        
-        return model_budgets.get(model_name, 120000)  # Default to GPT-4o budget
+        """Delegate to token manager for budget calculation."""
+        return self.token_manager.get_model_token_budget(model_name)
 
     def process_csv_for_model(self, csv_file_path: str, model_name: str) -> dict:
-        """
-        Process CSV file for a specific model, applying token budget limits.
-        
-        Returns:
-            Dict with 'data' (markdown string), 'truncation_info', 'included_rows', 'total_rows'
-        """
-        try:
-            from file_store import parse_csv_to_markdown_format, estimate_markdown_tokens
-            
-            # Get model's token budget
-            token_budget = self.get_model_token_budget(model_name)
-            
-            # Parse full CSV
-            csv_data = parse_csv_to_markdown_format(Path(csv_file_path))
-            total_rows = csv_data['total_rows']
-            
-            # Estimate tokens for full dataset
-            full_tokens = estimate_markdown_tokens(csv_data['markdown_data'])
-            
-            if full_tokens <= token_budget:
-                # No truncation needed
-                return {
-                    'data': csv_data['markdown_data'],
-                    'truncation_info': None,
-                    'included_rows': total_rows,
-                    'total_rows': total_rows,
-                    'estimated_tokens': full_tokens
-                }
-            
-            # Need to truncate - binary search for optimal row count
-            left, right = 1, total_rows
-            best_rows = 1
-            
-            while left <= right:
-                mid = (left + right) // 2
-                subset_data = parse_csv_to_markdown_format(Path(csv_file_path), max_rows=mid)
-                subset_tokens = estimate_markdown_tokens(subset_data['markdown_data'])
-                
-                if subset_tokens <= token_budget:
-                    best_rows = mid
-                    left = mid + 1
-                else:
-                    right = mid - 1
-            
-            # Get the final truncated data
-            truncated_data = parse_csv_to_markdown_format(Path(csv_file_path), max_rows=best_rows)
-            final_tokens = estimate_markdown_tokens(truncated_data['markdown_data'])
-            
-            # Create truncation info
-            truncation_info = {
-                'csv_truncations': [{
-                    'file_name': Path(csv_file_path).name,
-                    'original_rows': total_rows,
-                    'included_rows': best_rows,
-                    'token_budget': token_budget,
-                    'actual_tokens': final_tokens,
-                    'strategy': 'first_n_rows',
-                    'model': model_name
-                }]
-            }
-            
-            return {
-                'data': truncated_data['markdown_data'],
-                'truncation_info': truncation_info,
-                'included_rows': best_rows,
-                'total_rows': total_rows,
-                'estimated_tokens': final_tokens
-            }
-            
-        except Exception as e:
-            logging.error(f"Error processing CSV for model {model_name}: {e}")
-            raise
+        """Delegate to token manager for CSV processing."""
+        return self.token_manager.process_csv_for_model(csv_file_path, model_name)
 
     def handle_sync_benchmark(self, benchmark_id: int) -> dict:
         """
@@ -2129,10 +1530,10 @@ class AppLogic:
                 }
             
             # Get sync analysis
-            db_path = Path(__file__).parent
+            # Using self.db_path property instead
             from file_store import get_benchmark_sync_status
             
-            sync_status = get_benchmark_sync_status(benchmark_id, db_path)
+            sync_status = get_benchmark_sync_status(benchmark_id, self.db_path)
             
             if "error" in sync_status:
                 return {"success": False, "error": sync_status["error"]}
@@ -2198,33 +1599,17 @@ class AppLogic:
                 
                 logger.info(f"Starting sync worker for model {model_name} with {len(prompts_for_worker)} prompts")
                 
-                # Create callbacks
-                def create_finished_callback(jid, mname):
-                    return lambda result: self.handle_run_finished(result, job_id=jid, model_name_for_run=mname)
-                    
-                def create_progress_callback(jid, mname):
-                    return lambda progress_data: self.handle_benchmark_progress(jid, mname, progress_data)
-                
-                # Create worker for this model's prompts
-                worker = BenchmarkWorker(
+                # Use the helper method to create and start worker
+                worker, worker_key = self._create_and_start_worker(
                     job_id=job_id,
                     benchmark_id=benchmark_id,
                     prompts=prompts_for_worker,
                     pdf_paths=file_paths,
                     model_name=model_name,
-                    on_progress=create_progress_callback(job_id, model_name),
-                    on_finished=create_finished_callback(job_id, model_name),
                     web_search_enabled=benchmark_details.get('use_web_search', False)
                 )
                 
-                # Store worker
-                worker_key = f"{job_id}_{model_name}"
-                self.workers[worker_key] = worker
-                
-                # Start the worker
-                worker.start()
                 workers_started += 1
-                
                 logger.info(f"Started sync worker for {model_name}")
             
             # Notify UI about the sync job
@@ -2259,7 +1644,7 @@ class AppLogic:
             dict: Sync status information
         """
         try:
-            db_path = Path(__file__).parent
+            # Using self.db_path property instead
             from file_store import get_benchmark_sync_status
             
             sync_status = get_benchmark_sync_status(benchmark_id, db_path)

@@ -799,6 +799,12 @@ document.addEventListener('DOMContentLoaded', () => {
       initializationStarted = true;
       console.log('Starting app initialization...');
       
+      // Force hide loading overlay in case it's still showing
+      if (window.hideLoadingOverlay) {
+        console.log('Force hiding loading overlay during app initialization...');
+        window.hideLoadingOverlay();
+      }
+      
       // Set up WebSocket event listeners for real-time updates
       if (window.API.electronAPI) {
         console.log('Setting up WebSocket event listeners...');

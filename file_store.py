@@ -26,8 +26,16 @@ BENCHMARK_PROMPTS_TABLE = "benchmark_prompts"
 BENCHMARK_REPORTS_TABLE = "benchmark_reports"
 PDF_CHUNKS_TABLE = "pdf_chunks"
 
-def init_db(db_path: Path = Path.cwd()):
+def init_db(db_path: Path = None):
     """Initializes the SQLite database with a clean multi-provider, multi-file schema, focused on response collection."""
+    if db_path is None:
+        # Use temp directory for PyInstaller, current directory for development
+        import sys
+        import tempfile
+        if getattr(sys, 'frozen', False):
+            db_path = Path(tempfile.gettempdir())
+        else:
+            db_path = Path.cwd()
     db_file = db_path / DB_NAME
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
@@ -139,6 +147,9 @@ def init_db(db_path: Path = Path.cwd()):
             intended_models TEXT, -- JSON array of model names that should be run
             prompt_set_id INTEGER,
             use_web_search BOOLEAN DEFAULT 0,
+            total_prompts INTEGER DEFAULT 0,
+            completed_prompts INTEGER DEFAULT 0,
+            failed_prompts INTEGER DEFAULT 0,
             FOREIGN KEY (prompt_set_id) REFERENCES {PROMPT_SETS_TABLE}(id)
         )
     ''')
@@ -162,6 +173,46 @@ def init_db(db_path: Path = Path.cwd()):
             logging.debug("use_web_search column already exists")
         else:
             logging.warning(f"Could not add use_web_search column: {e}")
+    
+    # Add updated_at column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARKS_TABLE} ADD COLUMN updated_at TEXT')
+        logging.info("Added updated_at column to benchmarks table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("updated_at column already exists")
+        else:
+            logging.warning(f"Could not add updated_at column: {e}")
+    
+    # Add total_prompts column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARKS_TABLE} ADD COLUMN total_prompts INTEGER DEFAULT 0')
+        logging.info("Added total_prompts column to benchmarks table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("total_prompts column already exists")
+        else:
+            logging.warning(f"Could not add total_prompts column: {e}")
+    
+    # Add completed_prompts column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARKS_TABLE} ADD COLUMN completed_prompts INTEGER DEFAULT 0')
+        logging.info("Added completed_prompts column to benchmarks table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("completed_prompts column already exists")
+        else:
+            logging.warning(f"Could not add completed_prompts column: {e}")
+    
+    # Add failed_prompts column if it doesn't exist (for existing databases)
+    try:
+        cursor.execute(f'ALTER TABLE {BENCHMARKS_TABLE} ADD COLUMN failed_prompts INTEGER DEFAULT 0')
+        logging.info("Added failed_prompts column to benchmarks table")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" in str(e).lower():
+            logging.debug("failed_prompts column already exists")
+        else:
+            logging.warning(f"Could not add failed_prompts column: {e}")
     
     # Benchmark Files Table - Many-to-many relationship between benchmarks and files
     cursor.execute(f'''
@@ -957,7 +1008,7 @@ def save_benchmark_prompt(benchmark_run_id: int, prompt: str, response: str,
              input_cost, cached_cost, output_cost, thinking_cost, reasoning_cost, total_cost, 
              web_search_used, web_search_sources, truncation_info,
              status, started_at, completed_at, error_message)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (benchmark_run_id, str(prompt), str(response),
               float(latency) if latency is not None else 0.0, 
               int(standard_input_tokens) if standard_input_tokens is not None else 0,

@@ -65,22 +65,22 @@ body {
   overflow-y: auto;
 }
 
-/* Ensure files page is scrollable */
-#filesContent {
+/* Ensure files page is scrollable when active */
+#filesContent.active {
   overflow-y: auto;
   height: 100%;
   display: flex;
   flex-direction: column;
 }
 
-#filesContent .container-fluid {
+#filesContent.active .container-fluid {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
 }
 
-#filesListContainer {
+#filesContent.active #filesListContainer {
   flex: 1;
   overflow-y: auto;
   min-height: 0;

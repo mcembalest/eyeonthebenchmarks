@@ -13,6 +13,114 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay" class="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center bg-dark bg-opacity-75" style="z-index: 9999;">
+    <div class="text-center text-white">
+      <div class="spinner-border text-primary mb-3" role="status" style="width: 3rem; height: 3rem;">
+        <span class="visually-hidden">Loading...</span>
+      </div>
+      <h4>Starting Eye on the Benchmarks</h4>
+      <p id="loadingMessage">Initializing backend service...</p>
+      <div id="debugInfo" class="mt-3" style="font-size: 0.8em; color: #ccc; max-width: 500px; display: none;">
+        <strong>Debug Info:</strong>
+        <div id="debugContent"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading Screen Control Script -->
+  <script>
+    console.log('Loading overlay script initialized');
+    
+    // Function to update loading message
+    window.updateLoadingMessage = function(message) {
+      const loadingMessage = document.getElementById('loadingMessage');
+      if (loadingMessage) {
+        loadingMessage.textContent = message;
+      }
+    };
+    
+    // Function to hide loading overlay
+    window.hideLoadingOverlay = function() {
+      const overlay = document.getElementById('loadingOverlay');
+      if (overlay) {
+        overlay.style.display = 'none';
+        overlay.remove(); // Also remove from DOM to prevent issues
+        console.log('Loading overlay hidden and removed');
+      }
+    };
+    
+    // Wait for electronAPI to be available
+    function setupEventListeners() {
+      if (window.electronAPI) {
+        // Listen for backend status updates
+        if (window.electronAPI.onBackendStatus) {
+          window.electronAPI.onBackendStatus((data) => {
+            console.log('Backend status update:', data);
+            window.updateLoadingMessage(data.message);
+            
+            // Show debug info if available
+            if (data.debug) {
+              const debugInfo = document.getElementById('debugInfo');
+              const debugContent = document.getElementById('debugContent');
+              if (debugInfo && debugContent) {
+                debugInfo.style.display = 'block';
+                debugContent.innerHTML += `<div>${data.debug}</div>`;
+              }
+            }
+            
+            if (data.status === 'ready') {
+              setTimeout(() => {
+                window.hideLoadingOverlay();
+              }, 1000);
+            } else if (data.status === 'error') {
+              // Show error state in loading screen
+              const overlay = document.getElementById('loadingOverlay');
+              const spinner = overlay.querySelector('.spinner-border');
+              const title = overlay.querySelector('h4');
+              const message = overlay.querySelector('#loadingMessage');
+              
+              if (spinner) spinner.style.display = 'none';
+              if (title) title.textContent = 'Backend Service Failed';
+              if (message) {
+                message.innerHTML = `
+                  <div class="text-danger">${data.message}</div>
+                  <small class="text-muted mt-2 d-block">
+                    Try restarting the application or check the console for details.
+                  </small>
+                `;
+              }
+              
+              // Keep error state visible (don't auto-hide)
+            }
+          });
+        }
+        
+        // Listen for main process ready event
+        if (window.electronAPI.onMainProcessReady) {
+          window.electronAPI.onMainProcessReady(() => {
+            console.log('Main process ready - hiding loading overlay');
+            setTimeout(() => {
+              window.hideLoadingOverlay();
+            }, 500);
+          });
+        }
+      } else {
+        // Retry if electronAPI not available yet
+        setTimeout(setupEventListeners, 100);
+      }
+    }
+    
+    // Start setup
+    setupEventListeners();
+    
+    // Fallback: hide loading after 70 seconds (longer than backend timeout)
+    setTimeout(() => {
+      console.log('Fallback: hiding loading overlay after timeout');
+      window.hideLoadingOverlay();
+    }, 70000);
+  </script>
+
   <div id="app" class="d-flex flex-column vh-100">
     <!-- Header -->
     <header class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">

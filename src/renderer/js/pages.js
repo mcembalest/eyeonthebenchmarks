@@ -100,7 +100,7 @@ class Pages {
     
     // Always include the Settings button
     const settingsButton = `
-      <button id="settingsBtn" class="btn btn-outline-light">
+      <button id="settingsBtn" class="btn btn-outline-light" onclick="window.Pages.navigateTo('settingsContent')">
         <i class="fas fa-cog me-1"></i>Settings
       </button>
     `;

@@ -91,6 +91,55 @@ const getBackendCommand = () => {
     if (process.platform === 'darwin') {
       const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
       backendPath = path.join(process.resourcesPath, 'app.asar.unpacked', 'dist', `api-${arch}`);
+      
+      // Debug logging
+      console.log(`[DEBUG] process.resourcesPath: ${process.resourcesPath}`);
+      console.log(`[DEBUG] process.arch: ${process.arch}`);
+      console.log(`[DEBUG] Expected backend path: ${backendPath}`);
+      
+      // Check if the file exists
+      const fs = require('fs');
+      if (fs.existsSync(backendPath)) {
+        console.log(`[DEBUG] ✅ Backend binary found at: ${backendPath}`);
+        // Check if it's executable
+        try {
+          fs.accessSync(backendPath, fs.constants.F_OK | fs.constants.X_OK);
+          console.log(`[DEBUG] ✅ Backend binary is executable`);
+        } catch (err) {
+          console.log(`[DEBUG] ❌ Backend binary is not executable:`, err.message);
+        }
+      } else {
+        console.log(`[DEBUG] ❌ Backend binary NOT found at: ${backendPath}`);
+        
+        // Let's see what's actually in the directory
+        const distDir = path.join(process.resourcesPath, 'app.asar.unpacked', 'dist');
+        console.log(`[DEBUG] Checking dist directory: ${distDir}`);
+        try {
+          const files = fs.readdirSync(distDir);
+          console.log(`[DEBUG] Files in dist directory:`, files);
+        } catch (err) {
+          console.log(`[DEBUG] Could not read dist directory:`, err.message);
+          
+          // Check if app.asar.unpacked exists
+          const unpackedDir = path.join(process.resourcesPath, 'app.asar.unpacked');
+          console.log(`[DEBUG] Checking unpacked directory: ${unpackedDir}`);
+          try {
+            const unpackedFiles = fs.readdirSync(unpackedDir);
+            console.log(`[DEBUG] Files in unpacked directory:`, unpackedFiles);
+          } catch (err2) {
+            console.log(`[DEBUG] Could not read unpacked directory:`, err2.message);
+            
+            // Check what's in resourcesPath
+            console.log(`[DEBUG] Checking resources path: ${process.resourcesPath}`);
+            try {
+              const resourceFiles = fs.readdirSync(process.resourcesPath);
+              console.log(`[DEBUG] Files in resources path:`, resourceFiles);
+            } catch (err3) {
+              console.log(`[DEBUG] Could not read resources path:`, err3.message);
+            }
+          }
+        }
+      }
     } else {
       // Add placeholders for other platforms if needed, or throw error
       // For now, assuming macOS. Windows would be different.
@@ -201,6 +250,11 @@ const createWindow = () => {
     }
   });
 
+  // Open DevTools in development only
+  if (isDev) {
+    mainWindow.webContents.openDevTools();
+  }
+
   // Load the index.html file
   mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 
@@ -260,44 +314,120 @@ const startBackend = async () => {
   // Set up environment variables with API keys from settings
   const env = { ...process.env, ...getApiKeysForEnv() };
   
+  // Add detailed pre-spawn debugging
+  console.log('[DEBUG] About to spawn backend with:');
+  console.log('[DEBUG] - Command:', command);
+  console.log('[DEBUG] - Args:', JSON.stringify(args));
+  console.log('[DEBUG] - Env keys:', Object.keys(env).filter(k => k.includes('API')));
+  console.log('[DEBUG] - Working directory:', process.cwd());
+  
   try {
     backendProcess = spawn(command, args, { env });
+    console.log('[DEBUG] Backend process spawned successfully, PID:', backendProcess.pid);
   } catch (spawnError) {
     console.error('[Main Process] CRITICAL: Error spawning backend process:', spawnError);
-    // If spawn itself throws (e.g., command not found), we need to catch it here.
-    // This often means the path to the executable is wrong or it doesn't have execute permissions.
+    console.error('[DEBUG] Spawn error details:', {
+      code: spawnError.code,
+      errno: spawnError.errno,
+      syscall: spawnError.syscall,
+      path: spawnError.path
+    });
     throw new Error(`Failed to spawn backend: ${spawnError.message}`);
   }
 
   backendProcess.stdout.on('data', (data) => {
-    console.log('[Backend STDOUT]:', data.toString().trim());
+    const output = data.toString().trim();
+    console.log('[Backend STDOUT]:', output);
+    
+    // Send stdout to renderer for debugging
+    if (mainWindow && mainWindow.webContents) {
+      mainWindow.webContents.send('backend-status', {
+        status: 'starting',
+        message: 'Backend starting...',
+        debug: `STDOUT: ${output.substring(0, 100)}${output.length > 100 ? '...' : ''}`
+      });
+    }
   });
 
   backendProcess.stderr.on('data', (data) => {
-    console.error('[Backend STDERR]:', data.toString().trim());
+    const output = data.toString().trim();
+    console.error('[Backend STDERR]:', output);
+    
+    // Send stderr to renderer for debugging
+    if (mainWindow && mainWindow.webContents) {
+      mainWindow.webContents.send('backend-status', {
+        status: 'starting',
+        message: 'Backend starting (with warnings)...',
+        debug: `STDERR: ${output.substring(0, 200)}${output.length > 200 ? '...' : ''}`
+      });
+    }
   });
 
   backendProcess.on('error', (err) => {
-    // This 'error' event is typically for errors *during* the spawning process itself,
-    // like if the command doesn't exist or permissions are denied for the executable.
-    console.error('[Main Process] Failed to start backend process (spawn error event):', err);
-    // Consider this a fatal error for backend startup.
+    console.error('[Main Process] Backend process error event:', err);
+    console.error('[DEBUG] Error details:', {
+      code: err.code,
+      errno: err.errno,
+      syscall: err.syscall,
+      path: err.path,
+      spawnargs: err.spawnargs
+    });
+    
+    // Send error details to renderer
+    if (mainWindow && mainWindow.webContents) {
+      mainWindow.webContents.send('backend-status', {
+        status: 'error',
+        message: `Backend process error: ${err.code || err.message}`,
+        error: err.message,
+        debug: `Error code: ${err.code}, syscall: ${err.syscall}`
+      });
+    }
   });
 
-  backendProcess.on('close', (code) => {
-    console.log(`[Main Process] Backend process exited with code ${code}`);
+  backendProcess.on('close', (code, signal) => {
+    console.log(`[Main Process] Backend process exited with code ${code}, signal ${signal}`);
+    
+    // Send exit info to renderer
+    if (mainWindow && mainWindow.webContents && code !== 0) {
+      mainWindow.webContents.send('backend-status', {
+        status: 'error',
+        message: `Backend process exited unexpectedly (code: ${code})`,
+        debug: `Exit code: ${code}, signal: ${signal}`
+      });
+    }
+    
     backendProcess = null;
   });
 
   // Wait for backend to be ready with retries
-  const maxRetries = 15; // Increased retries
-  const retryDelay = 2000; // Increased delay
+  const maxRetries = 30; // Increased retries to 60 seconds total
+  const retryDelay = 2000; // 2 second delay
   
   for (let i = 0; i < maxRetries; i++) {
     console.log(`[Main Process] startBackend: Waiting for backend to be ready (attempt ${i + 1}/${maxRetries})...`);
+    
+    // Send status update to renderer
+    if (mainWindow && mainWindow.webContents) {
+      mainWindow.webContents.send('backend-status', {
+        status: 'starting',
+        message: `Starting backend service... (${i + 1}/${maxRetries})`,
+        progress: (i + 1) / maxRetries * 100
+      });
+    }
+    
     const isReady = await checkBackendRunning();
     if (isReady) {
       console.log('[Main Process] Backend is confirmed ready.');
+      
+      // Send ready status to renderer
+      if (mainWindow && mainWindow.webContents) {
+        mainWindow.webContents.send('backend-status', {
+          status: 'ready',
+          message: 'Backend service is ready!',
+          progress: 100
+        });
+      }
+      
       return;
     }
     console.log(`[Main Process] Backend not ready yet, retrying in ${retryDelay / 1000}s...`);
@@ -305,8 +435,16 @@ const startBackend = async () => {
   }
   
   console.error('[Main Process] Backend failed to start or become responsive after maximum retries.');
-  // Optionally, show a dialog to the user
-  dialog.showErrorBox('Backend Error', 'The backend service failed to start. Please try restarting the application or contact support.');
+  
+  // Send error status to renderer instead of showing dialog
+  if (mainWindow && mainWindow.webContents) {
+    mainWindow.webContents.send('backend-status', {
+      status: 'error',
+      message: 'Backend service failed to start after 60 seconds',
+      error: 'Timeout waiting for backend to respond'
+    });
+  }
+  
   throw new Error('Backend failed to start');
 };
 
@@ -343,13 +481,26 @@ app.whenReady().then(async () => {
   // Load settings first
   await loadSettings();
   
-  // Start the backend before creating the window, but never block UI
+  // Set up IPC handlers BEFORE creating window to ensure they're ready
+  setupIpcHandlers();
+  
+  // Create window first so loading screen shows immediately
+  createWindow();
+  
+  // Start the backend after window is created
   try {
     await startBackend();
   } catch (e) {
     console.error('Backend startup error:', e);
+    // Send error to renderer instead of showing dialog
+    if (mainWindow && mainWindow.webContents) {
+      mainWindow.webContents.send('backend-status', {
+        status: 'error',
+        message: 'Failed to start backend service',
+        error: e.message
+      });
+    }
   }
-  createWindow();
 
     // Connect to backend WebSocket for real-time events
     const ws = new WebSocket(`ws://${apiHost}:${apiPort}/ws`);
@@ -385,9 +536,6 @@ app.whenReady().then(async () => {
       }
     });
     ws.on('error', err => console.error('WS error:', err));
-
-    // Set up IPC handlers after the window is created
-    setupIpcHandlers();
 
     app.on('activate', () => {
       // On macOS it's common to re-create a window in the app when the

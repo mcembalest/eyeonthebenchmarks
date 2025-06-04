@@ -157,6 +157,11 @@ class WSBridge:
 bridge = WSBridge()
 logic = AppLogic(ui_bridge=bridge)
 
+@app.get("/health")
+async def health_check():
+    """Simple health check endpoint."""
+    return {"status": "ok", "message": "Backend is running"}
+
 @app.post("/launch")
 async def launch_benchmark(payload: dict):
     return logic.launch_benchmark_run(
@@ -500,4 +505,4 @@ async def reset_stuck_benchmarks_endpoint():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api:app", host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
