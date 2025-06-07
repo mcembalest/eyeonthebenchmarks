@@ -1480,6 +1480,497 @@ class AppLogic:
     def handle_validate_tokens(self, prompts: list, file_paths: list, model_names: list) -> dict:
         """Validate token limits for given prompts, files, and models."""
         return self.token_manager.validate_tokens(prompts, file_paths, model_names)
+    
+    def handle_count_tokens_for_file(self, file_path: str, sample_prompt: str, model_names: list) -> dict:
+        """Count tokens for a specific file using different model providers."""
+        try:
+            from token_validator import get_provider_from_model
+            from pathlib import Path
+            import json
+            
+            # Check if this is a CSV file
+            if file_path.lower().endswith('.csv'):
+                return self._count_tokens_for_csv(file_path, sample_prompt, model_names)
+            else:
+                # For non-CSV files, use the original PDF-based approach
+                return self._count_tokens_for_pdf(file_path, sample_prompt, model_names)
+            
+        except Exception as e:
+            logging.error(f"Error in handle_count_tokens_for_file: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def _count_tokens_for_csv(self, file_path: str, sample_prompt: str, model_names: list) -> dict:
+        """Count tokens for CSV files by converting to text format."""
+        try:
+            from token_validator import get_provider_from_model
+            from models_openai import count_tokens_openai, get_context_limit_openai
+            from models_anthropic import count_tokens_anthropic, get_context_limit_anthropic  
+            from models_google import count_tokens_google, get_context_limit_google
+            import json
+            
+            # Get CSV data and convert to text format
+            csv_text = self._convert_csv_to_text(file_path)
+            if not csv_text:
+                # Fall back to estimates if we can't read the CSV
+                return self._fallback_to_estimates(file_path, sample_prompt, model_names)
+            
+            # Combine prompt + CSV text
+            full_text = f"{sample_prompt}\n\n{csv_text}"
+            
+            # Debug logging
+            logging.info(f"CSV text length: {len(csv_text)} chars")
+            logging.info(f"Full text length: {len(full_text)} chars")
+            logging.info(f"CSV text preview: {csv_text[:500]}...")
+            
+            # Get unique providers from model names
+            providers_tested = {}
+            results = {}
+            
+            for model_name in model_names:
+                try:
+                    provider = get_provider_from_model(model_name)
+                    
+                    # Skip if we already tested this provider
+                    if provider in providers_tested:
+                        continue
+                    
+                    # Count tokens using text-only approach for each provider
+                    if provider == "openai":
+                        # For OpenAI, use simple text content
+                        content = [{"type": "input_text", "text": full_text}]
+                        actual_tokens = count_tokens_openai(content, model_name)
+                        context_limit = get_context_limit_openai(model_name)
+                        
+                    elif provider == "anthropic":
+                        # For Anthropic, use text message format
+                        content = [{"type": "text", "text": full_text}]
+                        actual_tokens = count_tokens_anthropic(content, model_name)
+                        context_limit = get_context_limit_anthropic(model_name)
+                        
+                    elif provider == "google":
+                        # Use updated model names and proper Content structure
+                        if model_name == "gemini-2.5-pro":
+                            model_name = "gemini-2.5-pro-preview-06-05"
+                        elif model_name == "gemini-2.5-flash":
+                            model_name = "gemini-2.5-flash-preview-05-20"
+                            
+                        from google import genai
+                        contents = [
+                            genai.types.Content(
+                                role="user",
+                                parts=[genai.types.Part.from_text(text=full_text)]
+                            )
+                        ]
+                        actual_tokens = count_tokens_google(contents, model_name)
+                        context_limit = get_context_limit_google(model_name)
+                        
+                    else:
+                        logging.warning(f"Unknown provider {provider} for model {model_name}")
+                        continue
+                    
+                    will_exceed = actual_tokens > context_limit
+                    
+                    results[provider] = {
+                        "model_name": model_name,
+                        "actual_tokens": actual_tokens,
+                        "context_limit": context_limit,
+                        "will_exceed": will_exceed,
+                        "provider": provider
+                    }
+                    providers_tested[provider] = True
+                    
+                except Exception as e:
+                    logging.error(f"Error counting tokens for CSV with {model_name}: {e}")
+                    # Fall back to estimates for this provider
+                    provider = get_provider_from_model(model_name)
+                    estimated_tokens = self._estimate_file_tokens(file_path, sample_prompt)
+                    context_limit = self._get_context_limit_for_model(model_name)
+                    will_exceed = estimated_tokens > context_limit
+                    
+                    results[provider] = {
+                        "model_name": model_name,
+                        "estimated_tokens": estimated_tokens,
+                        "context_limit": context_limit,
+                        "will_exceed": will_exceed,
+                        "provider": provider,
+                        "is_estimate": True
+                    }
+                    providers_tested[provider] = True
+            
+            return {
+                "success": True,
+                "file_path": file_path,
+                "sample_prompt": sample_prompt,
+                "provider_results": results
+            }
+            
+        except Exception as e:
+            logging.error(f"Error in _count_tokens_for_csv: {e}")
+            return self._fallback_to_estimates(file_path, sample_prompt, model_names)
+    
+    def _count_tokens_for_pdf(self, file_path: str, sample_prompt: str, model_names: list) -> dict:
+        """Count tokens for PDF files using proper text extraction and provider APIs."""
+        try:
+            from token_validator import get_provider_from_model
+            from models_openai import count_tokens_openai, get_context_limit_openai
+            from models_anthropic import count_tokens_anthropic, get_context_limit_anthropic  
+            from models_google import count_tokens_google, get_context_limit_google
+            
+            # Extract text from PDF
+            pdf_text = self._extract_pdf_text(file_path)
+            if not pdf_text:
+                logging.warning(f"No text extracted from PDF: {file_path}")
+                return self._fallback_to_estimates(file_path, sample_prompt, model_names)
+            
+            # Combine prompt + PDF text (only once!)
+            full_text = f"{sample_prompt}\n\n{pdf_text}"
+            
+            # Debug logging
+            logging.info(f"PDF text: {len(pdf_text)} chars, Full prompt: {len(full_text)} chars")
+            
+            # Get unique providers and test one model per provider
+            provider_models = {}
+            for model_name in model_names:
+                provider = get_provider_from_model(model_name)
+                if provider not in provider_models:
+                    provider_models[provider] = model_name
+            
+            results = {}
+            
+            # Test each provider separately
+            for provider, model_name in provider_models.items():
+                try:
+                    logging.info(f"Testing {provider} with model {model_name}")
+                    
+                    if provider == "openai":
+                        content = [{"type": "input_text", "text": full_text}]
+                        actual_tokens = count_tokens_openai(content, model_name)
+                        context_limit = get_context_limit_openai(model_name)
+                        
+                    elif provider == "anthropic":
+                        content = [{"type": "text", "text": full_text}]
+                        actual_tokens = count_tokens_anthropic(content, model_name)
+                        context_limit = get_context_limit_anthropic(model_name)
+                        
+                    elif provider == "google":
+                        # Use updated model names
+                        if model_name == "gemini-2.5-pro":
+                            model_name = "gemini-2.5-pro-preview-06-05"
+                        elif model_name == "gemini-2.5-flash":
+                            model_name = "gemini-2.5-flash-preview-05-20"
+                            
+                        from google import genai
+                        contents = [
+                            genai.types.Content(
+                                role="user",
+                                parts=[genai.types.Part.from_text(text=full_text)]
+                            )
+                        ]
+                        actual_tokens = count_tokens_google(contents, model_name)
+                        context_limit = get_context_limit_google(model_name)
+                        
+                    else:
+                        logging.warning(f"Unknown provider: {provider}")
+                        continue
+                    
+                    logging.info(f"{provider} tokens: {actual_tokens}")
+                    
+                    will_exceed = actual_tokens > context_limit
+                    
+                    results[provider] = {
+                        "model_name": model_name,
+                        "actual_tokens": actual_tokens,
+                        "context_limit": context_limit,
+                        "will_exceed": will_exceed,
+                        "provider": provider
+                    }
+                    
+                except Exception as e:
+                    logging.error(f"Error counting tokens for {provider}: {e}")
+                    # Fall back to estimates for this provider only
+                    estimated_tokens = self._estimate_file_tokens(file_path, sample_prompt)
+                    context_limit = self._get_context_limit_for_model(model_name)
+                    will_exceed = estimated_tokens > context_limit
+                    
+                    results[provider] = {
+                        "model_name": model_name,
+                        "estimated_tokens": estimated_tokens,
+                        "context_limit": context_limit,
+                        "will_exceed": will_exceed,
+                        "provider": provider,
+                        "is_estimate": True
+                    }
+            
+            return {
+                "success": True,
+                "file_path": file_path,
+                "sample_prompt": sample_prompt,
+                "provider_results": results
+            }
+            
+        except Exception as e:
+            logging.error(f"Error in _count_tokens_for_pdf: {e}")
+            return self._fallback_to_estimates(file_path, sample_prompt, model_names)
+    
+    def _estimate_file_tokens(self, file_path: str, sample_prompt: str) -> int:
+        """Estimate token count for a file based on size and content."""
+        try:
+            from pathlib import Path
+            import json
+            
+            file_path_obj = Path(file_path)
+            if not file_path_obj.exists():
+                return 1000  # Default fallback
+                
+            if file_path.lower().endswith('.csv'):
+                # For CSV files, try to get more accurate estimates
+                try:
+                    from file_store import get_file_details_by_path
+                    file_details = get_file_details_by_path(file_path)
+                    if file_details and file_details.get('csv_data'):
+                        csv_data = json.loads(file_details['csv_data'])
+                        if isinstance(csv_data, dict):
+                            total_rows = csv_data.get('total_rows', 0)
+                            columns = csv_data.get('columns', [])
+                            # Estimate tokens: roughly 1 token per 3.5 characters
+                            chars_per_row = len(columns) * 15  # Average 15 chars per field
+                            total_chars = (total_rows * chars_per_row) + len(sample_prompt)
+                            return int(total_chars / 3.5)
+                except Exception:
+                    pass
+                    
+            # Fallback: estimate based on file size
+            file_size = file_path_obj.stat().st_size
+            # Rough estimate: 1 token per 4 bytes for text files
+            estimated_tokens = int(file_size / 4) + len(sample_prompt.split())
+            return max(estimated_tokens, 100)  # Minimum 100 tokens
+            
+        except Exception as e:
+            logging.error(f"Error estimating tokens for {file_path}: {e}")
+            return 1000  # Safe fallback
+    
+    def _get_context_limit_for_model(self, model_name: str) -> int:
+        """Get context limit for a specific model."""
+        limits = {
+            # OpenAI models
+            'gpt-4o': 128000,
+            'gpt-4o-mini': 128000,
+            'o3': 200000,
+            'o4-mini': 200000,
+            'gpt-4.1': 1047576,
+            'gpt-4.1-mini': 1047576,
+            'gpt-4.1-nano': 1047576,
+            
+            # Anthropic models (all 200K)
+            'claude-3-5-haiku-20241022': 200000,
+            'claude-3-7-sonnet-20250219': 200000,
+            'claude-3-7-sonnet-20250219-thinking': 200000,
+            'claude-sonnet-4-20250514': 200000,
+            'claude-sonnet-4-20250514-thinking': 200000,
+            'claude-opus-4-20250514': 200000,
+            'claude-opus-4-20250514-thinking': 200000,
+            
+            # Google models
+            'gemini-2.5-flash-preview-05-20': 1000000,
+            'gemini-2.5-pro-preview-06-05': 1000000,
+        }
+        
+        return limits.get(model_name, 128000)  # Conservative default
+    
+    def _convert_csv_to_text(self, file_path: str) -> str:
+        """Convert CSV file to Hybrid Structured Format for token-efficient representation."""
+        try:
+            from file_store import get_file_details_by_path
+            import json
+            
+            # Get file details from database
+            file_details = get_file_details_by_path(file_path)
+            if not file_details or not file_details.get('csv_data'):
+                # Fall back to reading the file directly
+                return self._read_csv_file_directly(file_path, full_content=True)
+            
+            # Parse the stored CSV data
+            csv_data = json.loads(file_details['csv_data'])
+            
+            if isinstance(csv_data, dict) and 'records' in csv_data:
+                # New format with records - use Hybrid Structured Format
+                records = csv_data['records']
+                columns = csv_data.get('columns', [])
+                
+                lines = []
+                
+                # Header with metadata
+                lines.append(f"Dataset: {len(records)} records")
+                lines.append(f"Columns: {', '.join(columns)}")
+                
+                for i in range(len(records)):
+                    record = records[i]
+                    if isinstance(record, dict):
+                        row_values = [str(record.get(col, '')) for col in columns]
+                        lines.append(" | ".join(row_values))
+                    else:
+                        lines.append(str(record))
+                    
+                return "\n".join(lines)
+                
+            elif isinstance(csv_data, list):
+                # Legacy format - use Hybrid Structured Format
+                lines = []
+                
+                # Header with metadata
+                lines.append(f"Dataset: {len(csv_data)} records")
+                lines.append("")
+                for i in range(len(csv_data)):
+                    lines.append(str(csv_data[i]))
+                    
+                return "\n".join(lines)
+            
+            else:
+                # Fallback for unknown format
+                return f"CSV Data: {str(csv_data)}"
+                
+        except Exception as e:
+            logging.error(f"Error converting CSV to text: {e}")
+            return self._read_csv_file_directly(file_path, full_content=True)
+    
+    def _read_csv_file_directly(self, file_path: str, full_content: bool = False) -> str:
+        """Read CSV file directly and convert to Hybrid Structured Format."""
+        try:
+            import csv
+            from pathlib import Path
+            
+            if not Path(file_path).exists():
+                return ""
+            
+            lines = []
+            all_rows = []
+            
+            with open(file_path, 'r', encoding='utf-8') as f:
+                csv_reader = csv.DictReader(f)
+                
+                # Get column names
+                fieldnames = csv_reader.fieldnames or []
+                
+                # Read all rows into memory
+                for row in csv_reader:
+                    all_rows.append(row)
+            
+            total_rows = len(all_rows)
+            
+            if full_content:
+                # Use Hybrid Structured Format for token counting
+                lines.append(f"Dataset: {total_rows} records")
+                lines.append(f"Columns: {', '.join(fieldnames)}")
+                lines.append("")
+                for i in range(total_rows):
+                    row = all_rows[i]
+                    row_values = [str(row.get(col, '')) for col in fieldnames]
+                    lines.append(" | ".join(row_values))
+            
+            else:
+                # Preview format (for UI display - keep existing format)
+                lines.append("CSV Data Analysis:")
+                lines.append(f"Columns: {', '.join(fieldnames)}")
+                lines.append("")
+                
+                if fieldnames:
+                    lines.append(" | ".join(fieldnames))
+                    lines.append("-" * (len(" | ".join(fieldnames))))
+                
+                # Show first 5 rows for preview
+                for i, row in enumerate(all_rows[:5]):
+                    row_values = [str(row.get(col, '')) for col in fieldnames]
+                    lines.append(" | ".join(row_values))
+            
+            return "\n".join(lines)
+            
+        except Exception as e:
+            logging.error(f"Error reading CSV file directly: {e}")
+            return f"CSV file: {file_path} (could not read content)"
+    
+    def _extract_pdf_text(self, file_path: str) -> str:
+        """Extract text content from PDF file using PyPDF2."""
+        try:
+            from PyPDF2 import PdfReader
+            from pathlib import Path
+            
+            if not Path(file_path).exists():
+                logging.error(f"PDF file not found: {file_path}")
+                return ""
+            
+            pdf_reader = PdfReader(file_path)
+            page_texts = []
+            
+            # Extract text from each page
+            for page_num, page in enumerate(pdf_reader.pages):
+                try:
+                    page_text = page.extract_text().strip()
+                    if page_text:
+                        # Just include the text, no page headers to reduce token usage
+                        page_texts.append(page_text)
+                except Exception as e:
+                    logging.warning(f"Error extracting page {page_num + 1}: {e}")
+                    continue
+            
+            if not page_texts:
+                logging.warning(f"No text extracted from PDF: {file_path}")
+                return ""
+            
+            # Join pages with simple separator
+            full_text = "\n\n".join(page_texts)
+            logging.info(f"Extracted {len(full_text)} chars from {len(page_texts)} pages")
+            
+            return full_text
+            
+        except Exception as e:
+            logging.error(f"Error extracting PDF text: {e}")
+            return ""
+    
+    def _fallback_to_estimates(self, file_path: str, sample_prompt: str, model_names: list) -> dict:
+        """Fallback to estimated token counts when APIs fail."""
+        try:
+            from token_validator import get_provider_from_model
+            
+            providers_tested = {}
+            results = {}
+            
+            for model_name in model_names:
+                provider = get_provider_from_model(model_name)
+                
+                # Skip if we already tested this provider
+                if provider in providers_tested:
+                    continue
+                
+                estimated_tokens = self._estimate_file_tokens(file_path, sample_prompt)
+                context_limit = self._get_context_limit_for_model(model_name)
+                will_exceed = estimated_tokens > context_limit
+                
+                results[provider] = {
+                    "model_name": model_name,
+                    "estimated_tokens": estimated_tokens,
+                    "context_limit": context_limit,
+                    "will_exceed": will_exceed,
+                    "provider": provider,
+                    "is_estimate": True
+                }
+                providers_tested[provider] = True
+            
+            return {
+                "success": True,
+                "file_path": file_path,
+                "sample_prompt": sample_prompt,
+                "provider_results": results
+            }
+            
+        except Exception as e:
+            logging.error(f"Error in _fallback_to_estimates: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
 
     def validate_tokens(self, prompts: list, pdfPaths: list, modelNames: list) -> dict:
         """Delegate to token manager for validation."""

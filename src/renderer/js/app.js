@@ -6,6 +6,7 @@ class App {
   constructor() {
     this.initialized = false;
     this.eventListeners = [];
+    this.realTimeUpdatesSetup = false;
     
     this.setupEventListeners();
     this.setupRealTimeUpdates();
@@ -112,6 +113,11 @@ class App {
    * Set up real-time updates from main process
    */
   setupRealTimeUpdates() {
+    if (this.realTimeUpdatesSetup) {
+      console.log('Real-time updates already set up, skipping...');
+      return;
+    }
+    
     if (window.API && window.API.setupEventListeners) {
       window.API.setupEventListeners({
         onProgress: (data) => {
@@ -127,9 +133,18 @@ class App {
           // Re-initialize if needed
           if (!this.initialized) {
             this.init();
+          } else {
+            // If already initialized but backend was down, refresh benchmarks
+            console.log('Backend is ready, refreshing benchmarks...');
+            window.API.clearCache('benchmarks');
+            if (window.Pages && window.Pages.currentPage === 'homeContent') {
+              // Force a fresh load with retry logic
+              window.Pages.loadBenchmarks(false, 0);
+            }
           }
         }
       });
+      this.realTimeUpdatesSetup = true;
     }
 
     console.log('Real-time updates set up successfully');
@@ -805,47 +820,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window.hideLoadingOverlay();
       }
       
-      // Set up WebSocket event listeners for real-time updates
-      if (window.API.electronAPI) {
-        console.log('Setting up WebSocket event listeners...');
-        
-        // Listen for benchmark progress updates
-        if (window.API.electronAPI.onBenchmarkProgress) {
-          window.API.electronAPI.onBenchmarkProgress((data) => {
-            console.log('Received benchmark progress:', data);
-            
-            // Update the benchmark details page if it's currently viewing this benchmark
-            if (window.app.router && window.app.router.currentPage === 'viewBenchmarkDetails') {
-              const currentBenchmarkId = window.app.router.pages.viewBenchmarkDetails.currentBenchmarkId;
-              if (currentBenchmarkId && data.benchmark_id === currentBenchmarkId) {
-                // Refresh the benchmark details page
-                window.app.router.pages.viewBenchmarkDetails.refreshBenchmark();
-              }
-            }
-            
-            // Update the benchmarks list page if it's currently active
-            if (window.app.router && window.app.router.currentPage === 'benchmarks') {
-              window.app.router.pages.benchmarks.loadBenchmarks();
-            }
-          });
-        }
-        
-        // Listen for benchmark complete events
-        if (window.API.electronAPI.onBenchmarkComplete) {
-          window.API.electronAPI.onBenchmarkComplete((data) => {
-            console.log('Received benchmark complete:', data);
-            
-            // Refresh the current page
-            if (window.app.router) {
-              if (window.app.router.currentPage === 'viewBenchmarkDetails') {
-                window.app.router.pages.viewBenchmarkDetails.refreshBenchmark();
-              } else if (window.app.router.currentPage === 'benchmarks') {
-                window.app.router.pages.benchmarks.loadBenchmarks();
-              }
-            }
-          });
-        }
-      }
+      // Real-time updates are already set up in constructor
       
       window.app.init();
     };

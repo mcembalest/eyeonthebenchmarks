@@ -177,7 +177,8 @@ class Pages {
   async initHomePage() {
     console.log('Pages.initHomePage called');
     try {
-      await this.loadBenchmarks();
+      // Use fresh data on initial load to ensure we get the latest benchmarks
+      await this.loadBenchmarks(false, 0);
       console.log('Pages.initHomePage completed successfully');
     } catch (error) {
       console.error('Error initializing home page:', error);
@@ -476,25 +477,31 @@ class Pages {
   /**
    * Load benchmarks from API
    * @param {boolean} useCache - Whether to use cached data
+   * @param {number} retryCount - Current retry attempt
    */
-  async loadBenchmarks(useCache = true) {
-    console.log('Pages.loadBenchmarks called with useCache:', useCache);
+  async loadBenchmarks(useCache = true, retryCount = 0) {
+    console.log('Pages.loadBenchmarks called with useCache:', useCache, 'retryCount:', retryCount);
     const gridContainer = document.getElementById('benchmarksGrid');
     const tableBody = document.querySelector('#benchmarksTable tbody');
 
     try {
-      // Only show loading state if we're forcing a refresh (not using cache)
-      if (!useCache) {
+      // Only show loading state if we're forcing a refresh (not using cache) or on first load
+      if (!useCache || retryCount === 0) {
         console.log('Showing loading state...');
         gridContainer.innerHTML = '';
-        gridContainer.appendChild(window.Components.createSpinner('Loading benchmarks...'));
+        
+        if (retryCount > 0) {
+          gridContainer.appendChild(window.Components.createSpinner(`Connecting to backend (attempt ${retryCount + 1})...`));
+        } else {
+          gridContainer.appendChild(window.Components.createSpinner('Loading benchmarks...'));
+        }
         
         tableBody.innerHTML = `
           <tr>
             <td colspan="5" class="text-center">
               <div class="d-flex justify-content-center align-items-center py-3">
                 <div class="spinner-border spinner-border-sm text-primary me-2" role="status"></div>
-                Loading benchmarks...
+                ${retryCount > 0 ? `Connecting to backend (attempt ${retryCount + 1})...` : 'Loading benchmarks...'}
               </div>
             </td>
           </tr>
@@ -520,12 +527,46 @@ class Pages {
     } catch (error) {
       console.error('Error loading benchmarks:', error);
       
-      // Show error state
+      // Check if this is a connection error and we should retry
+      const isConnectionError = error.message.includes('ECONNREFUSED') || 
+                               error.message.includes('Failed to load benchmarks') ||
+                               error.message.includes('connect');
+      
+      if (isConnectionError && retryCount < 5) {
+        console.log(`Connection failed, retrying in ${2 ** retryCount} seconds... (attempt ${retryCount + 1}/5)`);
+        
+        // Show retry countdown in UI
+        gridContainer.innerHTML = '';
+        gridContainer.appendChild(
+          window.Components.createSpinner(`Backend not ready. Retrying in ${2 ** retryCount} seconds... (${retryCount + 1}/5)`)
+        );
+        
+        tableBody.innerHTML = `
+          <tr>
+            <td colspan="5" class="text-center text-warning py-3">
+              <div class="d-flex justify-content-center align-items-center">
+                <div class="spinner-border spinner-border-sm text-warning me-2" role="status"></div>
+                Backend not ready. Retrying in ${2 ** retryCount} seconds... (${retryCount + 1}/5)
+              </div>
+            </td>
+          </tr>
+        `;
+        
+        // Clear cache and retry with exponential backoff
+        window.API.clearCache('benchmarks');
+        setTimeout(() => {
+          this.loadBenchmarks(false, retryCount + 1);
+        }, (2 ** retryCount) * 1000);
+        
+        return;
+      }
+      
+      // Show error state after max retries or non-connection error
       gridContainer.innerHTML = '';
       gridContainer.appendChild(
         window.Components.createErrorState(
-          'Failed to Load Benchmarks',
-          error.message,
+          isConnectionError ? 'Backend Connection Failed' : 'Failed to Load Benchmarks',
+          isConnectionError ? 'Unable to connect to backend after multiple attempts. Please check if the backend is running.' : error.message,
           () => this.loadBenchmarks(false)
         )
       );
@@ -533,7 +574,11 @@ class Pages {
       tableBody.innerHTML = `
         <tr>
           <td colspan="5" class="text-center text-danger py-3">
-            Error: ${error.message}
+            Error: ${isConnectionError ? 'Backend connection failed' : error.message}
+            <br>
+            <button class="btn btn-outline-primary btn-sm mt-2" onclick="window.Pages.loadBenchmarks(false)">
+              <i class="fas fa-redo me-1"></i>Retry
+            </button>
           </td>
         </tr>
       `;
@@ -2346,7 +2391,8 @@ class Pages {
         `;
 
         groupedModels[provider].forEach(model => {
-          const isDefault = model.id === 'gpt-4.1';
+          const defaultModels = ['o3', 'claude-opus-4-20250514-thinking', 'gemini-2.5-pro-preview-06-05'];
+          const isDefault = defaultModels.includes(model.id);
           const checkbox = window.Components.createModelCheckbox(model, isDefault);
           providerDiv.appendChild(checkbox);
         });
@@ -2563,15 +2609,21 @@ class Pages {
 
         const validationResults = validation.validation_results;
         
-        // If there are models that will exceed limits, show confirmation dialog
-        if (!validationResults.valid) {
-          const confirmed = await this.showTokenLimitConfirmation(validation.formatted_message, validationResults);
-          if (!confirmed) {
-            return; // User cancelled
-          }
+        // Check if we have proper validation results
+        if (!validationResults || typeof validationResults !== 'object') {
+          console.warn('Invalid validation results structure:', validation);
+          window.Components.showToast('Could not validate token limits. Proceeding anyway...', 'warning');
         } else {
-          // All models are fine, show success message
-          window.Components.showToast('✅ All models can handle the content within their limits', 'success');
+          // If there are models that will exceed limits, show confirmation dialog
+          if (!validationResults.valid) {
+            const confirmed = await this.showTokenLimitConfirmation(validation.formatted_message, validationResults);
+            if (!confirmed) {
+              return; // User cancelled
+            }
+          } else {
+            // All models are fine, show success message
+            window.Components.showToast('✅ All models can handle the content within their limits', 'success');
+          }
         }
         
       } catch (error) {
@@ -2634,8 +2686,11 @@ class Pages {
       const exceedingModels = [];
       const safeModels = [];
       
-      Object.entries(validationResults.model_results).forEach(([modelName, result]) => {
-        if (result.will_exceed) {
+      // Check if model_results exists and is an object
+      const modelResults = validationResults?.model_results || {};
+      
+      Object.entries(modelResults).forEach(([modelName, result]) => {
+        if (result && result.will_exceed) {
           exceedingModels.push(modelName);
         } else {
           safeModels.push(modelName);
@@ -2663,8 +2718,10 @@ class Pages {
                     <h6 class="text-danger">🚫 Models likely to fail:</h6>
                     <ul class="list-unstyled ms-3">
                       ${exceedingModels.map(model => {
-                        const result = validationResults.model_results[model];
-                        return `<li class="text-danger">• ${model}: ${result.estimated_tokens.toLocaleString()} tokens (limit: ${result.context_limit.toLocaleString()})</li>`;
+                        const result = modelResults[model];
+                        const estimatedTokens = result?.estimated_tokens || 0;
+                        const contextLimit = result?.context_limit || 0;
+                        return `<li class="text-danger">• ${model}: ${estimatedTokens.toLocaleString()} tokens (limit: ${contextLimit.toLocaleString()})</li>`;
                       }).join('')}
                     </ul>
                   </div>
@@ -2675,8 +2732,10 @@ class Pages {
                     <h6 class="text-success">✅ Models that should work:</h6>
                     <ul class="list-unstyled ms-3">
                       ${safeModels.map(model => {
-                        const result = validationResults.model_results[model];
-                        return `<li class="text-success">• ${model}: ${result.estimated_tokens.toLocaleString()} tokens (limit: ${result.context_limit.toLocaleString()})</li>`;
+                        const result = modelResults[model];
+                        const estimatedTokens = result?.estimated_tokens || 0;
+                        const contextLimit = result?.context_limit || 0;
+                        return `<li class="text-success">• ${model}: ${estimatedTokens.toLocaleString()} tokens (limit: ${contextLimit.toLocaleString()})</li>`;
                       }).join('')}
                     </ul>
                   </div>
@@ -4356,19 +4415,400 @@ class Pages {
       return 'No data available';
     }
 
-    return records.map(record => {
-      const entries = Object.entries(record)
-        .filter(([key, value]) => value !== null && value !== undefined)
-        .map(([key, value]) => `  ${key}: ${value}`)
-        .join('\n');
-      return `- ${entries}`;
-    }).join('\n');
+    // Use Hybrid Structured Format for preview
+    const columns = Object.keys(records[0]);
+    const lines = [];
+    
+    // Header with metadata
+    lines.push(`Dataset: ${records.length} records (preview)`);
+    lines.push(`Columns: ${columns.join(', ')}`);
+    lines.push('');
+    
+    // Show all preview records in compact format
+    lines.push('Sample data:');
+    for (const record of records) {
+      const rowValues = columns.map(col => String(record[col] || ''));
+      lines.push(rowValues.join(' | '));
+    }
+    
+    return lines.join('\n');
+  }
+
+  /**
+   * Generate token analysis HTML for file info modal
+   */
+  async generateTokenAnalysisHtml(file) {
+    // Show token analysis for CSV and PDF files
+    if (file.mime_type !== 'text/csv' && file.mime_type !== 'application/pdf') {
+      return '';
+    }
+    
+    // For CSV files, require csv_data to be present
+    if (file.mime_type === 'text/csv' && !file.csv_data) {
+      return '';
+    }
+
+    try {
+      // Create a sample prompt to test token counting
+      const samplePrompt = "Analyze this data and provide insights.";
+      
+      // Get available models for token counting
+      const models = await window.API.getModels();
+      if (!models || !models.length) {
+        return `
+          <h6>Token Analysis</h6>
+          <div class="alert alert-warning">
+            <i class="fas fa-exclamation-triangle me-2"></i>
+            Unable to load models for token analysis.
+          </div>
+        `;
+      }
+
+      // Show loading state while calculating
+      const loadingHtml = `
+        <h6>Token Analysis</h6>
+        <div class="mb-3">
+          <div class="alert alert-info">
+            <i class="fas fa-calculator me-2"></i>
+            <strong>Token Usage Estimates:</strong><br>
+            Calculating token counts for this file across different model providers...
+          </div>
+          <div class="d-flex justify-content-center">
+            <div class="spinner-border" role="status">
+              <span class="visually-hidden">Calculating...</span>
+            </div>
+          </div>
+        </div>
+      `;
+
+      // Start with loading state, then update with actual counts
+      setTimeout(async () => {
+        try {
+          const tokenResults = await this.calculateTokenCountsForFile(file, samplePrompt, models);
+          this.updateTokenAnalysisInModal(tokenResults);
+        } catch (error) {
+          console.error('Error calculating token counts:', error);
+          this.updateTokenAnalysisInModal(null, error.message);
+        }
+      }, 100);
+
+      return loadingHtml;
+
+    } catch (error) {
+      console.error('Error generating token analysis:', error);
+      return `
+        <h6>Token Analysis</h6>
+        <div class="alert alert-danger">
+          <i class="fas fa-exclamation-circle me-2"></i>
+          Error calculating token analysis: ${error.message}
+        </div>
+      `;
+    }
+  }
+
+  /**
+   * Calculate token counts for a file using different model providers
+   */
+  async calculateTokenCountsForFile(file, samplePrompt, models) {
+    const results = [];
+    
+    // For CSV and PDF files, use actual token counting APIs
+    if ((file.mime_type === 'text/csv' && file.csv_data) || file.mime_type === 'application/pdf') {
+      // Group models by provider and find the best representative for each
+      const providerGroups = {
+        'OpenAI': models.filter(m => m.provider === 'openai'),
+        'Anthropic': models.filter(m => m.provider === 'anthropic'), 
+        'Google': models.filter(m => m.provider === 'google')
+      };
+
+      // Collect the best model from each provider
+      const testModels = [];
+      for (const [providerName, providerModels] of Object.entries(providerGroups)) {
+        if (providerModels.length === 0) continue;
+        const bestModel = this.getBestModelForProvider(providerName, providerModels);
+        testModels.push(bestModel.id);
+      }
+
+      try {
+        // Call the actual token counting API
+        const tokenResults = await window.API.countTokensForFile(
+          file.file_path,
+          samplePrompt,
+          testModels
+        );
+
+        if (tokenResults.success && tokenResults.provider_results) {
+          // Convert API results to our format
+          for (const [providerName, providerModels] of Object.entries(providerGroups)) {
+            if (providerModels.length === 0) continue;
+
+            const bestModel = this.getBestModelForProvider(providerName, providerModels);
+            const apiResult = tokenResults.provider_results[bestModel.provider];
+
+            if (apiResult && !apiResult.error) {
+              // Handle both actual_tokens and estimated_tokens from backend
+              const tokenCount = apiResult.actual_tokens !== undefined ? apiResult.actual_tokens : apiResult.estimated_tokens;
+              const isEstimate = apiResult.is_estimate || apiResult.actual_tokens === undefined;
+              
+              results.push({
+                provider: providerName,
+                modelName: apiResult.model_name,
+                displayName: bestModel.name,
+                actualTokens: !isEstimate ? tokenCount : undefined,
+                estimatedTokens: isEstimate ? tokenCount : undefined,
+                contextLimit: apiResult.context_limit,
+                willExceed: apiResult.will_exceed,
+                modelsInProvider: providerModels.length,
+                isEstimate: isEstimate
+              });
+            } else {
+              results.push({
+                provider: providerName,
+                error: apiResult?.error || 'Token counting failed',
+                modelsInProvider: providerModels.length
+              });
+            }
+          }
+        } else {
+          throw new Error(tokenResults.error || 'Token counting API failed');
+        }
+
+      } catch (error) {
+        console.error('Error calling token counting API:', error);
+        
+        // Fall back to estimates if API fails
+        const estimatedTokens = file.mime_type === 'text/csv' 
+          ? this.estimateCsvTokens(file.csv_data, samplePrompt)
+          : this.estimatePdfTokens(file, samplePrompt);
+        
+        for (const [providerName, providerModels] of Object.entries(providerGroups)) {
+          if (providerModels.length === 0) continue;
+
+          const bestModel = this.getBestModelForProvider(providerName, providerModels);
+          const contextLimit = this.getContextLimitForModel(bestModel.id);
+          const willExceed = estimatedTokens > contextLimit;
+          
+          results.push({
+            provider: providerName,
+            modelName: bestModel.id,
+            displayName: bestModel.name,
+            estimatedTokens: estimatedTokens,
+            contextLimit: contextLimit,
+            willExceed: willExceed,
+            modelsInProvider: providerModels.length,
+            isEstimate: true
+          });
+        }
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Get the best model for each provider
+   */
+  getBestModelForProvider(providerName, providerModels) {
+    const bestModels = {
+      'OpenAI': 'o3',                                    // Best OpenAI model
+      'Anthropic': 'claude-opus-4-20250514',           // Best Anthropic model  
+      'Google': 'gemini-2.5-pro-preview-06-05'         // Best Google model
+    };
+    
+    const preferredModel = bestModels[providerName];
+    
+    // Try to find the preferred model first
+    const preferred = providerModels.find(m => m.id === preferredModel);
+    if (preferred) {
+      return preferred;
+    }
+    
+    // If preferred not available, fall back to the one with largest context window
+    return providerModels.reduce((best, current) => {
+      const currentLimit = this.getContextLimitForModel(current.id);
+      const bestLimit = this.getContextLimitForModel(best.id);
+      return currentLimit > bestLimit ? current : best;
+    });
+  }
+
+  /**
+   * Estimate tokens for CSV content
+   */
+  estimateCsvTokens(csvData, samplePrompt) {
+    const columns = csvData.columns || [];
+    const totalRows = csvData.total_rows || 0;
+    
+    // Estimate characters per row in markdown format
+    const avgColumnNameLength = columns.reduce((sum, col) => sum + col.length, 0) / columns.length || 10;
+    const avgValueLength = 15; // Average data value length
+    const markdownOverhead = columns.length * 4; // "  column: value\n" format
+    
+    const charsPerRow = (avgColumnNameLength + avgValueLength + 4) * columns.length + markdownOverhead;
+    const totalChars = charsPerRow * totalRows + samplePrompt.length;
+    
+    // Convert to tokens: roughly 1 token per 3.5-4 characters for English
+    return Math.ceil(totalChars / 3.5);
+  }
+
+  /**
+   * Estimate tokens for PDF files (rough approximation)
+   */
+  estimatePdfTokens(file, samplePrompt) {
+    // Rough estimation based on file size
+    // PDFs typically have ~1-2 characters per byte due to formatting overhead
+    const avgCharsPerByte = 1.5;
+    const estimatedChars = (file.size || 0) * avgCharsPerByte + samplePrompt.length;
+    
+    // Convert to tokens: roughly 1 token per 3.5-4 characters for English
+    return Math.ceil(estimatedChars / 3.5);
+  }
+
+  /**
+   * Get context limit for specific model with CORRECT OpenAI limits
+   */
+  getContextLimitForModel(modelName) {
+    const limits = {
+      // OpenAI models - CORRECTED CONTEXT WINDOWS
+      'gpt-4o': 128000,           // 128K
+      'gpt-4o-mini': 128000,      // 128K
+      'o3': 200000,               // 200K
+      'o4-mini': 200000,          // 200K  
+      'gpt-4.1': 1047576,         // ~1M
+      'gpt-4.1-mini': 1047576,    // ~1M
+      'gpt-4.1-nano': 1047576,    // ~1M
+      
+      // Anthropic models (all 200K)
+      'claude-3-5-haiku-20241022': 200000,
+      'claude-3-7-sonnet-20250219': 200000,
+      'claude-3-7-sonnet-20250219-thinking': 200000,
+      'claude-sonnet-4-20250514': 200000,
+      'claude-sonnet-4-20250514-thinking': 200000,
+      'claude-opus-4-20250514': 200000,
+      'claude-opus-4-20250514-thinking': 200000,
+      
+      // Google models (1M+ tokens)
+      'gemini-2.5-flash-preview-05-20': 1000000,
+      'gemini-2.5-pro-preview-06-05': 1000000,
+    };
+    
+    return limits[modelName] || 128000; // Conservative default
+  }
+
+  /**
+   * Update token analysis section in the modal
+   */
+  updateTokenAnalysisInModal(results, errorMessage = null) {
+    const tokenSection = document.querySelector('#fileDetailsModal .token-analysis-section');
+    if (!tokenSection) return;
+
+    if (errorMessage) {
+      tokenSection.innerHTML = `
+        <div class="alert alert-danger">
+          <i class="fas fa-exclamation-circle me-2"></i>
+          Error calculating token counts: ${errorMessage}
+        </div>
+      `;
+      return;
+    }
+
+    if (!results || results.length === 0) {
+      tokenSection.innerHTML = `
+        <div class="alert alert-warning">
+          <i class="fas fa-exclamation-triangle me-2"></i>
+          No token count results available.
+        </div>
+      `;
+      return;
+    }
+
+    const resultsHtml = results.map(result => {
+      if (result.error) {
+        return `
+          <div class="card border-danger mb-2">
+            <div class="card-body py-2">
+              <div class="d-flex justify-content-between align-items-center">
+                <div>
+                  <strong>${result.provider}</strong>
+                  <br><small class="text-muted">${result.modelsInProvider} models available</small>
+                </div>
+                <div class="text-danger">
+                  <i class="fas fa-exclamation-circle"></i>
+                  <small>Error: ${result.error}</small>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      // Use actualTokens if available, otherwise fall back to estimatedTokens
+      const tokenCount = result.actualTokens !== undefined ? result.actualTokens : result.estimatedTokens;
+      const isEstimate = result.isEstimate || result.actualTokens === undefined;
+      
+      // Safety check for undefined values
+      if (tokenCount === undefined || result.contextLimit === undefined) {
+        return `
+          <div class="card border-warning mb-2">
+            <div class="card-body py-2">
+              <div class="d-flex justify-content-between align-items-center">
+                <div>
+                  <strong>${result.provider}</strong>
+                  <br><small class="text-muted">${result.modelsInProvider} models available</small>
+                </div>
+                <div class="text-warning">
+                  <i class="fas fa-exclamation-triangle"></i>
+                  <small>Token count unavailable</small>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      
+      const percentage = ((tokenCount / result.contextLimit) * 100).toFixed(1);
+      const statusColor = result.willExceed ? 'danger' : 
+                         (percentage > 80 ? 'warning' : 'success');
+      const statusIcon = result.willExceed ? 'fa-times-circle' : 
+                        (percentage > 80 ? 'fa-exclamation-triangle' : 'fa-check-circle');
+      const statusText = result.willExceed ? 'Will likely exceed' : 
+                        (percentage > 80 ? 'May struggle' : 'Should work fine');
+      
+      const tokenLabel = isEstimate ? 'Estimated' : 'Actual';
+      const tokenIcon = isEstimate ? 'fa-calculator' : 'fa-check';
+
+      return `
+        <div class="card border-${statusColor} mb-2">
+          <div class="card-body py-2">
+            <div class="d-flex justify-content-between align-items-center">
+              <div>
+                <strong>${result.provider}</strong>
+                <br><small class="text-muted">${result.modelsInProvider} models (tested: ${Utils.formatModelName(result.modelName)})</small>
+              </div>
+              <div class="text-${statusColor}">
+                <i class="fas ${statusIcon} me-1"></i>
+                <strong>${tokenCount.toLocaleString()}</strong> / ${result.contextLimit.toLocaleString()} tokens
+                <br><small>${statusText} (${percentage}%) <i class="fas ${tokenIcon}"></i> ${tokenLabel}</small>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    tokenSection.innerHTML = `
+      <div class="alert alert-info">
+        <i class="fas fa-info-circle me-2"></i>
+        <strong>Token counts calculated using sample prompt:</strong> "Analyze this data and provide insights."<br>
+        <small>These counts use each provider's official token counting methods. Actual usage may vary based on your specific prompts and selected models.</small>
+      </div>
+      ${resultsHtml}
+    `;
   }
 
   /**
    * Show file details modal
    */
-  showFileDetailsModal(file) {
+  async showFileDetailsModal(file) {
     const fileSize = this.formatFileSize(file.file_size_bytes);
     const createdDate = new Date(file.created_at).toLocaleString();
     const existsClass = file.exists_on_disk ? 'text-success' : 'text-danger';
@@ -4390,33 +4830,113 @@ class Pages {
     // CSV preview section
     let csvPreviewHtml = '';
     if (file.mime_type === 'text/csv' && file.csv_data) {
-      const csvData = file.csv_data;
-      const previewRecords = csvData.records.slice(0, 2); // Show first 2 rows
-      const markdownData = this.formatCsvRecordsAsMarkdown(previewRecords);
-      
-      csvPreviewHtml = `
-        <h6>CSV Data Preview</h6>
-        <div class="mb-3">
+      try {
+        const csvData = typeof file.csv_data === 'string' ? JSON.parse(file.csv_data) : file.csv_data;
+        
+        // Handle different CSV data formats
+        let previewRecords = [];
+        if (csvData && Array.isArray(csvData.records)) {
+          // New format with records array
+          previewRecords = csvData.records.slice(0, 2);
+        } else if (Array.isArray(csvData)) {
+          // Legacy format - direct array of records
+          previewRecords = csvData.slice(0, 2);
+        }
+        
+        if (previewRecords.length > 0) {
+          const markdownData = this.formatCsvRecordsAsMarkdown(previewRecords);
+          
+          // Safely get CSV metadata with fallbacks
+          const totalRows = csvData.total_rows || (Array.isArray(csvData.records) ? csvData.records.length : csvData.length || 0);
+          const columns = csvData.columns || [];
+          
+          csvPreviewHtml = `
+            <h6>CSV Data Preview</h6>
+            <div class="mb-3">
           <div class="row mb-2">
             <div class="col-md-6">
-              <strong>Total Rows:</strong> ${csvData.total_rows.toLocaleString()}
+              <strong>Total Rows:</strong> ${totalRows.toLocaleString()}
             </div>
             <div class="col-md-6">
-              <strong>Columns:</strong> ${csvData.columns.length}
+              <strong>Columns:</strong> ${columns.length}
             </div>
           </div>
+          ${columns.length > 0 ? `
           <div class="mb-2">
             <strong>Column Names:</strong>
             <div class="d-flex flex-wrap gap-1 mt-1">
-              ${csvData.columns.map(col => `<span class="badge bg-secondary">${Utils.sanitizeHtml(col)}</span>`).join('')}
+              ${columns.map(col => `<span class="badge bg-secondary">${Utils.sanitizeHtml(col)}</span>`).join('')}
             </div>
           </div>
+          ` : ''}
           <div>
             <strong>Sample Data (first 2 rows):</strong>
             <pre class="bg-light p-2 mt-1 small" style="max-height: 200px; overflow-y: auto;"><code>${Utils.sanitizeHtml(markdownData)}</code></pre>
           </div>
         </div>
       `;
+        }
+      } catch (e) {
+        console.error('Error parsing CSV data for preview:', e);
+        csvPreviewHtml = `
+          <h6>CSV Data Preview</h6>
+          <div class="alert alert-warning">
+            <i class="fas fa-exclamation-triangle me-2"></i>
+            Unable to parse CSV data for preview.
+          </div>
+        `;
+      }
+    }
+
+    // PDF content preview section
+    let pdfPreviewHtml = '';
+    if (file.mime_type === 'application/pdf') {
+      try {
+        // Call backend to extract PDF text for preview
+        const pdfTextResponse = await window.API.extractPdfText(file.file_path);
+        
+        if (pdfTextResponse.success && pdfTextResponse.text) {
+          const fullText = pdfTextResponse.text;
+          const previewText = fullText.substring(0, 2000); // First 2000 characters
+          const wordCount = fullText.split(/\s+/).length;
+          const charCount = fullText.length;
+          
+          pdfPreviewHtml = `
+            <h6>PDF Content Preview</h6>
+            <div class="mb-3">
+              <div class="row mb-2">
+                <div class="col-md-6">
+                  <strong>Total Characters:</strong> ${charCount.toLocaleString()}
+                </div>
+                <div class="col-md-6">
+                  <strong>Word Count:</strong> ${wordCount.toLocaleString()}
+                </div>
+              </div>
+              <div>
+                <strong>Content Preview (first 2000 characters):</strong>
+                <pre class="bg-light p-2 mt-1 small" style="max-height: 300px; overflow-y: auto;"><code>${Utils.sanitizeHtml(previewText)}${fullText.length > 2000 ? '...' : ''}</code></pre>
+              </div>
+            </div>
+          `;
+        } else {
+          pdfPreviewHtml = `
+            <h6>PDF Content Preview</h6>
+            <div class="alert alert-warning">
+              <i class="fas fa-exclamation-triangle me-2"></i>
+              Unable to extract text content from this PDF file.
+            </div>
+          `;
+        }
+      } catch (error) {
+        console.error('Error extracting PDF text for preview:', error);
+        pdfPreviewHtml = `
+          <h6>PDF Content Preview</h6>
+          <div class="alert alert-warning">
+            <i class="fas fa-exclamation-triangle me-2"></i>
+            Error extracting PDF content for preview.
+          </div>
+        `;
+      }
     }
 
     // PDF chunking section
@@ -4498,6 +5018,11 @@ class Pages {
               </div>
               
               ${csvPreviewHtml}
+              ${pdfPreviewHtml}
+              
+              <div class="token-analysis-section">
+                ${await this.generateTokenAnalysisHtml(file)}
+              </div>
               
               ${pdfChunkingHtml}
               

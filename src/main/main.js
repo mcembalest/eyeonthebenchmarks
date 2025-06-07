@@ -262,16 +262,10 @@ const createWindow = () => {
   // This ensures that the renderer doesn't try to communicate with the main process
   // (e.g., to get models via IPC which then makes an HTTP call) before the main process
   // (especially the backend python server) is fully ready and the renderer's own page is loaded.
-  // The call to createWindow() in app.whenReady() is already made after `await startBackend()`,
-  // so backend readiness should be established before this point.
+  // NOTE: The actual main-process-ready signal is now sent when backend is confirmed ready
   mainWindow.webContents.on('did-finish-load', () => {
-    console.log('Main window content (index.html) has finished loading. Sending main-process-ready signal.');
-    // Ensure mainWindow and its webContents still exist, as 'did-finish-load' is async.
-    if (mainWindow && mainWindow.webContents) {
-        mainWindow.webContents.send('main-process-ready');
-    } else {
-        console.warn('mainWindow or webContents not available at did-finish-load, cannot send main-process-ready signal.');
-    }
+    console.log('Main window content (index.html) has finished loading. Waiting for backend to be ready...');
+    // The main-process-ready signal is now sent when backend is confirmed ready in startBackend()
   });
 
   // Set application icon (macOS dock)
@@ -426,6 +420,10 @@ const startBackend = async () => {
           message: 'Backend service is ready!',
           progress: 100
         });
+        
+        // Send main-process-ready signal now that backend is actually ready
+        console.log('[Main Process] Sending main-process-ready signal (backend confirmed ready).');
+        mainWindow.webContents.send('main-process-ready');
       }
       
       return;
@@ -696,6 +694,41 @@ const setupIpcHandlers = () => {
       console.error('Main: Error reading or parsing CSV:', error);
       // Send a more specific error back to renderer
       throw new Error(`Failed to parse CSV: ${error.message}`); 
+    }
+  });
+
+  // PDF text extraction handler
+  ipcMain.handle('extract-pdf-text', async (event, filePath) => {
+    console.log(`Main: Received request to extract PDF text: ${filePath}`);
+    if (!filePath || typeof filePath !== 'string') {
+      console.error('Main: Invalid file path received for PDF text extraction.');
+      throw new Error('Invalid file path provided.');
+    }
+    
+    try {
+      // Call the Python backend to extract PDF text
+      const response = await httpPostJson('/extract_pdf_text', { file_path: filePath });
+      console.log(`Main: PDF text extraction result: ${response.success ? 'success' : 'failed'}`);
+      
+      if (response.success) {
+        return {
+          success: true,
+          text: response.text,
+          char_count: response.char_count || 0,
+          page_count: response.page_count || 0
+        };
+      } else {
+        return {
+          success: false,
+          error: response.error || 'Failed to extract PDF text'
+        };
+      }
+    } catch (error) {
+      console.error('Main: Error extracting PDF text:', error);
+      return {
+        success: false,
+        error: `Failed to extract PDF text: ${error.message}`
+      };
     }
   });
 

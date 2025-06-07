@@ -272,7 +272,7 @@ class API {
     if (!id) throw new Error('Benchmark ID is required');
 
     try {
-      const result = await this.electronAPI.exportBenchmarkToCsv(id);
+      const result = await this.electronAPI.exportBenchmark(id);
       return result;
     } catch (error) {
       console.error('Error exporting benchmark:', error);
@@ -385,6 +385,20 @@ class API {
     } catch (error) {
       console.error('Error reading CSV:', error);
       throw new Error(`Failed to read CSV file: ${error.message}`);
+    }
+  }
+
+  /**
+   * Extract text content from PDF file
+   * @param {string} filePath - Path to PDF file
+   * @returns {Promise<Object>} Extracted text data
+   */
+  async extractPdfText(filePath) {
+    try {
+      return await this.electronAPI.extractPdfText(filePath);
+    } catch (error) {
+      console.error('Error extracting PDF text:', error);
+      throw new Error(`Failed to extract PDF text: ${error.message}`);
     }
   }
 
@@ -701,6 +715,31 @@ class API {
     } catch (error) {
       console.error('Error validating tokens:', error);
       throw new Error(`Failed to validate tokens: ${error.message}`);
+    }
+  }
+
+  /**
+   * Count tokens for a specific file using different model providers
+   * @param {string} filePath - Path to the file
+   * @param {string} samplePrompt - Sample prompt to test with
+   * @param {Array<string>} modelNames - Model names to test
+   * @returns {Promise<Object>} Token count results
+   */
+  async countTokensForFile(filePath, samplePrompt, modelNames) {
+    try {
+      const result = await this.makeRequest('/count-tokens-for-file', {
+        method: 'POST',
+        body: JSON.stringify({
+          file_path: filePath,
+          sample_prompt: samplePrompt,
+          model_names: modelNames
+        })
+      });
+
+      return result;
+    } catch (error) {
+      console.error('Error counting tokens for file:', error);
+      throw new Error(`Failed to count tokens: ${error.message}`);
     }
   }
 }

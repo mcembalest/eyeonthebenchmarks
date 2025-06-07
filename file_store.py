@@ -577,7 +577,7 @@ def parse_csv_to_markdown_format(file_path: Path, max_rows: int = None) -> Dict[
                 if max_rows and row_num >= max_rows:
                     break
         
-        # Format records as markdown
+        # Format records using Hybrid Structured Format
         markdown_data = format_records_as_markdown(records)
         
         return {
@@ -593,18 +593,51 @@ def parse_csv_to_markdown_format(file_path: Path, max_rows: int = None) -> Dict[
 
 def format_records_as_markdown(records: List[Dict[str, Any]]) -> str:
     """
-    Convert CSV records to markdown format.
+    Convert CSV records to Hybrid Structured Format for efficient token usage.
     
     Args:
         records: List of dictionaries representing CSV rows
         
     Returns:
-        String in markdown format
+        String in Hybrid Structured Format
     """
     if not records or len(records) == 0:
         return 'No data available'
 
-    return '\n'.join(records_entry_to_markdown(record) for record in records)
+    # Get column names from the first record
+    columns = list(records[0].keys()) if records else []
+    total_records = len(records)
+    
+    lines = []
+    
+    # Header with metadata
+    lines.append(f"Dataset: {total_records} records")
+    lines.append(f"Columns: {', '.join(columns)}")
+    lines.append("")
+    
+    # Sample records for context (first 5)
+    sample_size = min(5, total_records)
+    if sample_size > 0:
+        lines.append(f"Sample records (first {sample_size}):")
+        
+        for i in range(sample_size):
+            record = records[i]
+            row_values = [str(record.get(col, '')) for col in columns]
+            lines.append(" | ".join(row_values))
+        
+        lines.append("")
+    
+    # Remaining records in compact format (without column headers)
+    remaining_count = total_records - sample_size
+    if remaining_count > 0:
+        lines.append(f"[continuing with remaining {remaining_count} records in same format...]")
+        
+        for i in range(sample_size, total_records):
+            record = records[i]
+            row_values = [str(record.get(col, '')) for col in columns]
+            lines.append(" | ".join(row_values))
+    
+    return '\n'.join(lines)
 
 def records_entry_to_markdown(record: Dict[str, Any]) -> str:
     """
@@ -805,6 +838,31 @@ def get_provider_file_id(file_id: int, provider: str, db_path: Path = Path.cwd()
     finally:
         conn.close()
 
+def get_file_path_from_provider_id(provider_file_id: str, provider: str, db_path: Path = Path.cwd()) -> Optional[str]:
+    """
+    Get the local file path from a provider file ID.
+    Returns None if the provider file ID is not found.
+    """
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute(f'''
+            SELECT f.file_path FROM {FILES_TABLE} f
+            JOIN {PROVIDER_FILE_UPLOADS_TABLE} pfu ON f.id = pfu.file_id
+            WHERE pfu.provider_file_id = ? AND pfu.provider = ?
+        ''', (provider_file_id, provider))
+        
+        result = cursor.fetchone()
+        return result[0] if result else None
+        
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error when getting file path from provider ID: {e}")
+        return None
+    finally:
+        conn.close()
+
 def register_provider_upload(file_id: int, provider: str, provider_file_id: str, db_path: Path = Path.cwd()):
     """
     Register that a file has been uploaded to a specific provider.
@@ -946,6 +1004,10 @@ def save_benchmark_run(benchmark_id: int, model_name: str, provider: str, report
                       total_cached_cost: float = 0.0, total_output_cost: float = 0.0,
                       total_cost: float = 0.0, db_path: Path = Path.cwd()) -> Optional[int]:
     """Save a benchmark run with provider information and cost tracking."""
+    import traceback
+    logging.info(f"DEBUG save_benchmark_run CALLED: benchmark_id={benchmark_id}, model_name={model_name}")
+    logging.info(f"DEBUG save_benchmark_run STACK TRACE: {traceback.format_stack()}")
+    
     db_file = db_path / DB_NAME
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
@@ -2004,30 +2066,83 @@ def get_all_files(db_path: Path = Path.cwd()) -> List[dict]:
         
         files = []
         for row in cursor.fetchall():
-            file_dict = dict(row)
-            
-            # Parse CSV data if available
-            if file_dict.get('csv_data'):
-                try:
-                    csv_data = json.loads(file_dict['csv_data'])
-                    file_dict['csv_rows'] = csv_data.get('total_rows', 0)
-                    file_dict['csv_columns'] = len(csv_data.get('columns', []))
-                except json.JSONDecodeError:
+            try:
+                file_dict = dict(row)
+                
+                # Parse CSV data if available
+                csv_data_value = file_dict.get('csv_data')
+                
+                if csv_data_value:
+                    try:
+                        csv_data = json.loads(csv_data_value)
+                        
+                        # Check if csv_data is a dictionary (expected format)
+                        if isinstance(csv_data, dict):
+                            file_dict['csv_rows'] = csv_data.get('total_rows', 0)
+                            file_dict['csv_columns'] = len(csv_data.get('columns', []))
+                        elif isinstance(csv_data, list):
+                            # Handle legacy format where csv_data might be a list
+                            logging.warning(f"CSV data for file {file_dict.get('id')} is a list, not a dict. Using fallback values.")
+                            file_dict['csv_rows'] = len(csv_data)
+                            file_dict['csv_columns'] = 0
+                        else:
+                            logging.warning(f"CSV data for file {file_dict.get('id')} is unexpected type: {type(csv_data)}")
+                            file_dict['csv_rows'] = 0
+                            file_dict['csv_columns'] = 0
+                            
+                    except json.JSONDecodeError as e:
+                        logging.error(f"JSON decode error for file {file_dict.get('id')}: {e}")
+                        file_dict['csv_rows'] = 0
+                        file_dict['csv_columns'] = 0
+                else:
                     file_dict['csv_rows'] = 0
                     file_dict['csv_columns'] = 0
-            else:
-                file_dict['csv_rows'] = 0
-                file_dict['csv_columns'] = 0
-            
-            # Check if file still exists on disk
-            file_dict['exists_on_disk'] = Path(file_dict['file_path']).exists()
-            files.append(file_dict)
+                
+                # Check if file still exists on disk
+                file_path_value = file_dict.get('file_path')
+                if file_path_value:
+                    file_dict['exists_on_disk'] = Path(file_path_value).exists()
+                else:
+                    file_dict['exists_on_disk'] = False
+                
+                files.append(file_dict)
+                
+            except Exception as e:
+                logging.error(f"Error processing file row: {e}")
+                # Continue processing other files even if one fails
+                continue
         
         return files
         
     except sqlite3.Error as e:
         logging.error(f"SQLite error when getting all files: {e}")
         return []
+    finally:
+        conn.close()
+
+def get_file_details_by_path(file_path: str, db_path: Path = Path.cwd()) -> Optional[dict]:
+    """Get file details by file path."""
+    db_file = db_path / DB_NAME
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute(f'''
+            SELECT f.id, f.file_hash, f.original_filename, f.file_path, 
+                   f.file_size_bytes, f.mime_type, f.created_at, f.csv_data
+            FROM {FILES_TABLE} f
+            WHERE f.file_path = ?
+        ''', (file_path,))
+        
+        row = cursor.fetchone()
+        if row:
+            return dict(row)
+        return None
+        
+    except sqlite3.Error as e:
+        logging.error(f"SQLite error when getting file by path {file_path}: {e}")
+        return None
     finally:
         conn.close()
 
@@ -2254,6 +2369,19 @@ def update_benchmark_progress(benchmark_id: int, db_path: Path = Path.cwd()) -> 
         model_count = row[0] or 0
         prompt_count = row[1] or 0
         
+        # DEBUG: Log the counts to understand the issue
+        logging.info(f"DEBUG update_benchmark_progress: benchmark_id={benchmark_id}, initial model_count={model_count}, initial prompt_count={prompt_count}")
+        
+        # DEBUG: Show what models are being counted
+        cursor.execute(f'''
+            SELECT br.id, br.model_name, br.created_at
+            FROM {BENCHMARK_RUNS_TABLE} br
+            WHERE br.benchmark_id = ?
+            ORDER BY br.created_at
+        ''', (benchmark_id,))
+        runs = cursor.fetchall()
+        logging.info(f"DEBUG update_benchmark_progress: All runs for benchmark {benchmark_id}: {runs}")
+        
         # If prompt_count is 0 (no prompt set), count unique prompts from actual benchmark prompts
         if prompt_count == 0:
             cursor.execute(f'''
@@ -2265,8 +2393,10 @@ def update_benchmark_progress(benchmark_id: int, db_path: Path = Path.cwd()) -> 
             
             unique_prompts_row = cursor.fetchone()
             prompt_count = unique_prompts_row[0] or 0
+            logging.info(f"DEBUG update_benchmark_progress: benchmark_id={benchmark_id}, fallback prompt_count={prompt_count}")
         
         total_prompts = model_count * prompt_count if prompt_count > 0 else 0
+        logging.info(f"DEBUG update_benchmark_progress: benchmark_id={benchmark_id}, FINAL model_count={model_count}, prompt_count={prompt_count}, total_prompts={total_prompts}")
         
         # Count prompts by their best status per (prompt, model) combination
         # This handles reruns correctly by taking the best outcome for each prompt+model
@@ -2453,6 +2583,19 @@ def save_benchmark_prompt_atomic(benchmark_run_id: int, prompt: str, response: s
         model_count = row[0] or 0
         prompt_count = row[1] or 0
         
+        # DEBUG: Log the counts to understand the issue
+        logging.info(f"DEBUG save_benchmark_prompt_atomic: benchmark_id={benchmark_id}, initial model_count={model_count}, initial prompt_count={prompt_count}")
+        
+        # DEBUG: Show what models are being counted
+        cursor.execute(f'''
+            SELECT br.id, br.model_name, br.created_at
+            FROM {BENCHMARK_RUNS_TABLE} br
+            WHERE br.benchmark_id = ?
+            ORDER BY br.created_at
+        ''', (benchmark_id,))
+        runs = cursor.fetchall()
+        logging.info(f"DEBUG save_benchmark_prompt_atomic: All runs for benchmark {benchmark_id}: {runs}")
+        
         # If prompt_count is 0 (no prompt set), count unique prompts from actual benchmark prompts
         if prompt_count == 0:
             cursor.execute(f'''
@@ -2464,8 +2607,10 @@ def save_benchmark_prompt_atomic(benchmark_run_id: int, prompt: str, response: s
             
             unique_prompts_row = cursor.fetchone()
             prompt_count = unique_prompts_row[0] or 0
+            logging.info(f"DEBUG save_benchmark_prompt_atomic: benchmark_id={benchmark_id}, fallback prompt_count={prompt_count}")
         
         total_prompts = model_count * prompt_count if prompt_count > 0 else 0
+        logging.info(f"DEBUG save_benchmark_prompt_atomic: benchmark_id={benchmark_id}, FINAL model_count={model_count}, prompt_count={prompt_count}, total_prompts={total_prompts}")
         
         # Count prompts by their best status per (prompt, model) combination
         # This handles reruns correctly by taking the best outcome for each prompt+model

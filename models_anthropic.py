@@ -263,7 +263,7 @@ def anthropic_ask_with_files(file_paths: List[Path], prompt_text: str, model_nam
         })
         
         # Proceed with API call using managed content
-        return anthropic_ask_internal(content, model_name, web_search)
+        return anthropic_ask_internal(content, model_name, web_search, db_path)
         
     except ImportError:
         # Fallback to simple processing if token manager not available
@@ -328,9 +328,9 @@ def anthropic_ask_with_files_simple(file_paths: List[Path], prompt_text: str, mo
         "text": enhanced_prompt
     })
     
-    return anthropic_ask_internal(content, model_name, web_search)
+    return anthropic_ask_internal(content, model_name, web_search, db_path)
 
-def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: bool = False) -> Tuple[str, int, int, int, int, bool, str]:
+def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: bool = False, db_path: Path = Path.cwd()) -> Tuple[str, int, int, int, int, bool, str]:
     """
     Internal function to send a query to Anthropic with prepared content.
     
@@ -397,22 +397,9 @@ def anthropic_ask_internal(content: List[Dict], model_name: str, web_search: boo
                 "max_uses": 1
             }]
         
-        # Estimate token count for input (use base model name for API calls)
+        # Estimate token count for input using the proper token counting function
         try:
-            token_count_params = {
-                "model": base_model_name,
-                "messages": messages
-            }
-            
-            # Add thinking configuration for token counting if thinking is enabled
-            if thinking_enabled:
-                token_count_params["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": 4096  # Match API call budget
-                }
-            
-            token_count_response = client.messages.count_tokens(**token_count_params)
-            input_token_count = token_count_response.input_tokens
+            input_token_count = count_tokens_anthropic(content, model_name, db_path)
             logging.info(f"Estimated input tokens: {input_token_count}")
             
             # Check if we're approaching context limits
@@ -697,7 +684,7 @@ def check_pdf_page_limit(file_paths: List[Path]) -> int:
             logging.info(f"PDF {file_path.name}: {page_count} pages")
     return total_pages
 
-def count_tokens_anthropic(content: List[Dict], model_name: str) -> int:
+def count_tokens_anthropic(content: List[Dict], model_name: str, db_path: Path = Path.cwd()) -> int:
     """
     Count tokens for Anthropic models using their count_tokens API.
     Note: Anthropic's token counting API does NOT support file sources, only base64.
@@ -750,8 +737,37 @@ def count_tokens_anthropic(content: List[Dict], model_name: str) -> int:
                     "text": item.get("text", "")
                 })
             elif item.get("type") == "document":
-                # Document with base64 source - already in correct format
-                anthropic_content.append(item)
+                source = item.get("source", {})
+                if source.get("type") == "base64":
+                    # Document with base64 source - already in correct format
+                    anthropic_content.append(item)
+                elif source.get("type") == "file":
+                    # Document with file source - need to convert to base64 for token counting
+                    file_id = source.get("file_id")
+                    if file_id:
+                        # Get file path from provider file ID
+                        from file_store import get_file_path_from_provider_id
+                        file_path = get_file_path_from_provider_id(file_id, "anthropic", db_path)
+                        if file_path and Path(file_path).exists():
+                            # Read file and encode as base64 for token counting
+                            import base64
+                            with open(file_path, "rb") as f:
+                                pdf_base64 = base64.standard_b64encode(f.read()).decode("utf-8")
+                            
+                            anthropic_content.append({
+                                "type": "document",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "application/pdf",
+                                    "data": pdf_base64
+                                }
+                            })
+                        else:
+                            raise FileNotFoundError(f"Cannot find file path for provider file ID: {file_id}")
+                    else:
+                        raise ValueError("Document with file source missing file_id")
+                else:
+                    raise ValueError(f"Unsupported document source type: {source.get('type')}")
             elif item.get("type") == "file":
                 # For token counting, we MUST use base64 (file sources not supported)
                 file_path = item.get("file_path")

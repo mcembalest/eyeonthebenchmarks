@@ -1,6 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import asyncio
 import threading
 from pathlib import Path
@@ -9,17 +10,20 @@ from file_store import load_benchmark_details, load_all_benchmarks_with_models
 from app import AppLogic
 from ui_bridge import DataChangeType
 
-app = FastAPI()
-
 # Global variables for event loop management
 event_loop = None
 manager = None
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     global event_loop, manager
     event_loop = asyncio.get_event_loop()
     manager = WebSocketManager()
+    yield
+    # Shutdown (if needed)
+
+app = FastAPI(lifespan=lifespan)
 
 class WebSocketManager:
     def __init__(self):
@@ -239,7 +243,7 @@ async def list_models():
         "claude-3-7-sonnet-20250219-thinking",
         "claude-3-5-haiku-20241022",
         "gemini-2.5-flash-preview-05-20",
-        "gemini-2.5-pro-preview-05-06",
+        "gemini-2.5-pro-preview-06-05",
     ]
 
 @app.get("/benchmarks/{benchmark_id}/export")
@@ -390,6 +394,45 @@ async def validate_tokens(payload: dict):
         payload.get("pdfPaths", []) or payload.get("file_paths", []),  # Support both parameter names
         payload.get("modelNames", []) or payload.get("model_names", [])  # Support both parameter names
     )
+
+@app.post("/count-tokens-for-file")
+async def count_tokens_for_file(payload: dict):
+    """Count tokens for a specific file using different model providers."""
+    return logic.handle_count_tokens_for_file(
+        payload.get("file_path"),
+        payload.get("sample_prompt", "Analyze this data and provide insights."),
+        payload.get("model_names", [])
+    )
+
+@app.post("/extract_pdf_text")
+async def extract_pdf_text(payload: dict):
+    """Extract text content from a PDF file for preview purposes."""
+    file_path = payload.get("file_path")
+    if not file_path:
+        raise HTTPException(status_code=400, detail="file_path is required")
+    
+    try:
+        # Use the existing PDF text extraction method from AppLogic
+        pdf_text = logic._extract_pdf_text(file_path)
+        
+        if not pdf_text:
+            return {
+                "success": False,
+                "error": "No text could be extracted from the PDF file"
+            }
+        
+        return {
+            "success": True,
+            "text": pdf_text,
+            "char_count": len(pdf_text),
+            "page_count": len(pdf_text.split('\n\n'))  # Rough page count based on separators
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Error extracting PDF text: {str(e)}"
+        }
 
 # ===== VECTOR SEARCH ENDPOINTS =====
 

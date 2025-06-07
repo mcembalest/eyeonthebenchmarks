@@ -47,7 +47,7 @@ def ensure_google_client():
 # Available Google models for benchmarking
 AVAILABLE_MODELS = [
     "gemini-2.5-flash-preview-05-20",
-    "gemini-2.5-pro-preview-05-06",
+    "gemini-2.5-pro-preview-06-05",
 ]
 
 
@@ -62,7 +62,7 @@ COSTS = {
         "search_cost": 0.035,  # $35 per 1k requests
         "cache_storage": 1.00  # $1.00 per 1M tokens per hour
     },
-    "gemini-2.5-pro-preview-05-06": {
+    "gemini-2.5-pro-preview-06-05": {
         "input_small": 1.25,  # $1.25 per 1M tokens for prompts <= 200k tokens
         "input_large": 2.50,  # $2.50 per 1M tokens for prompts > 200k tokens
         "cached_small": 0.31,  # $0.31 per 1M tokens for prompts <= 200k tokens

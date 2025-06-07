@@ -74,7 +74,7 @@ class TokenManager:
             
             # Google models
             'gemini-2.5-flash-preview-05-20': 990000,  # 1M - 10k buffer
-            'gemini-2.5-pro-preview-05-06': 990000,
+            'gemini-2.5-pro-preview-06-05': 990000,
         }
         
         return model_budgets.get(model_name, 120000)  # Default to GPT-4o budget

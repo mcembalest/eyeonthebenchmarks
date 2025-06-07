@@ -266,9 +266,9 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
     if web_search:
         # Use OpenAI's official recommended approach for o3/o4-mini models
         if any(model in model_name.lower() for model in ["o3", "o4"]):
-            # Following o3/o4-mini best practices: be proactive and explicit about tool usage
-            # Direct instruction to use the web search tool
-            enhanced_prompt = f"Search the web for current information about this query: {prompt_text}"
+            # Following o3/o4-mini best practices: be direct and explicit about tool usage
+            # The developer message already instructs about tool usage, so just provide the query clearly
+            enhanced_prompt = prompt_text
         else:
             # For other models, add a lighter encouragement
             enhanced_prompt = f"Please use web search if needed to provide current, accurate information for this query.\n\n{prompt_text}"
@@ -286,18 +286,24 @@ def openai_ask_with_files(file_paths: List[Path], prompt_text: str, model_name: 
     # Set up tools for web search if enabled
     tools = []
     if web_search:
-        web_search_tool = {
-            "type": "web_search_preview",
-            "search_context_size": "medium",
-        }
-        
-        # For o3/o4-mini models, add strict mode when available and enhance tool description
+        # For o3/o4-mini models, web search is not yet supported by OpenAI
         if any(model in model_name.lower() for model in ["o3", "o4"]):
-            # Note: web_search_preview is a built-in tool, so we can't add custom descriptions
-            # but we can ensure proper configuration
-            web_search_tool["search_context_size"] = "medium"
+            print(f"⚠️ Web search is not yet supported for o3/o4-mini models")
+            print(f"   Running '{model_name}' without web search...")
+            logging.warning(f"Web search disabled for o3/o4-mini model: {model_name}")
+            return openai_ask_internal(content, model_name, tools=None)
+        else:
+            # For other models, fall back to the preview version if still supported
+            web_search_tool = {
+                "type": "web_search_preview",
+                "search_context_size": "medium",
+            }
+            print(f"🔍 Using web_search_preview tool for model: {model_name}")
+            logging.info(f"Using web_search_preview tool for model: {model_name}")
         
         tools.append(web_search_tool)
+        print(f"🔧 Tool configuration: {web_search_tool}")
+        logging.info(f"Tool configuration: {web_search_tool}")
     
     # If we have large PDFs, use vector search instead of direct upload
     if large_pdfs:
@@ -427,7 +433,16 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
                 api_input = [
                     {
                         "role": "developer",
-                        "content": "You are a research assistant. Use the available tools proactively to find accurate, current information for the user's query."
+                        "content": """You are a research assistant with access to web search tools.
+
+Be proactive in using tools to accomplish the user's goal. Use tools when:
+- The user asks for current information that might change over time
+- You need to verify facts or find recent developments
+- The query would benefit from up-to-date data from the web
+
+Do NOT promise to call a function later. If a function call is required, emit it now; otherwise respond normally.
+
+Always use the web search tool when the user's query requires current information or when your knowledge might be outdated."""
                     },
                     {
                         "role": "user",
@@ -443,7 +458,7 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
                 # Add developer context for o3/o4-mini following best practices
                 developer_context = {
                     "role": "developer", 
-                    "content": "You are a helpful AI assistant. Be proactive in using tools to accomplish the user's goals. Provide accurate, helpful responses based on the files and information provided."
+                    "content": "You are a helpful AI assistant. Analyze the provided files and information carefully. Provide accurate, comprehensive responses based on the content provided. Be thorough in your analysis and cite specific information from the files when relevant."
                 }
                 api_input = [
                     developer_context,
@@ -492,15 +507,31 @@ def openai_ask_internal(content: List[Dict], model_name: str, tools: List[Dict] 
             except openai.APIError as api_error:
                 # Handle specific OpenAI API errors
                 error_str = str(api_error).lower()
-                if "web_search" in error_str or "tool" in error_str:
+                if "web_search" in error_str or "tool" in error_str or "hosted tool" in error_str:
                     print(f"\n❌ WEB SEARCH ERROR: {api_error}")
-                    print(f"   Model {model_name} may not support web search or the tool configuration is invalid")
+                    print(f"   Model {model_name} doesn't support the current web search configuration")
                     print(f"   Retrying without web search...")
                     # Retry without web search tools
                     if tools:
+                        # Also need to adjust the input format since we're removing tools
+                        if any(model in model_name.lower() for model in ["o3", "o4"]):
+                            # For o3/o4 models without tools, adjust the developer message
+                            adjusted_input = [
+                                {
+                                    "role": "developer",
+                                    "content": "You are a helpful AI assistant. Provide accurate, comprehensive responses based on your knowledge."
+                                },
+                                {
+                                    "role": "user",
+                                    "content": api_input[1]["content"] if isinstance(api_input, list) and len(api_input) > 1 else str(api_input)
+                                }
+                            ]
+                        else:
+                            adjusted_input = api_input
+                        
                         response = client.responses.create(
                             model=model_name, 
-                            input=api_input,
+                            input=adjusted_input,
                             tools=None
                         )
                         print(f"✅ Retry successful without web search")
